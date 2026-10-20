@@ -414,17 +414,6 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    fn renderer() -> Option<Arc<Renderer>> {
-        // CI runners may have no GPU; skip instead of failing there.
-        match Renderer::new_blocking() {
-            Ok(renderer) => Some(Arc::new(renderer)),
-            Err(err) => {
-                eprintln!("skipping GPU test: {err}");
-                None
-            }
-        }
-    }
-
     /// Calls `update(now)` until `done` holds, giving loader threads time.
     fn update_until(show: &mut Slideshow, now: f64, done: impl Fn(&Slideshow) -> bool) {
         for _ in 0..500 {
@@ -443,7 +432,9 @@ mod tests {
 
     #[test]
     fn photos_crossfade_without_gaps_and_skip_broken_files() {
-        let Some(renderer) = renderer() else { return };
+        let Some(renderer) = crate::test_renderer() else {
+            return;
+        };
         let dir = std::env::temp_dir().join(format!("fluxlide-slideshow-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let red = dir.join("red.png");
@@ -500,12 +491,16 @@ mod tests {
         assert_eq!(show.stats().late_transitions, 1);
         assert!(show.stats().longest_wait_ms >= 799.0);
 
+        // Let the preload thread finish before the test ends.
+        update_until(&mut show, 4.0, |show| show.loading.is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn video_frames_follow_playback_time() {
-        let Some(renderer) = renderer() else { return };
+        let Some(renderer) = crate::test_renderer() else {
+            return;
+        };
         let Ok(ffmpeg) = Ffmpeg::locate() else {
             eprintln!("skipping video test: ffmpeg not found");
             return;

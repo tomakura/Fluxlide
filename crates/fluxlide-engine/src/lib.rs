@@ -225,19 +225,33 @@ impl Renderer {
     }
 }
 
+/// One renderer shared by every test and never dropped. Creating and
+/// tearing down several devices crashed the Linux CI runner's software
+/// driver when the test process exited.
+#[cfg(test)]
+pub(crate) fn test_renderer() -> Option<std::sync::Arc<Renderer>> {
+    static RENDERER: std::sync::OnceLock<Option<std::sync::Arc<Renderer>>> =
+        std::sync::OnceLock::new();
+    RENDERER
+        .get_or_init(|| match Renderer::new_blocking() {
+            Ok(renderer) => Some(std::sync::Arc::new(renderer)),
+            Err(err) => {
+                // CI runners may have no GPU; skip instead of failing there.
+                eprintln!("skipping GPU tests: {err}");
+                None
+            }
+        })
+        .clone()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn offscreen_frame_matches_clear_color() {
-        // CI runners may have no GPU; skip instead of failing there.
-        let renderer = match Renderer::new_blocking() {
-            Ok(renderer) => renderer,
-            Err(err) => {
-                eprintln!("skipping GPU test: {err}");
-                return;
-            }
+        let Some(renderer) = test_renderer() else {
+            return;
         };
         let (width, height) = (70, 3); // 70 * 4 bytes forces row padding
         let pixels = renderer
