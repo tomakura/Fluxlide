@@ -59,6 +59,13 @@ impl Ffmpeg {
             .arg("-version")
             .output()
             .map_err(|err| EngineError::Media(format!("could not run ffmpeg: {err}")))?;
+        if !output.status.success() {
+            return Err(EngineError::Media(format!(
+                "ffmpeg -version failed ({}): {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
         let text = String::from_utf8_lossy(&output.stdout);
         Ok(text.lines().next().unwrap_or_default().to_string())
     }
@@ -301,27 +308,33 @@ impl VideoDecoder {
                 .spawn(move || collect_log(pipe, &stderr))
                 .map_err(|err| EngineError::Media(err.to_string()))?;
         }
-        let mut reader = BufReader::with_capacity(1 << 16, child.stdout.take().expect("piped"));
-        let mut line = String::new();
-        let header = match reader.read_line(&mut line) {
-            Ok(n) if n > 0 => parse_header(line.trim_end()),
-            _ => Err("no output".into()),
+        let reader = BufReader::with_capacity(1 << 16, child.stdout.take().expect("piped"));
+
+        // ffmpeg writes the header only once the first frame has been decoded,
+        // so it is read on the reader thread and waited for with a timeout.
+        let (header_tx, header_rx) = mpsc::channel();
+        let (tx, frames) = mpsc::sync_channel(BUFFERED_FRAMES);
+        let (recycle, reuse) = mpsc::sync_channel(BUFFERED_FRAMES + 2);
+        let spawned = std::thread::Builder::new()
+            .name("fluxlide-ffmpeg-read".into())
+            .spawn(move || read_stream(reader, &header_tx, &tx, &reuse));
+        let header = match spawned {
+            Err(err) => Err(err.to_string()),
+            Ok(_) => match header_rx.recv_timeout(OPEN_TIMEOUT) {
+                Ok(result) => result,
+                Err(RecvTimeoutError::Timeout) => Err("timed out".into()),
+                Err(RecvTimeoutError::Disconnected) => Err("no output".into()),
+            },
         };
         let header = match header {
             Ok(header) => header,
             Err(reason) => {
+                // Killing first also unblocks a reader still waiting on the pipe.
+                let _ = child.kill();
                 let _ = child.wait();
                 return Err(decode_error(path, &reason, &stderr));
             }
         };
-
-        let (tx, frames) = mpsc::sync_channel(BUFFERED_FRAMES);
-        let (recycle, reuse) = mpsc::sync_channel(BUFFERED_FRAMES + 2);
-        let frame_len = header.frame_len();
-        std::thread::Builder::new()
-            .name("fluxlide-ffmpeg-read".into())
-            .spawn(move || read_frames(reader, frame_len, &tx, &reuse))
-            .map_err(|err| EngineError::Media(err.to_string()))?;
 
         Ok(Self {
             child,
@@ -338,6 +351,26 @@ impl Drop for VideoDecoder {
         // The reader thread exits once the pipe closes or the channel drops.
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+fn read_stream(
+    mut reader: BufReader<ChildStdout>,
+    header_tx: &mpsc::Sender<Result<StreamHeader, String>>,
+    frames: &SyncSender<Vec<u8>>,
+    reuse: &Receiver<Vec<u8>>,
+) {
+    let mut line = String::new();
+    let header = match reader.read_line(&mut line) {
+        Ok(n) if n > 0 => parse_header(line.trim_end()),
+        _ => Err("no output".into()),
+    };
+    let frame_len = header.as_ref().ok().map(StreamHeader::frame_len);
+    if header_tx.send(header).is_err() {
+        return;
+    }
+    if let Some(frame_len) = frame_len {
+        read_frames(reader, frame_len, frames, reuse);
     }
 }
 
