@@ -1,4 +1,8 @@
+mod presentation;
+
+use presentation::PresentationState;
 use serde::Serialize;
+use tauri::{Manager, State, WindowEvent};
 
 /// GPU details shown in the UI so users can confirm the renderer started.
 #[derive(Serialize)]
@@ -10,11 +14,8 @@ struct EngineStatus {
 }
 
 #[tauri::command]
-async fn engine_status() -> Result<EngineStatus, String> {
-    let renderer = fluxlide_engine::Renderer::new()
-        .await
-        .map_err(|err| err.to_string())?;
-    let info = renderer.info().clone();
+async fn engine_status(state: State<'_, PresentationState>) -> Result<EngineStatus, String> {
+    let info = state.renderer().await?.info().clone();
     Ok(EngineStatus {
         gpu_name: info.name,
         backend: info.backend,
@@ -26,7 +27,37 @@ async fn engine_status() -> Result<EngineStatus, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![engine_status])
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(presentation::handle_shortcut)
+                .build(),
+        )
+        .manage(PresentationState::default())
+        .on_window_event(|window, event| {
+            // Closing the management window ends the app, including any presentation.
+            if window.label() != "main" {
+                return;
+            }
+            match event {
+                // Esc in the management window must not end the presentation.
+                WindowEvent::Focused(true) => {
+                    presentation::set_escape_enabled(window.app_handle(), false);
+                }
+                WindowEvent::Destroyed => {
+                    let app = window.app_handle();
+                    presentation::stop_blocking(&app.state::<PresentationState>());
+                    app.exit(0);
+                }
+                _ => {}
+            }
+        })
+        .invoke_handler(tauri::generate_handler![
+            engine_status,
+            presentation::list_monitors,
+            presentation::presentation_status,
+            presentation::start_presentation,
+            presentation::stop_presentation,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

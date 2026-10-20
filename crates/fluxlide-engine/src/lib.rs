@@ -7,6 +7,10 @@
 use std::fmt;
 use std::sync::mpsc;
 
+mod presenter;
+
+pub use presenter::{FrameOutcome, Presenter};
+
 /// Pixel format used for offscreen frames handed to the encoder.
 pub const FRAME_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
@@ -33,6 +37,7 @@ pub enum EngineError {
     NoAdapter(wgpu::RequestAdapterError),
     Device(wgpu::RequestDeviceError),
     Readback(String),
+    Surface(String),
 }
 
 impl fmt::Display for EngineError {
@@ -41,6 +46,7 @@ impl fmt::Display for EngineError {
             Self::NoAdapter(err) => write!(f, "no compatible GPU adapter: {err}"),
             Self::Device(err) => write!(f, "failed to open GPU device: {err}"),
             Self::Readback(msg) => write!(f, "failed to read frame from GPU: {msg}"),
+            Self::Surface(msg) => write!(f, "window surface error: {msg}"),
         }
     }
 }
@@ -50,6 +56,7 @@ impl std::error::Error for EngineError {}
 /// Owns the GPU device and queue shared by every output.
 pub struct Renderer {
     instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
     info: GpuInfo,
@@ -76,6 +83,7 @@ impl Renderer {
             .map_err(EngineError::Device)?;
         Ok(Self {
             instance,
+            adapter,
             device,
             queue,
             info,
@@ -93,6 +101,10 @@ impl Renderer {
 
     pub fn instance(&self) -> &wgpu::Instance {
         &self.instance
+    }
+
+    pub fn adapter(&self) -> &wgpu::Adapter {
+        &self.adapter
     }
 
     pub fn device(&self) -> &wgpu::Device {
