@@ -9,3 +9,6 @@ repository.workspace = true
 [dependencies]
 wgpu = "30"
 pollster = "1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+cpal = "0.18"
+rtrb = "0.4"

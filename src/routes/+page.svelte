@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { open } from "@tauri-apps/plugin-dialog";
 
   type EngineStatus = {
     gpuName: string;
@@ -19,6 +20,38 @@
     hasMainWindow: boolean;
   };
 
+  type VideoDecoderStatus = {
+    path: string | null;
+    version: string | null;
+    error: string | null;
+  };
+
+  type SoundStats = {
+    device: string;
+    sampleRate: number;
+    outputLatencyMs: number;
+    offsetMs: number;
+    maxOffsetMs: number;
+    resyncs: number;
+    underruns: number;
+    lastError: string | null;
+  };
+
+  type PlaybackStats = {
+    currentIndex: number | null;
+    currentFile: string | null;
+    transitions: number;
+    lateTransitions: number;
+    longestWaitMs: number;
+    lastLoadMs: number;
+    videoLateFrames: number;
+    videoSkippedFrames: number;
+    failedItems: number;
+    lastError: string | null;
+    audio: SoundStats | null;
+    audioError: string | null;
+  };
+
   type FrameStats = {
     frames: number;
     fps: number;
@@ -28,6 +61,7 @@
     width: number;
     height: number;
     lastError: string | null;
+    playback: PlaybackStats | null;
   };
 
   type PresentationStatus = {
@@ -43,6 +77,63 @@
   let status = $state<PresentationStatus | null>(null);
   let busy = $state(false);
   let actionError = $state<string | null>(null);
+  let decoder = $state<VideoDecoderStatus | null>(null);
+
+  const IMAGE_EXTENSIONS = ["jpg", "jpeg", "png"];
+  const VIDEO_EXTENSIONS = ["mp4", "m4v", "mov"];
+  const FILES_KEY = "fluxlide.spike.files";
+
+  let files = $state<string[]>(loadSavedFiles());
+
+  function loadSavedFiles(): string[] {
+    try {
+      const saved = JSON.parse(localStorage.getItem(FILES_KEY) ?? "[]");
+      return Array.isArray(saved) ? saved.filter((f) => typeof f === "string") : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function fileName(path: string) {
+    return path.split(/[\\/]/).pop() ?? path;
+  }
+
+  function fileKind(path: string) {
+    const ext = path.split(".").pop()?.toLowerCase() ?? "";
+    if (IMAGE_EXTENSIONS.includes(ext)) return "写真";
+    if (VIDEO_EXTENSIONS.includes(ext)) return "動画";
+    return "不明";
+  }
+
+  function setFiles(next: string[]) {
+    files = next;
+    try {
+      localStorage.setItem(FILES_KEY, JSON.stringify(next));
+    } catch {
+      // Remembering the list is a convenience only.
+    }
+  }
+
+  async function addFiles() {
+    const picked = await open({
+      multiple: true,
+      directory: false,
+      filters: [{ name: "写真と動画", extensions: [...IMAGE_EXTENSIONS, ...VIDEO_EXTENSIONS] }],
+    });
+    if (picked) setFiles([...files, ...picked]);
+  }
+
+  function moveFile(index: number, delta: number) {
+    const target = index + delta;
+    if (target < 0 || target >= files.length) return;
+    const next = [...files];
+    [next[index], next[target]] = [next[target], next[index]];
+    setFiles(next);
+  }
+
+  function removeFile(index: number) {
+    setFiles(files.filter((_, i) => i !== index));
+  }
 
   async function loadMonitors() {
     monitors = await invoke<MonitorInfo[]>("list_monitors");
@@ -57,7 +148,10 @@
     busy = true;
     actionError = null;
     try {
-      status = await invoke<PresentationStatus>("start_presentation", { monitorIndex: selected });
+      status = await invoke<PresentationStatus>("start_presentation", {
+        monitorIndex: selected,
+        files,
+      });
     } catch (err) {
       actionError = String(err);
     } finally {
@@ -79,6 +173,7 @@
       .then((result) => (engine = result))
       .catch((err) => (engineError = String(err)));
     loadMonitors().catch((err) => (actionError = String(err)));
+    invoke<VideoDecoderStatus>("video_decoder_status").then((result) => (decoder = result));
 
     const timer = setInterval(async () => {
       status = await invoke<PresentationStatus>("presentation_status");
@@ -107,7 +202,48 @@
   <section>
     <div class="section-head">
       <h2>上映ウィンドウの検証</h2>
-      <p>選んだ画面にテストパターンを全画面で映します。上映中もこの画面は操作できます。</p>
+      <p>
+        選んだ画面に、素材を上から順にフェードでつないで全画面で映し、最後まで行ったら最初に戻ります。素材がなければテストパターンを映します。上映中もこの画面は操作できます。
+      </p>
+    </div>
+
+    <div class="media">
+      <div class="media-head">
+        <h3>上映する素材</h3>
+        <p>写真（JPEG・PNG）は5秒ずつ、動画（MP4など）は音とともに最後まで流します。写真→動画→写真の順に並べると、切り替えを確かめられます。</p>
+      </div>
+      {#if files.length > 0}
+        <ol class="files">
+          {#each files as file, index (index)}
+            <li class:now={status?.running && status.stats.playback?.currentIndex === index}>
+              <span class="kind">{fileKind(file)}</span>
+              <span class="name" title={file}>{fileName(file)}</span>
+              <span class="tools">
+                <button class="icon" onclick={() => moveFile(index, -1)} disabled={status?.running || index === 0} aria-label="上へ">↑</button>
+                <button class="icon" onclick={() => moveFile(index, 1)} disabled={status?.running || index === files.length - 1} aria-label="下へ">↓</button>
+                <button class="icon" onclick={() => removeFile(index)} disabled={status?.running} aria-label="外す">✕</button>
+              </span>
+            </li>
+          {/each}
+        </ol>
+      {:else}
+        <p class="empty">素材がありません。テストパターンを映します。</p>
+      {/if}
+      <div class="media-actions">
+        <button onclick={addFiles} disabled={status?.running}>素材を追加…</button>
+        {#if files.length > 0}
+          <button class="ghost" onclick={() => setFiles([])} disabled={status?.running}>すべて外す</button>
+        {/if}
+      </div>
+      <p class="decoder">
+        {#if decoder?.version}
+          <span class="dot ok"></span>動画デコーダ: {decoder.version}（{decoder.path}）
+        {:else if decoder?.error}
+          <span class="dot err"></span>動画デコーダが見つかりません。動画を流すには FFmpeg（ffmpeg と ffprobe）が必要です: {decoder.error}
+        {:else}
+          <span class="dot"></span>動画デコーダを確認しています…
+        {/if}
+      </p>
     </div>
 
     <div class="monitors" role="radiogroup" aria-label="出力先の画面">
@@ -154,6 +290,38 @@
       </dl>
       {#if status.stats.lastError}
         <p class="error">最後のエラー: {status.stats.lastError}</p>
+      {/if}
+      {#if status.stats.playback}
+        {@const playback = status.stats.playback}
+        <dl class="stats">
+          <div><dt>表示中の素材</dt><dd class="file">{playback.currentFile ?? "読み込み中"}</dd></div>
+          <div><dt>切り替え</dt><dd class="num">{playback.transitions}</dd></div>
+          <div><dt>読み込みが間に合わなかった切り替え</dt><dd class="num">{playback.lateTransitions}</dd></div>
+          <div><dt>最長の待ち</dt><dd class="num">{playback.longestWaitMs.toFixed(0)} ms</dd></div>
+          <div><dt>直近の読み込み時間</dt><dd class="num">{playback.lastLoadMs.toFixed(0)} ms</dd></div>
+          <div><dt>動画のデコード遅れ</dt><dd class="num">{playback.videoLateFrames}</dd></div>
+          <div><dt>動画の飛ばしたコマ</dt><dd class="num">{playback.videoSkippedFrames}</dd></div>
+          <div><dt>読み込めなかった素材</dt><dd class="num">{playback.failedItems}</dd></div>
+        </dl>
+        {#if playback.lastError}
+          <p class="error">素材のエラー: {playback.lastError}</p>
+        {/if}
+        {#if playback.audio}
+          {@const audio = playback.audio}
+          <dl class="stats">
+            <div><dt>音声の出力先</dt><dd class="file">{audio.device}（{(audio.sampleRate / 1000).toFixed(1)} kHz）</dd></div>
+            <div><dt>出力の遅延</dt><dd class="num">{audio.outputLatencyMs.toFixed(1)} ms</dd></div>
+            <div><dt>映像に対する音のずれ</dt><dd class="num">{audio.offsetMs.toFixed(1)} ms</dd></div>
+            <div><dt>最大のずれ</dt><dd class="num">{audio.maxOffsetMs.toFixed(1)} ms</dd></div>
+            <div><dt>ずれの補正</dt><dd class="num">{audio.resyncs}</dd></div>
+            <div><dt>音の途切れ</dt><dd class="num">{audio.underruns}</dd></div>
+          </dl>
+          {#if audio.lastError}
+            <p class="error">音声出力のエラー: {audio.lastError}</p>
+          {/if}
+        {:else if playback.audioError}
+          <p class="error">音声を出力できません: {playback.audioError}</p>
+        {/if}
       {/if}
     {/if}
   </section>
@@ -349,6 +517,94 @@
     margin: 0;
     color: var(--err);
     font-size: 13px;
+  }
+
+  h3 {
+    margin: 0;
+    font-size: 16px;
+  }
+
+  .media {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--surface);
+  }
+
+  .media-head p,
+  .empty,
+  .decoder {
+    margin: 4px 0 0;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .decoder {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    overflow-wrap: anywhere;
+  }
+
+  .files {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .files li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 8px 6px 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+
+  .files li.now {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .kind {
+    flex: none;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--muted);
+  }
+
+  .name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .tools {
+    display: flex;
+    gap: 4px;
+  }
+
+  button.icon {
+    padding: 4px 10px;
+    font-weight: 400;
+  }
+
+  .media-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .stats dd.file {
+    font-size: 14px;
+    overflow-wrap: anywhere;
   }
 
   .stats {

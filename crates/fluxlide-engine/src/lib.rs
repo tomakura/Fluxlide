@@ -7,9 +7,14 @@
 use std::fmt;
 use std::sync::mpsc;
 
+pub mod audio;
+pub mod media;
 mod presenter;
+mod slideshow;
 
-pub use presenter::{FrameOutcome, Presenter};
+pub use media::{MediaKind, MediaTexture};
+pub use presenter::{FrameOutcome, Layer, MAX_LAYERS, Presenter, Scene};
+pub use slideshow::{Slideshow, SlideshowConfig, SlideshowStats};
 
 /// Pixel format used for offscreen frames handed to the encoder.
 pub const FRAME_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -38,6 +43,8 @@ pub enum EngineError {
     Device(wgpu::RequestDeviceError),
     Readback(String),
     Surface(String),
+    Media(String),
+    Audio(String),
 }
 
 impl fmt::Display for EngineError {
@@ -47,6 +54,8 @@ impl fmt::Display for EngineError {
             Self::Device(err) => write!(f, "failed to open GPU device: {err}"),
             Self::Readback(msg) => write!(f, "failed to read frame from GPU: {msg}"),
             Self::Surface(msg) => write!(f, "window surface error: {msg}"),
+            Self::Media(msg) => write!(f, "media error: {msg}"),
+            Self::Audio(msg) => write!(f, "audio error: {msg}"),
         }
     }
 }
@@ -216,19 +225,33 @@ impl Renderer {
     }
 }
 
+/// One renderer shared by every test and never dropped. Creating and
+/// tearing down several devices crashed the Linux CI runner's software
+/// driver when the test process exited.
+#[cfg(test)]
+pub(crate) fn test_renderer() -> Option<std::sync::Arc<Renderer>> {
+    static RENDERER: std::sync::OnceLock<Option<std::sync::Arc<Renderer>>> =
+        std::sync::OnceLock::new();
+    RENDERER
+        .get_or_init(|| match Renderer::new_blocking() {
+            Ok(renderer) => Some(std::sync::Arc::new(renderer)),
+            Err(err) => {
+                // CI runners may have no GPU; skip instead of failing there.
+                eprintln!("skipping GPU tests: {err}");
+                None
+            }
+        })
+        .clone()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn offscreen_frame_matches_clear_color() {
-        // CI runners may have no GPU; skip instead of failing there.
-        let renderer = match Renderer::new_blocking() {
-            Ok(renderer) => renderer,
-            Err(err) => {
-                eprintln!("skipping GPU test: {err}");
-                return;
-            }
+        let Some(renderer) = test_renderer() else {
+            return;
         };
         let (width, height) = (70, 3); // 70 * 4 bytes forces row padding
         let pixels = renderer
