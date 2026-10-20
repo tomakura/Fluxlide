@@ -211,13 +211,47 @@ pub async fn start_presentation(
         )
         .build()
         .map_err(|err| err.to_string())?;
+    // Any failure after this point must close the window and release Esc,
+    // otherwise the "presenter" label stays taken until the app restarts.
+    match run_presentation(&app, &window, renderer, position, size).await {
+        Ok((stop, stats, thread)) => {
+            *state.active.lock().unwrap() = Some(Active {
+                window,
+                monitor_name: name,
+                stop,
+                stats,
+                thread: Some(thread),
+            });
+            Ok(state.status())
+        }
+        Err(err) => {
+            set_escape_enabled(&app, false);
+            let _ = window.destroy();
+            Err(err)
+        }
+    }
+}
+
+type RunningPresentation = (Arc<AtomicBool>, Arc<Mutex<FrameStats>>, JoinHandle<()>);
+
+/// Makes `window` fullscreen, attaches a surface and starts the render thread.
+async fn run_presentation(
+    app: &AppHandle,
+    window: &tauri::Window,
+    renderer: Arc<Renderer>,
+    position: tauri::PhysicalPosition<i32>,
+    size: tauri::PhysicalSize<u32>,
+) -> Result<RunningPresentation, String> {
     // Not `set_fullscreen_on_monitor`: it matches monitors by physical position,
     // and on macOS with mixed scale factors the physical ranges of displays
     // overlap, so it can pick the main display. Instead, move the window onto
     // the target display and make it fullscreen on the display it is on.
+    // macOS already placed the window in the builder (logical position).
+    #[cfg(target_os = "macos")]
+    let _ = position;
     #[cfg(not(target_os = "macos"))]
     window
-        .set_position(tauri::PhysicalPosition::new(position.x, position.y))
+        .set_position(position)
         .map_err(|err| err.to_string())?;
     window.set_fullscreen(true).map_err(|err| err.to_string())?;
     let _ = window.set_cursor_visible(false);
@@ -239,15 +273,8 @@ pub async fn start_presentation(
         .map_err(|err| err.to_string())?;
     }
     let presenter = match tauri::async_runtime::spawn_blocking(move || rx.recv()).await {
-        Ok(Ok(Ok(presenter))) => presenter,
-        Ok(Ok(Err(err))) => {
-            let _ = window.destroy();
-            return Err(err.to_string());
-        }
-        _ => {
-            let _ = window.destroy();
-            return Err("上映ウィンドウを準備できませんでした。".to_string());
-        }
+        Ok(Ok(result)) => result.map_err(|err| err.to_string())?,
+        _ => return Err("上映ウィンドウを準備できませんでした。".to_string()),
     };
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -273,7 +300,7 @@ pub async fn start_presentation(
         });
     }
 
-    set_escape_enabled(&app, true);
+    set_escape_enabled(app, true);
 
     let thread = {
         let stop = stop.clone();
@@ -283,15 +310,7 @@ pub async fn start_presentation(
             .spawn(move || render_loop(renderer, presenter, stop, stats, pending_size))
             .map_err(|err| err.to_string())?
     };
-
-    *state.active.lock().unwrap() = Some(Active {
-        window,
-        monitor_name: name,
-        stop,
-        stats,
-        thread: Some(thread),
-    });
-    Ok(state.status())
+    Ok((stop, stats, thread))
 }
 
 #[tauri::command]

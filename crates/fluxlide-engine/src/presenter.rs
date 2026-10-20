@@ -34,6 +34,14 @@ impl Presenter {
             .create_surface(target)
             .map_err(|err| EngineError::Surface(err.to_string()))?;
 
+        // The adapter is chosen before any window exists, so it may not be able
+        // to present to this window (e.g. a different GPU drives the display).
+        if !renderer.adapter().is_surface_supported(&surface) {
+            return Err(EngineError::Surface(format!(
+                "the GPU \"{}\" cannot present to this window",
+                renderer.info().name
+            )));
+        }
         let caps = surface.get_capabilities(renderer.adapter());
         let format = caps
             .formats
