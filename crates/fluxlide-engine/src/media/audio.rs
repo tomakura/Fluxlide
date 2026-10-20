@@ -94,8 +94,8 @@ fn read_samples(mut pipe: ChildStdout, mut producer: rtrb::Producer<f32>, finish
             Ok(read) => carried + read,
         };
         let whole = filled / 4 * 4;
-        for chunk in bytes[..whole].chunks_exact(4) {
-            let mut sample = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        for chunk in bytes[..whole].as_chunks::<4>().0 {
+            let mut sample = f32::from_le_bytes(*chunk);
             // Waits while the buffer is full, i.e. while playback has not caught up.
             while let Err(rtrb::PushError::Full(rejected)) = producer.push(sample) {
                 if producer.is_abandoned() {

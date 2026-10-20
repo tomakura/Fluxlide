@@ -62,7 +62,8 @@ pub struct SlideshowStats {
 enum Prepared {
     Image(MediaTexture),
     Video {
-        player: VideoPlayer,
+        // Boxed: a decoder holds process handles, which are large on Windows.
+        player: Box<VideoPlayer>,
         /// Present when the file has sound and an output is attached.
         audio: Option<AudioTrack>,
     },
@@ -396,7 +397,10 @@ fn prepare(
                 }
                 _ => None,
             };
-            Ok(Prepared::Video { player, audio })
+            Ok(Prepared::Video {
+                player: Box::new(player),
+                audio,
+            })
         }
         None => Err(EngineError::Media(format!(
             "unsupported file type: {}",
