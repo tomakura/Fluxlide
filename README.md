@@ -5,9 +5,9 @@
 
 Fluxlide（フラックスライド）は、写真・動画・キャプション・ウォーターマーク・カスタムトランジションを組み合わせ、**外部ディスプレイへのリアルタイム全画面再生**と**動画ファイルへの書き出し**を両立することを目指す、クロスプラットフォームのスライドショー制作・再生ソフトウェアです。
 
-> **開発ステータス: 企画・設計段階**
+> **開発ステータス: 実装初期**
 >
-> 現時点ではアプリ本体は未実装です。以下は実装済み機能の一覧ではなく、開発予定の内容です。
+> アプリの雛形と描画エンジンの土台ができた段階で、スライドショーの機能はまだ実装していません。以下は実装済み機能の一覧ではなく、開発予定の内容です。
 
 ## 主な機能（開発予定）
 
@@ -55,11 +55,37 @@ Fluxlide（フラックスライド）は、写真・動画・キャプション
 
 ## 開発・ビルドについて
 
-**現在は設計段階で、ソースコードやローカル実行手順はまだ用意されていません。**
+### 必要なもの
 
-実装開始後、Tauri + Svelte + Rust + wgpuの開発環境、依存関係のセットアップ手順、テスト手順をここに記載します。
+- Node.js（LTS）と npm
+- Rust（stable）
+- [Tauri 2 の前提パッケージ](https://tauri.app/start/prerequisites/)（LinuxではWebKitGTKなど）
 
-GitHub Actionsのリリース用ワークフローは、`v*`タグのpushでWindows / Linux / macOSのビルドとGitHub Releasesへのアップロードを行う設計です。**アプリ本体が用意されるまでは利用できません。** また、一般配布には各OSの署名・公証等の整備が必要になる場合があります。
+### 構成
+
+| パス | 内容 |
+| --- | --- |
+| `src/` | 管理・編集UI（SvelteKit / Svelte 5 / TypeScript、静的出力のSPA） |
+| `src-tauri/` | Tauriアプリ本体（Rust） |
+| `crates/fluxlide-engine/` | 描画エンジン（Rust + wgpu）。UIに依存しない |
+| `assets/brand/` | ロゴとアプリアイコンの元データ（SVG） |
+
+### よく使うコマンド
+
+```bash
+npm install          # 依存関係のインストール
+npm run tauri dev    # 開発用に起動
+npm run check        # フロントエンドの型チェック
+cargo test --workspace
+npm run tauri build  # インストーラーの作成
+```
+
+アプリアイコンは `assets/brand/fluxlide-app-icon.svg` から生成しています。ロゴを変えたときは `npx tauri icon assets/brand/fluxlide-app-icon.svg` で作り直し、モバイル用の `src-tauri/icons/android` と `src-tauri/icons/ios` は削除します。
+
+### CI・リリース
+
+- `main` へのpushとPull Requestで、Windows / Linux / macOSのチェックとテストを実行します（`.github/workflows/ci.yml`）。
+- `v*` タグのpushで3OSのビルドとGitHub Releasesへのアップロードを行います（`.github/workflows/release.yml`、未検証）。一般配布には各OSの署名・公証等の整備が必要になる場合があります。
 
 ## ライセンス
 

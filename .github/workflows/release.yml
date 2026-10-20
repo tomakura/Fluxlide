@@ -1,7 +1,6 @@
 # Fluxlide release pipeline
 # This workflow intentionally runs only after a version tag (vX.Y.Z) is pushed.
-# The application sources (package.json, package-lock.json and src-tauri/) must
-# be scaffolded before the first tag. The workflow has not yet been tested.
+# The workflow has not yet been tested with a real tag.
 name: Release
 
 on:
