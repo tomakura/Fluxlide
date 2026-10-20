@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use fluxlide_engine::{FrameOutcome, Presenter, Renderer};
 use serde::Serialize;
-use tauri::{AppHandle, Manager, PhysicalPosition, State, WindowEvent};
+use tauri::{AppHandle, Manager, State, WindowEvent};
 use tauri_plugin_global_shortcut::{
     Code, GlobalShortcutExt, Shortcut, ShortcutEvent, ShortcutState,
 };
@@ -203,6 +203,7 @@ pub async fn start_presentation(
         .resizable(false)
         .skip_taskbar(true)
         .focused(true)
+        // macOS positions windows in global points: physical / that display's scale.
         .position(f64::from(position.x) / scale, f64::from(position.y) / scale)
         .inner_size(
             f64::from(size.width) / scale,
@@ -210,12 +211,15 @@ pub async fn start_presentation(
         )
         .build()
         .map_err(|err| err.to_string())?;
+    // Not `set_fullscreen_on_monitor`: it matches monitors by physical position,
+    // and on macOS with mixed scale factors the physical ranges of displays
+    // overlap, so it can pick the main display. Instead, move the window onto
+    // the target display and make it fullscreen on the display it is on.
+    #[cfg(not(target_os = "macos"))]
     window
-        .set_fullscreen_on_monitor(PhysicalPosition::new(
-            f64::from(position.x),
-            f64::from(position.y),
-        ))
+        .set_position(tauri::PhysicalPosition::new(position.x, position.y))
         .map_err(|err| err.to_string())?;
+    window.set_fullscreen(true).map_err(|err| err.to_string())?;
     let _ = window.set_cursor_visible(false);
 
     // Surfaces must be created on the main thread (required by AppKit on macOS).
