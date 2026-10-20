@@ -1,0 +1,11 @@
+[package]
+name = "fluxlide-engine"
+description = "Fluxlide scene renderer shared by live playback and video export"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wgpu = "30"
+pollster = "1"

@@ -1,0 +1,405 @@
+//! Prototype of the presentation window: a native window without a webview,
+//! placed fullscreen on the chosen display and rendered by wgpu on its own
+//! thread while the management window stays usable.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+use fluxlide_engine::{FrameOutcome, Presenter, Renderer};
+use serde::Serialize;
+use tauri::{AppHandle, Manager, State, WindowEvent};
+use tauri_plugin_global_shortcut::{
+    Code, GlobalShortcutExt, Shortcut, ShortcutEvent, ShortcutState,
+};
+
+const WINDOW_LABEL: &str = "presenter";
+
+/// The presentation window has no webview, so it receives no key events.
+/// Esc is registered as a global shortcut while that window is in front:
+/// from the start of a presentation (macOS reports no focus event while the
+/// window moves into its fullscreen space) until it or the main window
+/// reports a focus change.
+fn escape_shortcut() -> Shortcut {
+    Shortcut::new(None, Code::Escape)
+}
+
+pub fn set_escape_enabled(app: &AppHandle, enabled: bool) {
+    let shortcuts = app.global_shortcut();
+    let registered = shortcuts.is_registered(escape_shortcut());
+    if enabled && !registered {
+        let _ = shortcuts.register(escape_shortcut());
+    } else if !enabled && registered {
+        let _ = shortcuts.unregister(escape_shortcut());
+    }
+}
+
+/// Global shortcut handler: Esc in the presentation window ends the presentation.
+pub fn handle_shortcut(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEvent) {
+    if event.state() != ShortcutState::Pressed || *shortcut != escape_shortcut() {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Some(active) = app.state::<PresentationState>().take_active() {
+            shut_down(active).await;
+        }
+    });
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonitorInfo {
+    index: usize,
+    name: String,
+    width: u32,
+    height: u32,
+    x: i32,
+    y: i32,
+    scale_factor: f64,
+    is_primary: bool,
+    has_main_window: bool,
+}
+
+/// Frame timing measured on the render thread.
+#[derive(Default, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameStats {
+    frames: u64,
+    /// Frames presented during the last full second.
+    fps: f64,
+    /// Longest gap between two presented frames during the last full second.
+    worst_frame_ms: f64,
+    /// Frames that took more than 1.5 times the average interval.
+    slow_frames: u64,
+    skipped: u64,
+    width: u32,
+    height: u32,
+    last_error: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PresentationStatus {
+    running: bool,
+    monitor_name: Option<String>,
+    stats: FrameStats,
+}
+
+struct Active {
+    window: tauri::Window,
+    monitor_name: String,
+    stop: Arc<AtomicBool>,
+    stats: Arc<Mutex<FrameStats>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+#[derive(Default)]
+pub struct PresentationState {
+    renderer: Mutex<Option<Arc<Renderer>>>,
+    active: Mutex<Option<Active>>,
+}
+
+impl PresentationState {
+    pub async fn renderer(&self) -> Result<Arc<Renderer>, String> {
+        if let Some(renderer) = self.renderer.lock().unwrap().as_ref() {
+            return Ok(renderer.clone());
+        }
+        let renderer = Arc::new(Renderer::new().await.map_err(|err| err.to_string())?);
+        Ok(self
+            .renderer
+            .lock()
+            .unwrap()
+            .get_or_insert(renderer)
+            .clone())
+    }
+
+    fn take_active(&self) -> Option<Active> {
+        self.active.lock().unwrap().take()
+    }
+
+    fn status(&self) -> PresentationStatus {
+        let active = self.active.lock().unwrap();
+        match active.as_ref() {
+            Some(active) => PresentationStatus {
+                running: !active.stop.load(Ordering::Relaxed),
+                monitor_name: Some(active.monitor_name.clone()),
+                stats: active.stats.lock().unwrap().clone(),
+            },
+            None => PresentationStatus {
+                running: false,
+                monitor_name: None,
+                stats: FrameStats::default(),
+            },
+        }
+    }
+}
+
+fn monitor_name(monitor: &tauri::Monitor, index: usize) -> String {
+    monitor
+        .name()
+        .cloned()
+        .unwrap_or_else(|| format!("画面{}", index + 1))
+}
+
+#[tauri::command]
+pub fn list_monitors(app: AppHandle) -> Result<Vec<MonitorInfo>, String> {
+    let monitors = app.available_monitors().map_err(|err| err.to_string())?;
+    let primary = app.primary_monitor().ok().flatten();
+    let main_monitor = app
+        .get_webview_window("main")
+        .and_then(|window| window.current_monitor().ok().flatten());
+    let same = |a: &tauri::Monitor, b: &Option<tauri::Monitor>| {
+        b.as_ref()
+            .is_some_and(|b| a.position() == b.position() && a.size() == b.size())
+    };
+    Ok(monitors
+        .iter()
+        .enumerate()
+        .map(|(index, monitor)| MonitorInfo {
+            index,
+            name: monitor_name(monitor, index),
+            width: monitor.size().width,
+            height: monitor.size().height,
+            x: monitor.position().x,
+            y: monitor.position().y,
+            scale_factor: monitor.scale_factor(),
+            is_primary: same(monitor, &primary),
+            has_main_window: same(monitor, &main_monitor),
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub fn presentation_status(state: State<'_, PresentationState>) -> PresentationStatus {
+    state.status()
+}
+
+#[tauri::command]
+pub async fn start_presentation(
+    app: AppHandle,
+    state: State<'_, PresentationState>,
+    monitor_index: usize,
+) -> Result<PresentationStatus, String> {
+    if let Some(active) = state.take_active() {
+        shut_down(active).await;
+    }
+
+    let renderer = state.renderer().await?;
+    let monitors = app.available_monitors().map_err(|err| err.to_string())?;
+    let monitor = monitors
+        .get(monitor_index)
+        .ok_or_else(|| "指定した画面が見つかりません。".to_string())?;
+    let name = monitor_name(monitor, monitor_index);
+    let scale = monitor.scale_factor();
+    let position = *monitor.position();
+    let size = *monitor.size();
+
+    // Window creation must not run in a synchronous command (WebView2 deadlock on Windows).
+    let window = tauri::window::WindowBuilder::new(&app, WINDOW_LABEL)
+        .title("Fluxlide 上映")
+        .decorations(false)
+        .resizable(false)
+        .skip_taskbar(true)
+        .focused(true)
+        // macOS positions windows in global points: physical / that display's scale.
+        .position(f64::from(position.x) / scale, f64::from(position.y) / scale)
+        .inner_size(
+            f64::from(size.width) / scale,
+            f64::from(size.height) / scale,
+        )
+        .build()
+        .map_err(|err| err.to_string())?;
+    // Any failure after this point must close the window and release Esc,
+    // otherwise the "presenter" label stays taken until the app restarts.
+    match run_presentation(&app, &window, renderer, position, size).await {
+        Ok((stop, stats, thread)) => {
+            *state.active.lock().unwrap() = Some(Active {
+                window,
+                monitor_name: name,
+                stop,
+                stats,
+                thread: Some(thread),
+            });
+            Ok(state.status())
+        }
+        Err(err) => {
+            set_escape_enabled(&app, false);
+            let _ = window.destroy();
+            Err(err)
+        }
+    }
+}
+
+type RunningPresentation = (Arc<AtomicBool>, Arc<Mutex<FrameStats>>, JoinHandle<()>);
+
+/// Makes `window` fullscreen, attaches a surface and starts the render thread.
+async fn run_presentation(
+    app: &AppHandle,
+    window: &tauri::Window,
+    renderer: Arc<Renderer>,
+    position: tauri::PhysicalPosition<i32>,
+    size: tauri::PhysicalSize<u32>,
+) -> Result<RunningPresentation, String> {
+    // Not `set_fullscreen_on_monitor`: it matches monitors by physical position,
+    // and on macOS with mixed scale factors the physical ranges of displays
+    // overlap, so it can pick the main display. Instead, move the window onto
+    // the target display and make it fullscreen on the display it is on.
+    // macOS already placed the window in the builder (logical position).
+    #[cfg(target_os = "macos")]
+    let _ = position;
+    #[cfg(not(target_os = "macos"))]
+    window
+        .set_position(position)
+        .map_err(|err| err.to_string())?;
+    window.set_fullscreen(true).map_err(|err| err.to_string())?;
+    let _ = window.set_cursor_visible(false);
+
+    // Surfaces must be created on the main thread (required by AppKit on macOS).
+    let (tx, rx) = mpsc::channel();
+    {
+        let window = window.clone();
+        let renderer = renderer.clone();
+        app.run_on_main_thread(move || {
+            let size = window.inner_size().unwrap_or(size);
+            let _ = tx.send(Presenter::new(
+                &renderer,
+                window.clone(),
+                size.width,
+                size.height,
+            ));
+        })
+        .map_err(|err| err.to_string())?;
+    }
+    let presenter = match tauri::async_runtime::spawn_blocking(move || rx.recv()).await {
+        Ok(Ok(result)) => result.map_err(|err| err.to_string())?,
+        _ => return Err("上映ウィンドウを準備できませんでした。".to_string()),
+    };
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let stats = Arc::new(Mutex::new(FrameStats::default()));
+    let pending_size = Arc::new(Mutex::new(None::<(u32, u32)>));
+    {
+        let stop = stop.clone();
+        let pending_size = pending_size.clone();
+        let app = app.clone();
+        window.on_window_event(move |event| match event {
+            WindowEvent::Focused(focused) => set_escape_enabled(&app, *focused),
+            WindowEvent::Resized(size) => {
+                *pending_size.lock().unwrap() = Some((size.width, size.height));
+            }
+            WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
+                *pending_size.lock().unwrap() = Some((new_inner_size.width, new_inner_size.height));
+            }
+            WindowEvent::Destroyed => {
+                set_escape_enabled(&app, false);
+                stop.store(true, Ordering::Relaxed);
+            }
+            _ => {}
+        });
+    }
+
+    set_escape_enabled(app, true);
+
+    let thread = {
+        let stop = stop.clone();
+        let stats = stats.clone();
+        std::thread::Builder::new()
+            .name("fluxlide-presenter".into())
+            .spawn(move || render_loop(renderer, presenter, stop, stats, pending_size))
+            .map_err(|err| err.to_string())?
+    };
+    Ok((stop, stats, thread))
+}
+
+#[tauri::command]
+pub async fn stop_presentation(
+    state: State<'_, PresentationState>,
+) -> Result<PresentationStatus, String> {
+    if let Some(active) = state.take_active() {
+        shut_down(active).await;
+    }
+    Ok(state.status())
+}
+
+/// Stops the render thread and closes the window. Used when the app exits.
+pub fn stop_blocking(state: &PresentationState) {
+    if let Some(mut active) = state.take_active() {
+        active.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = active.thread.take() {
+            let _ = thread.join();
+        }
+        set_escape_enabled(active.window.app_handle(), false);
+        let _ = active.window.destroy();
+    }
+}
+
+async fn shut_down(mut active: Active) {
+    active.stop.store(true, Ordering::Relaxed);
+    if let Some(thread) = active.thread.take() {
+        let _ = tauri::async_runtime::spawn_blocking(move || thread.join()).await;
+    }
+    set_escape_enabled(active.window.app_handle(), false);
+    let _ = active.window.destroy();
+}
+
+fn render_loop(
+    renderer: Arc<Renderer>,
+    mut presenter: Presenter,
+    stop: Arc<AtomicBool>,
+    stats: Arc<Mutex<FrameStats>>,
+    pending_size: Arc<Mutex<Option<(u32, u32)>>>,
+) {
+    let start = Instant::now();
+    let mut last_frame: Option<Instant> = None;
+    let mut window_start = start;
+    let mut window_frames = 0u32;
+    let mut window_worst = Duration::ZERO;
+    let mut average_interval: Option<Duration> = None;
+
+    while !stop.load(Ordering::Relaxed) {
+        if let Some((width, height)) = pending_size.lock().unwrap().take() {
+            presenter.resize(&renderer, width, height);
+        }
+
+        match presenter.render(&renderer, start.elapsed().as_secs_f32()) {
+            Ok(FrameOutcome::Presented) => {
+                let now = Instant::now();
+                let mut stats = stats.lock().unwrap();
+                stats.frames += 1;
+                (stats.width, stats.height) = presenter.size();
+                if let Some(previous) = last_frame {
+                    let interval = now - previous;
+                    window_worst = window_worst.max(interval);
+                    if average_interval.is_some_and(|avg| interval > avg.mul_f64(1.5)) {
+                        stats.slow_frames += 1;
+                    }
+                }
+                last_frame = Some(now);
+                window_frames += 1;
+
+                let elapsed = now - window_start;
+                if elapsed >= Duration::from_secs(1) {
+                    stats.fps = f64::from(window_frames) / elapsed.as_secs_f64();
+                    stats.worst_frame_ms = window_worst.as_secs_f64() * 1000.0;
+                    average_interval = Some(elapsed / window_frames.max(1));
+                    window_start = now;
+                    window_frames = 0;
+                    window_worst = Duration::ZERO;
+                }
+            }
+            Ok(FrameOutcome::Skipped) => {
+                stats.lock().unwrap().skipped += 1;
+                // The next frame after a pause is not a stutter.
+                last_frame = None;
+                std::thread::sleep(Duration::from_millis(16));
+            }
+            Err(err) => {
+                stats.lock().unwrap().last_error = Some(err.to_string());
+                last_frame = None;
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+}
