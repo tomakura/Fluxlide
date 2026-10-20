@@ -6,7 +6,7 @@
 //! the render thread uploads the frame due at the current time. `ffprobe`
 //! provides the duration so a crossfade can start before the video ends.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
@@ -63,11 +63,15 @@ impl Ffmpeg {
         Ok(text.lines().next().unwrap_or_default().to_string())
     }
 
-    /// Reads the duration and frame rate of the first video stream.
+    /// Reads the duration and frame rate of the first video stream and
+    /// whether the file has sound.
     pub fn probe(&self, path: &Path) -> Result<VideoInfo, EngineError> {
         let output = command(&self.ffprobe)
-            .args(["-v", "error", "-select_streams", "v:0", "-show_entries"])
-            .arg("stream=avg_frame_rate,r_frame_rate,duration:format=duration")
+            .args(["-v", "error", "-show_entries"])
+            .arg(
+                "stream=codec_type,avg_frame_rate,r_frame_rate,start_time,duration\
+                 :format=start_time,duration",
+            )
             .args(["-of", "flat"])
             .arg(path)
             .output()
@@ -105,7 +109,7 @@ fn search_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-fn command(program: &Path) -> Command {
+pub(super) fn command(program: &Path) -> Command {
     #[allow(unused_mut)]
     let mut command = Command::new(program);
     #[cfg(windows)]
@@ -121,47 +125,64 @@ fn command(program: &Path) -> Command {
 /// What `ffprobe` reports about a video.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VideoInfo {
-    /// Length in seconds, if the container states it.
+    /// Seconds from the start of the file to the end of the picture, if known.
+    /// Decoding starts at the start of the file, so this is how long it plays.
     pub duration: Option<f64>,
     /// Rate the video is decoded at, as a fraction, capped at 60 fps.
     pub frame_rate: (u32, u32),
+    pub has_audio: bool,
 }
 
 fn parse_probe(text: &str) -> Option<VideoInfo> {
-    let mut avg_rate = None;
-    let mut real_rate = None;
-    let mut stream_duration = None;
-    let mut format_duration = None;
-    let mut has_stream = false;
+    // Keys look like `streams.stream.1.codec_type` and `format.duration`.
+    let mut streams: BTreeMap<usize, HashMap<&str, &str>> = BTreeMap::new();
+    let mut format = HashMap::new();
     for line in text.lines() {
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
         let value = value.trim().trim_matches('"');
-        if key.starts_with("streams.stream.0.") {
-            has_stream = true;
-        }
-        match key {
-            "streams.stream.0.avg_frame_rate" => avg_rate = parse_ratio(value),
-            "streams.stream.0.r_frame_rate" => real_rate = parse_ratio(value),
-            "streams.stream.0.duration" => stream_duration = parse_secs(value),
-            "format.duration" => format_duration = parse_secs(value),
-            _ => {}
+        if let Some(field) = key.strip_prefix("format.") {
+            format.insert(field, value);
+        } else if let Some((index, field)) = key
+            .strip_prefix("streams.stream.")
+            .and_then(|rest| rest.split_once('.'))
+            && let Ok(index) = index.parse()
+        {
+            streams.entry(index).or_default().insert(field, value);
         }
     }
-    if !has_stream {
-        return None;
-    }
-    let (num, den) = avg_rate.or(real_rate).unwrap_or((30, 1));
+    let kind = |stream: &&HashMap<&str, &str>, kind| stream.get("codec_type") == Some(&kind);
+    let video = streams.values().find(|stream| kind(stream, "video"))?;
+    let has_audio = streams.values().any(|stream| kind(&stream, "audio"));
+
+    let (num, den) = parse_ratio(field(video, "avg_frame_rate"))
+        .or_else(|| parse_ratio(field(video, "r_frame_rate")))
+        .unwrap_or((30, 1));
     let frame_rate = if u64::from(num) > u64::from(MAX_FRAME_RATE) * u64::from(den) {
         (MAX_FRAME_RATE, 1)
     } else {
         (num, den)
     };
+    let lead_in = match (
+        parse_time(field(video, "start_time")),
+        parse_time(field(&format, "start_time")),
+    ) {
+        (Some(video_start), Some(file_start)) => (video_start - file_start).max(0.0),
+        _ => 0.0,
+    };
+    let duration = parse_secs(field(video, "duration"))
+        .map(|secs| secs + lead_in)
+        .or_else(|| parse_secs(field(&format, "duration")));
     Some(VideoInfo {
-        duration: stream_duration.or(format_duration),
+        duration,
         frame_rate,
+        has_audio,
     })
+}
+
+fn field<'a>(fields: &HashMap<&str, &'a str>, name: &str) -> &'a str {
+    fields.get(name).copied().unwrap_or("")
 }
 
 /// Parses "30000/1001"; rejects zero and unknown ("0/0") rates.
@@ -172,6 +193,12 @@ fn parse_ratio(value: &str) -> Option<(u32, u32)> {
     (num > 0 && den > 0).then_some((num, den))
 }
 
+/// Parses a timestamp in seconds, which may be zero or negative.
+fn parse_time(value: &str) -> Option<f64> {
+    value.parse::<f64>().ok().filter(|secs| secs.is_finite())
+}
+
+/// Parses a length in seconds; rejects zero and unknown ("N/A") values.
 fn parse_secs(value: &str) -> Option<f64> {
     value
         .parse::<f64>()
@@ -335,7 +362,7 @@ fn read_frames(
     }
 }
 
-fn collect_log(pipe: impl Read, lines: &Mutex<VecDeque<String>>) {
+pub(super) fn collect_log(pipe: impl Read, lines: &Mutex<VecDeque<String>>) {
     for line in BufReader::new(pipe).lines() {
         let Ok(line) = line else { return };
         let mut lines = lines.lock().unwrap();
@@ -346,7 +373,11 @@ fn collect_log(pipe: impl Read, lines: &Mutex<VecDeque<String>>) {
     }
 }
 
-fn decode_error(path: &Path, reason: &str, stderr: &Mutex<VecDeque<String>>) -> EngineError {
+pub(super) fn decode_error(
+    path: &Path,
+    reason: &str,
+    stderr: &Mutex<VecDeque<String>>,
+) -> EngineError {
     let log = stderr.lock().unwrap();
     let detail = if log.is_empty() {
         reason.to_string()
@@ -373,6 +404,7 @@ pub struct VideoPlayer {
     decoder: VideoDecoder,
     texture: MediaTexture,
     duration: Option<f64>,
+    has_audio: bool,
     /// Index of the next frame to take from the decoder.
     next_index: u64,
     ended: bool,
@@ -409,6 +441,7 @@ impl VideoPlayer {
             decoder,
             texture,
             duration: info.duration,
+            has_audio: info.has_audio,
             next_index: 1,
             ended: false,
         })
@@ -452,6 +485,11 @@ impl VideoPlayer {
         self.duration
     }
 
+    /// Whether the file has a sound stream.
+    pub fn has_audio(&self) -> bool {
+        self.has_audio
+    }
+
     /// True once every decoded frame has been shown.
     pub fn has_ended(&self) -> bool {
         self.ended
@@ -464,33 +502,45 @@ mod tests {
 
     #[test]
     fn probe_output_is_parsed() {
-        let text = "streams.stream.0.r_frame_rate=\"30/1\"\n\
+        let text = "streams.stream.0.codec_type=\"video\"\n\
+                    streams.stream.0.r_frame_rate=\"30/1\"\n\
                     streams.stream.0.avg_frame_rate=\"30000/1001\"\n\
+                    streams.stream.0.start_time=\"0.000000\"\n\
                     streams.stream.0.duration=\"8.008000\"\n\
+                    streams.stream.1.codec_type=\"audio\"\n\
+                    streams.stream.1.r_frame_rate=\"0/0\"\n\
+                    streams.stream.1.start_time=\"-0.021333\"\n\
+                    streams.stream.1.duration=\"8.100000\"\n\
+                    format.start_time=\"-0.021333\"\n\
                     format.duration=\"8.100000\"\n";
-        assert_eq!(
-            parse_probe(text),
-            Some(VideoInfo {
-                duration: Some(8.008),
-                frame_rate: (30000, 1001),
-            })
-        );
+        let info = parse_probe(text).unwrap();
+        // Decoding starts at the file start, 0.021 s before the first picture.
+        assert!((info.duration.unwrap() - 8.029333).abs() < 1e-6);
+        assert_eq!(info.frame_rate, (30000, 1001));
+        assert!(info.has_audio);
     }
 
     #[test]
     fn probe_falls_back_and_caps_rate() {
-        let text = "streams.stream.0.r_frame_rate=\"240/1\"\n\
-                    streams.stream.0.avg_frame_rate=\"0/0\"\n\
-                    streams.stream.0.duration=\"N/A\"\n\
+        let text = "streams.stream.0.codec_type=\"audio\"\n\
+                    streams.stream.1.codec_type=\"video\"\n\
+                    streams.stream.1.r_frame_rate=\"240/1\"\n\
+                    streams.stream.1.avg_frame_rate=\"0/0\"\n\
+                    streams.stream.1.start_time=\"N/A\"\n\
+                    streams.stream.1.duration=\"N/A\"\n\
                     format.duration=\"3.5\"\n";
         assert_eq!(
             parse_probe(text),
             Some(VideoInfo {
                 duration: Some(3.5),
                 frame_rate: (60, 1),
+                has_audio: true,
             })
         );
-        assert_eq!(parse_probe("format.duration=\"3.5\"\n"), None);
+        assert_eq!(
+            parse_probe("streams.stream.0.codec_type=\"audio\"\nformat.duration=\"3.5\"\n"),
+            None
+        );
     }
 
     #[test]

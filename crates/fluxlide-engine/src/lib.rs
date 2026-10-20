@@ -7,6 +7,7 @@
 use std::fmt;
 use std::sync::mpsc;
 
+pub mod audio;
 pub mod media;
 mod presenter;
 mod slideshow;
@@ -43,6 +44,7 @@ pub enum EngineError {
     Readback(String),
     Surface(String),
     Media(String),
+    Audio(String),
 }
 
 impl fmt::Display for EngineError {
@@ -53,6 +55,7 @@ impl fmt::Display for EngineError {
             Self::Readback(msg) => write!(f, "failed to read frame from GPU: {msg}"),
             Self::Surface(msg) => write!(f, "window surface error: {msg}"),
             Self::Media(msg) => write!(f, "media error: {msg}"),
+            Self::Audio(msg) => write!(f, "audio error: {msg}"),
         }
     }
 }

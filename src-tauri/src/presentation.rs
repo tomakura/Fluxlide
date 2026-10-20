@@ -2,7 +2,7 @@
 //! placed fullscreen on the chosen display and rendered by wgpu on its own
 //! thread while the management window stays usable. It plays the chosen
 //! photos and videos in a loop with crossfades, or a test pattern when no
-//! files are chosen.
+//! files are chosen. Video sound goes to the default audio output.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use fluxlide_engine::audio::{AudioOutput, AudioStats};
 use fluxlide_engine::{
     FrameOutcome, Presenter, Renderer, Scene, Slideshow, SlideshowConfig, SlideshowStats,
 };
@@ -100,10 +101,52 @@ pub struct PlaybackStats {
     video_skipped_frames: u64,
     failed_items: u64,
     last_error: Option<String>,
+    audio: Option<SoundStats>,
+    /// Why the audio output could not be opened, if it could not.
+    audio_error: Option<String>,
+}
+
+/// Audio output measurements shown in the management window.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SoundStats {
+    device: String,
+    sample_rate: u32,
+    output_latency_ms: f64,
+    offset_ms: f64,
+    max_offset_ms: f64,
+    resyncs: u64,
+    underruns: u64,
+    last_error: Option<String>,
+}
+
+impl From<AudioStats> for SoundStats {
+    fn from(stats: AudioStats) -> Self {
+        let AudioStats {
+            device,
+            sample_rate,
+            output_latency_ms,
+            offset_ms,
+            max_offset_ms,
+            resyncs,
+            underruns,
+            last_error,
+        } = stats;
+        Self {
+            device,
+            sample_rate,
+            output_latency_ms,
+            offset_ms,
+            max_offset_ms,
+            resyncs,
+            underruns,
+            last_error,
+        }
+    }
 }
 
 impl PlaybackStats {
-    fn from_slideshow(show: &Slideshow) -> Self {
+    fn from_slideshow(show: &Slideshow, audio_error: Option<&str>) -> Self {
         let SlideshowStats {
             current,
             transitions,
@@ -129,6 +172,8 @@ impl PlaybackStats {
             video_skipped_frames,
             failed_items,
             last_error,
+            audio: show.audio_stats().map(SoundStats::from),
+            audio_error: audio_error.map(str::to_string),
         }
     }
 }
@@ -418,6 +463,17 @@ fn render_loop(
     pending_size: Arc<Mutex<Option<(u32, u32)>>>,
 ) {
     let start = Instant::now();
+    // The output stays on this thread and shares the playback clock (`start`).
+    let (_audio, audio_error) = match slideshow.as_mut().map(|_| AudioOutput::open(start)) {
+        Some(Ok(output)) => {
+            if let Some(show) = slideshow.as_mut() {
+                show.set_audio(output.mixer());
+            }
+            (Some(output), None)
+        }
+        Some(Err(err)) => (None, Some(err.to_string())),
+        None => (None, None),
+    };
     let mut last_frame: Option<Instant> = None;
     let mut window_start = start;
     let mut window_frames = 0u32;
@@ -443,7 +499,8 @@ fn render_loop(
             ),
         };
         if let Some(show) = &slideshow {
-            stats.lock().unwrap().playback = Some(PlaybackStats::from_slideshow(show));
+            stats.lock().unwrap().playback =
+                Some(PlaybackStats::from_slideshow(show, audio_error.as_deref()));
         }
 
         match outcome {

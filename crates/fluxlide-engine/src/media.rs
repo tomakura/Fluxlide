@@ -7,6 +7,7 @@ use image::{DynamicImage, ImageDecoder, ImageReader, metadata::Orientation};
 
 use crate::{EngineError, Renderer};
 
+pub mod audio;
 pub mod video;
 
 /// What a file is played as, decided by its extension.

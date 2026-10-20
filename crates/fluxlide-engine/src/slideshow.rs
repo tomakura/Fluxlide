@@ -6,12 +6,18 @@
 //! ready, so the output never falls back to black between items. If it is
 //! not ready in time, the current item stays (a finished video holds its
 //! last frame) and the delay is counted in [`SlideshowStats`].
+//!
+//! With an [`AudioMixer`] attached, a video's sound starts with its picture
+//! on the same playback clock and its volume follows the picture's opacity
+//! through crossfades.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Instant;
 
+use crate::audio::{AudioFormat, AudioMixer, AudioStats, VoiceHandle};
+use crate::media::audio::AudioTrack;
 use crate::media::video::{Ffmpeg, VideoPlayer};
 use crate::media::{MediaKind, MediaTexture, load_image};
 use crate::presenter::Layer;
@@ -55,21 +61,25 @@ pub struct SlideshowStats {
 
 enum Prepared {
     Image(MediaTexture),
-    Video(VideoPlayer),
+    Video {
+        player: VideoPlayer,
+        /// Present when the file has sound and an output is attached.
+        audio: Option<AudioTrack>,
+    },
 }
 
 impl Prepared {
     fn texture(&self) -> &MediaTexture {
         match self {
             Self::Image(texture) => texture,
-            Self::Video(player) => player.texture(),
+            Self::Video { player, .. } => player.texture(),
         }
     }
 
     fn duration(&self, config: &SlideshowConfig) -> Option<f64> {
         match self {
             Self::Image(_) => Some(config.image_secs),
-            Self::Video(player) => player.duration(),
+            Self::Video { player, .. } => player.duration(),
         }
     }
 }
@@ -79,6 +89,8 @@ struct Showing {
     media: Prepared,
     /// Playback time at which this item started fading in.
     started: f64,
+    /// The item's sound while it plays.
+    voice: Option<VoiceHandle>,
 }
 
 struct Loading {
@@ -109,6 +121,7 @@ pub struct Slideshow {
     waiting_since: Option<f64>,
     now: f64,
     stats: SlideshowStats,
+    audio: Option<AudioMixer>,
 }
 
 impl Slideshow {
@@ -136,7 +149,19 @@ impl Slideshow {
             waiting_since: None,
             now: 0.0,
             stats: SlideshowStats::default(),
+            audio: None,
         }
+    }
+
+    /// Plays the sound of videos through `mixer`. `mixer` must count
+    /// playback time from the same instant as the times given to
+    /// [`Slideshow::update`]. Items loaded before this stay silent.
+    pub fn set_audio(&mut self, mixer: AudioMixer) {
+        self.audio = Some(mixer);
+    }
+
+    pub fn audio_stats(&self) -> Option<AudioStats> {
+        self.audio.as_ref().map(AudioMixer::stats)
     }
 
     pub fn stats(&self) -> &SlideshowStats {
@@ -150,13 +175,25 @@ impl Slideshow {
     }
 
     /// Advances playback to `now` seconds: starts loading, starts and ends
-    /// crossfades, and uploads the video frames due at this time.
+    /// crossfades, uploads the video frames due at this time and sets the
+    /// volume of each sound to its picture's opacity.
     pub fn update(&mut self, now: f64) {
+        self.advance(now);
+        let progress = self.fade_progress();
+        if let Some(voice) = self.outgoing.as_ref().and_then(|s| s.voice.as_ref()) {
+            voice.set_gain(1.0 - progress);
+        }
+        if let Some(voice) = self.current.as_ref().and_then(|s| s.voice.as_ref()) {
+            voice.set_gain(progress);
+        }
+    }
+
+    fn advance(&mut self, now: f64) {
         self.now = now;
         self.poll_loading();
 
         for showing in self.current.iter_mut().chain(self.outgoing.iter_mut()) {
-            if let Prepared::Video(player) = &mut showing.media {
+            if let Prepared::Video { player, .. } = &mut showing.media {
                 let update = player.update(&self.renderer, now - showing.started);
                 self.stats.video_late_frames += u64::from(update.late);
                 self.stats.video_skipped_frames += u64::from(update.skipped);
@@ -189,7 +226,7 @@ impl Slideshow {
                 fade.min(duration / 2.0)
             });
         let due = match &current.media {
-            Prepared::Video(player) if player.duration().is_none() => {
+            Prepared::Video { player, .. } if player.duration().is_none() => {
                 // Without a known length, fade once the last frame is out.
                 if player.has_ended() {
                     now
@@ -215,10 +252,7 @@ impl Slideshow {
 
     /// Layers to draw for the time given to the last [`Slideshow::update`].
     pub fn layers(&self) -> Vec<Layer<'_>> {
-        let progress = match &self.fade {
-            Some(fade) if fade.secs > 0.0 => ((self.now - fade.start) / fade.secs).clamp(0.0, 1.0),
-            _ => 1.0,
-        } as f32;
+        let progress = self.fade_progress();
         let mut layers = Vec::with_capacity(2);
         if let Some(outgoing) = &self.outgoing {
             layers.push(Layer {
@@ -235,15 +269,38 @@ impl Slideshow {
         layers
     }
 
+    /// How far the current crossfade has gone, from 0 to 1 (1 when none).
+    fn fade_progress(&self) -> f32 {
+        let progress = match &self.fade {
+            Some(fade) if fade.secs > 0.0 => ((self.now - fade.start) / fade.secs).clamp(0.0, 1.0),
+            _ => 1.0,
+        };
+        progress as f32
+    }
+
     fn begin_transition(&mut self, fade_secs: f64) {
-        let Some((index, media)) = self.ready.take() else {
+        let Some((index, mut media)) = self.ready.take() else {
             return;
+        };
+        // The sound starts at the same playback time as the picture, silent
+        // until `update` raises it with the fade.
+        let voice = match (&mut media, &self.audio) {
+            (
+                Prepared::Video {
+                    audio: Some(track), ..
+                },
+                Some(mixer),
+            ) => track
+                .take_samples()
+                .map(|(samples, finished)| mixer.play(samples, finished, self.now, 0.0)),
+            _ => None,
         };
         self.outgoing = self.current.take();
         self.current = Some(Showing {
             index,
             media,
             started: self.now,
+            voice,
         });
         self.fade = Some(Fade {
             start: self.now,
@@ -297,11 +354,12 @@ impl Slideshow {
         let renderer = self.renderer.clone();
         let ffmpeg = self.ffmpeg.clone();
         let output_size = self.output_size;
+        let audio = self.audio.as_ref().map(AudioMixer::format);
         let (tx, result) = mpsc::channel();
         let spawned = std::thread::Builder::new()
             .name("fluxlide-preload".into())
             .spawn(move || {
-                let _ = tx.send(prepare(&renderer, ffmpeg, &path, output_size));
+                let _ = tx.send(prepare(&renderer, ffmpeg, &path, output_size, audio));
             });
         match spawned {
             Ok(_) => {
@@ -325,12 +383,20 @@ fn prepare(
     ffmpeg: Result<Ffmpeg, String>,
     path: &Path,
     output_size: (u32, u32),
+    audio: Option<AudioFormat>,
 ) -> Result<Prepared, EngineError> {
     match MediaKind::from_path(path) {
         Some(MediaKind::Image) => load_image(renderer, path, output_size).map(Prepared::Image),
         Some(MediaKind::Video) => {
             let ffmpeg = ffmpeg.map_err(EngineError::Media)?;
-            VideoPlayer::open(renderer, &ffmpeg, path, output_size).map(Prepared::Video)
+            let player = VideoPlayer::open(renderer, &ffmpeg, path, output_size)?;
+            let audio = match audio {
+                Some(format) if player.has_audio() => {
+                    Some(AudioTrack::open(&ffmpeg, path, format)?)
+                }
+                _ => None,
+            };
+            Ok(Prepared::Video { player, audio })
         }
         None => Err(EngineError::Media(format!(
             "unsupported file type: {}",

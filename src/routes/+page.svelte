@@ -26,6 +26,17 @@
     error: string | null;
   };
 
+  type SoundStats = {
+    device: string;
+    sampleRate: number;
+    outputLatencyMs: number;
+    offsetMs: number;
+    maxOffsetMs: number;
+    resyncs: number;
+    underruns: number;
+    lastError: string | null;
+  };
+
   type PlaybackStats = {
     currentIndex: number | null;
     currentFile: string | null;
@@ -37,6 +48,8 @@
     videoSkippedFrames: number;
     failedItems: number;
     lastError: string | null;
+    audio: SoundStats | null;
+    audioError: string | null;
   };
 
   type FrameStats = {
@@ -197,7 +210,7 @@
     <div class="media">
       <div class="media-head">
         <h3>上映する素材</h3>
-        <p>写真（JPEG・PNG）は5秒ずつ、動画（MP4など）は最後まで流します。写真→動画→写真の順に並べると、切り替えを確かめられます。</p>
+        <p>写真（JPEG・PNG）は5秒ずつ、動画（MP4など）は音とともに最後まで流します。写真→動画→写真の順に並べると、切り替えを確かめられます。</p>
       </div>
       {#if files.length > 0}
         <ol class="files">
@@ -292,6 +305,22 @@
         </dl>
         {#if playback.lastError}
           <p class="error">素材のエラー: {playback.lastError}</p>
+        {/if}
+        {#if playback.audio}
+          {@const audio = playback.audio}
+          <dl class="stats">
+            <div><dt>音声の出力先</dt><dd class="file">{audio.device}（{(audio.sampleRate / 1000).toFixed(1)} kHz）</dd></div>
+            <div><dt>出力の遅延</dt><dd class="num">{audio.outputLatencyMs.toFixed(1)} ms</dd></div>
+            <div><dt>映像に対する音のずれ</dt><dd class="num">{audio.offsetMs.toFixed(1)} ms</dd></div>
+            <div><dt>最大のずれ</dt><dd class="num">{audio.maxOffsetMs.toFixed(1)} ms</dd></div>
+            <div><dt>ずれの補正</dt><dd class="num">{audio.resyncs}</dd></div>
+            <div><dt>音の途切れ</dt><dd class="num">{audio.underruns}</dd></div>
+          </dl>
+          {#if audio.lastError}
+            <p class="error">音声出力のエラー: {audio.lastError}</p>
+          {/if}
+        {:else if playback.audioError}
+          <p class="error">音声を出力できません: {playback.audioError}</p>
         {/if}
       {/if}
     {/if}
