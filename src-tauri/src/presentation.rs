@@ -1,13 +1,18 @@
 //! Prototype of the presentation window: a native window without a webview,
 //! placed fullscreen on the chosen display and rendered by wgpu on its own
-//! thread while the management window stays usable.
+//! thread while the management window stays usable. It plays the chosen
+//! photos and videos in a loop with crossfades, or a test pattern when no
+//! files are chosen.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use fluxlide_engine::{FrameOutcome, Presenter, Renderer};
+use fluxlide_engine::{
+    FrameOutcome, Presenter, Renderer, Scene, Slideshow, SlideshowConfig, SlideshowStats,
+};
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State, WindowEvent};
 use tauri_plugin_global_shortcut::{
@@ -77,6 +82,55 @@ pub struct FrameStats {
     width: u32,
     height: u32,
     last_error: Option<String>,
+    /// Present while playing files rather than the test pattern.
+    playback: Option<PlaybackStats>,
+}
+
+/// Slideshow measurements shown in the management window.
+#[derive(Default, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackStats {
+    current_index: Option<usize>,
+    current_file: Option<String>,
+    transitions: u64,
+    late_transitions: u64,
+    longest_wait_ms: f64,
+    last_load_ms: f64,
+    video_late_frames: u64,
+    video_skipped_frames: u64,
+    failed_items: u64,
+    last_error: Option<String>,
+}
+
+impl PlaybackStats {
+    fn from_slideshow(show: &Slideshow) -> Self {
+        let SlideshowStats {
+            current,
+            transitions,
+            late_transitions,
+            longest_wait_ms,
+            last_load_ms,
+            video_late_frames,
+            video_skipped_frames,
+            failed_items,
+            last_error,
+        } = show.stats().clone();
+        Self {
+            current_index: current,
+            current_file: show
+                .current_path()
+                .and_then(|path| path.file_name())
+                .map(|name| name.to_string_lossy().into_owned()),
+            transitions,
+            late_transitions,
+            longest_wait_ms,
+            last_load_ms,
+            video_late_frames,
+            video_skipped_frames,
+            failed_items,
+            last_error,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -181,6 +235,7 @@ pub async fn start_presentation(
     app: AppHandle,
     state: State<'_, PresentationState>,
     monitor_index: usize,
+    files: Vec<PathBuf>,
 ) -> Result<PresentationStatus, String> {
     if let Some(active) = state.take_active() {
         shut_down(active).await;
@@ -213,7 +268,7 @@ pub async fn start_presentation(
         .map_err(|err| err.to_string())?;
     // Any failure after this point must close the window and release Esc,
     // otherwise the "presenter" label stays taken until the app restarts.
-    match run_presentation(&app, &window, renderer, position, size).await {
+    match run_presentation(&app, &window, renderer, position, size, files).await {
         Ok((stop, stats, thread)) => {
             *state.active.lock().unwrap() = Some(Active {
                 window,
@@ -241,6 +296,7 @@ async fn run_presentation(
     renderer: Arc<Renderer>,
     position: tauri::PhysicalPosition<i32>,
     size: tauri::PhysicalSize<u32>,
+    files: Vec<PathBuf>,
 ) -> Result<RunningPresentation, String> {
     // Not `set_fullscreen_on_monitor`: it matches monitors by physical position,
     // and on macOS with mixed scale factors the physical ranges of displays
@@ -302,12 +358,21 @@ async fn run_presentation(
 
     set_escape_enabled(app, true);
 
+    // Photos and videos are loaded at the display's full resolution.
+    let slideshow = (!files.is_empty()).then(|| {
+        Slideshow::new(
+            renderer.clone(),
+            files,
+            (size.width, size.height),
+            SlideshowConfig::default(),
+        )
+    });
     let thread = {
         let stop = stop.clone();
         let stats = stats.clone();
         std::thread::Builder::new()
             .name("fluxlide-presenter".into())
-            .spawn(move || render_loop(renderer, presenter, stop, stats, pending_size))
+            .spawn(move || render_loop(renderer, presenter, slideshow, stop, stats, pending_size))
             .map_err(|err| err.to_string())?
     };
     Ok((stop, stats, thread))
@@ -347,6 +412,7 @@ async fn shut_down(mut active: Active) {
 fn render_loop(
     renderer: Arc<Renderer>,
     mut presenter: Presenter,
+    mut slideshow: Option<Slideshow>,
     stop: Arc<AtomicBool>,
     stats: Arc<Mutex<FrameStats>>,
     pending_size: Arc<Mutex<Option<(u32, u32)>>>,
@@ -363,7 +429,24 @@ fn render_loop(
             presenter.resize(&renderer, width, height);
         }
 
-        match presenter.render(&renderer, start.elapsed().as_secs_f32()) {
+        let time = start.elapsed().as_secs_f64();
+        let outcome = match slideshow.as_mut() {
+            Some(show) => {
+                show.update(time);
+                presenter.render(&renderer, &Scene::Layers(&show.layers()))
+            }
+            None => presenter.render(
+                &renderer,
+                &Scene::TestPattern {
+                    time_secs: time as f32,
+                },
+            ),
+        };
+        if let Some(show) = &slideshow {
+            stats.lock().unwrap().playback = Some(PlaybackStats::from_slideshow(show));
+        }
+
+        match outcome {
             Ok(FrameOutcome::Presented) => {
                 let now = Instant::now();
                 let mut stats = stats.lock().unwrap();

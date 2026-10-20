@@ -53,6 +53,7 @@ Fluxlide（フラックスライド）は、写真・動画・キャプション
 - [技術選定・アーキテクチャ・自動ビルド／リリース方針](docs/tech-stack.md)
 - [画面草案・ロゴ](docs/ui-draft.md)
 - [技術検証: 上映ウィンドウ](docs/spike-presentation-window.md)
+- [技術検証: 写真と動画の連続再生](docs/spike-media-playback.md)
 
 ## 開発・ビルドについて
 
@@ -61,6 +62,7 @@ Fluxlide（フラックスライド）は、写真・動画・キャプション
 - Node.js（LTS）と npm
 - Rust（stable）
 - [Tauri 2 の前提パッケージ](https://tauri.app/start/prerequisites/)（LinuxではWebKitGTKなど）
+- 動画の再生を試す場合は FFmpeg（`ffmpeg` と `ffprobe`）。macOSでは `brew install ffmpeg`。`PATH` にない場所に置く場合は、そのフォルダを環境変数 `FLUXLIDE_FFMPEG_DIR` で指定します
 
 ### 構成
 

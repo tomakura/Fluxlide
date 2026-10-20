@@ -15,3 +15,16 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+# Photo decoding and resizing are tens of times slower without optimization,
+# too slow to preload the next photo in time during `tauri dev`.
+[profile.dev.package.image]
+opt-level = 3
+[profile.dev.package.zune-jpeg]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.fdeflate]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3

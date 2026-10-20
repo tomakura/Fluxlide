@@ -1,5 +1,6 @@
 mod presentation;
 
+use fluxlide_engine::media::video::Ffmpeg;
 use presentation::PresentationState;
 use serde::Serialize;
 use tauri::{Manager, State, WindowEvent};
@@ -23,10 +24,47 @@ async fn engine_status(state: State<'_, PresentationState>) -> Result<EngineStat
     })
 }
 
+/// Whether the FFmpeg tools used for video playback were found.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VideoDecoderStatus {
+    path: Option<String>,
+    version: Option<String>,
+    error: Option<String>,
+}
+
+#[tauri::command]
+async fn video_decoder_status() -> VideoDecoderStatus {
+    let status = tauri::async_runtime::spawn_blocking(|| {
+        let ffmpeg = Ffmpeg::locate()?;
+        let version = ffmpeg.version()?;
+        Ok::<_, fluxlide_engine::EngineError>((ffmpeg.ffmpeg_path().display().to_string(), version))
+    })
+    .await;
+    match status {
+        Ok(Ok((path, version))) => VideoDecoderStatus {
+            path: Some(path),
+            version: Some(version),
+            error: None,
+        },
+        Ok(Err(err)) => VideoDecoderStatus {
+            path: None,
+            version: None,
+            error: Some(err.to_string()),
+        },
+        Err(err) => VideoDecoderStatus {
+            path: None,
+            version: None,
+            error: Some(err.to_string()),
+        },
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(presentation::handle_shortcut)
@@ -53,6 +91,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             engine_status,
+            video_decoder_status,
             presentation::list_monitors,
             presentation::presentation_status,
             presentation::start_presentation,

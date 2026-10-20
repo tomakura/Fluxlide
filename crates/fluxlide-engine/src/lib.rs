@@ -7,9 +7,13 @@
 use std::fmt;
 use std::sync::mpsc;
 
+pub mod media;
 mod presenter;
+mod slideshow;
 
-pub use presenter::{FrameOutcome, Presenter};
+pub use media::{MediaKind, MediaTexture};
+pub use presenter::{FrameOutcome, Layer, MAX_LAYERS, Presenter, Scene};
+pub use slideshow::{Slideshow, SlideshowConfig, SlideshowStats};
 
 /// Pixel format used for offscreen frames handed to the encoder.
 pub const FRAME_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -38,6 +42,7 @@ pub enum EngineError {
     Device(wgpu::RequestDeviceError),
     Readback(String),
     Surface(String),
+    Media(String),
 }
 
 impl fmt::Display for EngineError {
@@ -47,6 +52,7 @@ impl fmt::Display for EngineError {
             Self::Device(err) => write!(f, "failed to open GPU device: {err}"),
             Self::Readback(msg) => write!(f, "failed to read frame from GPU: {msg}"),
             Self::Surface(msg) => write!(f, "window surface error: {msg}"),
+            Self::Media(msg) => write!(f, "media error: {msg}"),
         }
     }
 }
