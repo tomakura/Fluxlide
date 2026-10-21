@@ -8,6 +8,8 @@ use std::fmt;
 use std::sync::mpsc;
 
 pub mod audio;
+pub mod bgm;
+pub mod calibration;
 pub mod media;
 mod presenter;
 mod slideshow;
