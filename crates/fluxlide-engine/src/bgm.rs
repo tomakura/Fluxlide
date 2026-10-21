@@ -384,7 +384,10 @@ impl DuckProbe {
                 DuckCommand::Close { id } => self.open.retain(|window| window.0 != id),
             }
         }
-        self.open.iter().map(|&(_, start, end)| (start, end)).collect()
+        self.open
+            .iter()
+            .map(|&(_, start, end)| (start, end))
+            .collect()
     }
 }
 
