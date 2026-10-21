@@ -17,7 +17,7 @@
 | 3. 動画への書き出し | 済み（Linux、ソフトウェアのGPU） | [書き出しの技術検証](spike-export.md) |
 | 4. 管理画面の中にプレビューを出す方式 | 済み。画面外に描いた画素を `<canvas>` に送る方式に決めた | [プレビューの技術検証](spike-preview.md) |
 | 5. BGM、動画中にBGMを下げる処理、音ズレ補正 | 済み（自動テスト）。実際の出力機器での確認は未 | [BGMの技術検証](spike-bgm.md) |
-| 6. LGPL版FFmpegの同梱 | 済み（macOS aarch64で確認） | [FFmpegの同梱](spike-ffmpeg-bundling.md) |
+| 6. LGPL版FFmpegの同梱 | 済み。macOS aarch64で同梱と起動まで確認し、4つのターゲットのビルドはCIで通った | [FFmpegの同梱](spike-ffmpeg-bundling.md) |
 | 7. 技術選定への反映 | 済み | [技術選定](tech-stack.md)の6章 |
 
 ## 実機で確かめてほしいこと

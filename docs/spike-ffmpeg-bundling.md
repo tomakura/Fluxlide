@@ -156,11 +156,11 @@ FFmpegのlegalページは、FFmpegが特許のあるアルゴリズムを使う
 
 ## 6. 判断
 
-FFmpegは、ffmpeg.orgの公式ソース（9.0.2）を `scripts/build-ffmpeg.sh` でLGPL v2.1以降の最小構成でビルドして、`externalBin` で同梱する方式で進める。同梱品は `fluxlide-ffmpeg`、`fluxlide-ffprobe` の名前にする。`externalBin` はリリースのときだけ、追加の設定ファイルで足す。macOSでは、ビルド、エンジンのテスト、.appへの同梱と起動までを確かめた。WindowsとLinuxは、CIでの確認が終わるまで方式を確定しない。5.4の点は、リリース前に決める。
+FFmpegは、ffmpeg.orgの公式ソース（9.0.2）を `scripts/build-ffmpeg.sh` でLGPL v2.1以降の最小構成でビルドして、`externalBin` で同梱する方式で進める。同梱品は `fluxlide-ffmpeg`、`fluxlide-ffprobe` の名前にする。`externalBin` はリリースのときだけ、追加の設定ファイルで足す。macOSでは、ビルド、エンジンのテスト、.appへの同梱と起動までを確かめた。2026-10-21には、CI（`.github/workflows/ffmpeg.yml`）で4つのターゲットすべてのビルドが通った。WindowsではFFmpeg 9.0.2の `h264_mf` がDirect3D 11の型を使うため、`--enable-d3d11va` を加えた。ビルドの最後に、LGPLであること、必要なデコーダとエンコーダ（Windowsは `h264_mf`）があることを確かめている。5.4の点は、リリース前に決める。
 
 ## 7. 未確認の項目
 
-- Windows（MSYS2のgccでのビルド、`h264_mf`、`-static` でのリンク、NSIS・MSIの中での配置）とLinux（ビルド、deb・AppImageの中での配置）。CIのワークフローは、まだ一度も動かしていない
+- Windows（NSIS・MSIの中での配置、`h264_mf` での実際の書き出し）とLinux（deb・AppImageの中での配置）。ビルドはCIで通ったが、できた実行ファイルをアプリに同梱して動かすところは確かめていない
 - `x86_64-apple-darwin` のクロスビルド（`nasm` が要る。この環境にはない）。最低macOSの10.15で動くか
 - macOSの署名と公証。バンドラは同梱のバイナリにも署名するが、Developer IDとhardened runtimeでの動作は未確認
 - AppImageでの `fluxlide-ffmpeg` の置き場所。ソースの調べでは、アプリ本体と同じ `usr/bin` と読めるが、実物は未確認
