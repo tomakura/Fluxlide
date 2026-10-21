@@ -4,4 +4,9 @@ import type { ShowDefinition } from "./ShowDefinition";
 /**
  * What the management window needs to draw the open slideshow.
  */
-export type ShowState = { dir: string, mediaDir: string, show: ShowDefinition, canUndo: boolean, canRedo: boolean, saveError: string | null, };
+export type ShowState = { 
+/**
+ * Sent back with an edit, so that one made from an older state is
+ * refused (see [`edit_show`]).
+ */
+revision: number, dir: string, mediaDir: string, show: ShowDefinition, canUndo: boolean, canRedo: boolean, saveError: string | null, };
