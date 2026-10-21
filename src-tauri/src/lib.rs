@@ -1,13 +1,20 @@
+mod editor;
+mod history;
+mod import;
 mod presentation;
 mod preview;
+mod project;
+mod session;
 
 use fluxlide_engine::media::video::Ffmpeg;
 use presentation::PresentationState;
 use serde::Serialize;
 use tauri::{Manager, State, WindowEvent};
+use ts_rs::TS;
 
 /// GPU details shown in the UI so users can confirm the renderer started.
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 struct EngineStatus {
     gpu_name: String,
@@ -26,7 +33,8 @@ async fn engine_status(state: State<'_, PresentationState>) -> Result<EngineStat
 }
 
 /// Whether the FFmpeg tools used for video playback were found.
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 struct VideoDecoderStatus {
     path: Option<String>,
@@ -72,7 +80,13 @@ pub fn run() {
                 .build(),
         )
         .manage(PresentationState::default())
+        .manage(editor::EditorState::default())
         .manage(preview::PreviewState::default())
+        .setup(|app| {
+            let session = app.state::<editor::EditorState>().session();
+            app.manage(import::Importer::start(app.handle().clone(), session));
+            Ok(())
+        })
         .on_window_event(|window, event| {
             // Closing the management window ends the app, including any presentation.
             if window.label() != "main" {
@@ -94,6 +108,16 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             engine_status,
             video_decoder_status,
+            editor::list_projects,
+            editor::create_project,
+            editor::open_project,
+            editor::close_project,
+            editor::show_state,
+            editor::edit_show,
+            editor::undo_show,
+            editor::redo_show,
+            import::import_files,
+            import::replace_asset_file,
             presentation::list_monitors,
             presentation::media_assets,
             presentation::presentation_status,
