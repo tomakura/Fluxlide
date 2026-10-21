@@ -10,9 +10,11 @@ use fluxlide_engine::media::video::Ffmpeg;
 use presentation::PresentationState;
 use serde::Serialize;
 use tauri::{Manager, State, WindowEvent};
+use ts_rs::TS;
 
 /// GPU details shown in the UI so users can confirm the renderer started.
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 struct EngineStatus {
     gpu_name: String,
@@ -31,7 +33,8 @@ async fn engine_status(state: State<'_, PresentationState>) -> Result<EngineStat
 }
 
 /// Whether the FFmpeg tools used for video playback were found.
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 struct VideoDecoderStatus {
     path: Option<String>,

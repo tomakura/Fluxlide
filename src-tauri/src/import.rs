@@ -20,6 +20,7 @@ use fluxlide_engine::media::video::Ffmpeg;
 use fluxlide_engine::show::{Asset, AssetId, AssetKind, AssetMeta, AssetState, Slide};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
+use ts_rs::TS;
 
 use crate::editor::{self, EditorState, ShowState};
 use crate::session::{Session, partial_path};
@@ -32,8 +33,8 @@ const THUMBNAIL_SIZE: (u32, u32) = (512, 512);
 const PROGRESS_EVERY: Duration = Duration::from_millis(200);
 const COPY_CHUNK: usize = 1 << 20;
 
-
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportProgress {
     asset: AssetId,
@@ -285,7 +286,8 @@ fn new_asset(id: AssetId, source: &Path) -> Asset {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportResult {
     state: ShowState,

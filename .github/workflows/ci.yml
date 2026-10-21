@@ -74,3 +74,11 @@ jobs:
       # The GPU test skips itself on runners without a usable adapter.
       - name: Test
         run: cargo test --workspace
+
+      # The tests also write the TypeScript types (docs/ipc.md); they must
+      # match the ones committed.
+      - name: Check generated TypeScript types
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          git add -N src/lib/bindings
+          git diff --exit-code -- src/lib/bindings
