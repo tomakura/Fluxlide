@@ -687,6 +687,22 @@ impl OfflineMixer {
         self.mixer.clone()
     }
 
+    /// Whether every sound has been decoded far enough to render the next
+    /// `frames` frames without running dry. Export waits for this before each
+    /// [`OfflineMixer::render`], since a file must not get gaps where live
+    /// playback would have an underrun.
+    pub fn has_samples_for(&mut self, frames: usize) -> bool {
+        let core = &mut self.core;
+        core.voices.extend(core.incoming.try_iter());
+        // One frame more than asked for: a voice also reads the following frame.
+        let needed = (frames + 1) * TRACK_CHANNELS;
+        core.voices.iter().all(|voice| {
+            voice.control.stopped.load(Ordering::Relaxed)
+                || voice.control.finished.load(Ordering::Relaxed)
+                || voice.samples.slots() >= needed
+        })
+    }
+
     /// Mixes `frames` frames of stereo sound whose first frame is heard at
     /// playback time `heard_at`. Pass consecutive times, one buffer after
     /// the other.

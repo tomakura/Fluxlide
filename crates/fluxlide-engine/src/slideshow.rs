@@ -165,6 +165,12 @@ pub struct Slideshow {
     ducker: Option<Ducker>,
     /// For the ready item, when it has sound and a ducker is attached.
     announced: Option<Announced>,
+    /// False to play the playlist once and fade to black after the last item.
+    looping: bool,
+    /// Every item of the single pass has been handed to a loader.
+    pass_loaded: bool,
+    /// The video frame due at the last update was not decoded yet.
+    video_late: bool,
     transition: Transition,
     /// Captions by item index; items past the end have none.
     captions: Vec<Caption>,
@@ -200,6 +206,9 @@ impl Slideshow {
             audio: None,
             ducker: None,
             announced: None,
+            looping: true,
+            pass_loaded: false,
+            video_late: false,
             transition: Transition::fade(),
             captions: Vec::new(),
             caption_style: CaptionStyle::default(),
@@ -281,6 +290,34 @@ impl Slideshow {
         self.audio = Some(mixer);
     }
 
+    /// Plays the playlist once instead of in a loop: after the last item the
+    /// picture fades to black and [`Slideshow::is_finished`] turns true.
+    /// Call before the first update.
+    pub fn play_once(&mut self) {
+        self.looping = false;
+    }
+
+    /// True once a single pass ([`Slideshow::play_once`]) has faded to black.
+    pub fn is_finished(&self) -> bool {
+        !self.looping
+            && (self.pass_loaded || self.failures_in_row >= self.items.len())
+            && self.current.is_none()
+            && self.outgoing.is_none()
+            && self.ready.is_none()
+            && self.loading.is_none()
+    }
+
+    /// True when the last update could not show what is due at its time
+    /// because an item or a video frame was still being prepared. Live
+    /// playback carries on regardless; export updates again at the same
+    /// time until this is false, so the file never shows a delay.
+    pub fn is_waiting(&self) -> bool {
+        let first_pending = self.current.is_none()
+            && self.outgoing.is_none()
+            && (self.loading.is_some() || self.ready.is_some());
+        self.video_late || self.waiting_since.is_some() || first_pending
+    }
+
     /// Announces the sound of videos to the BGM through `ducker`, so it is
     /// faded out while they play.
     pub fn set_ducker(&mut self, ducker: Ducker) {
@@ -319,9 +356,11 @@ impl Slideshow {
         self.now = now;
         self.poll_loading();
 
+        self.video_late = false;
         for showing in self.current.iter_mut().chain(self.outgoing.iter_mut()) {
             if let Prepared::Video { player, .. } = &mut showing.media {
                 let update = player.update(&self.renderer, now - showing.started);
+                self.video_late |= update.late;
                 self.stats.video_late_frames += u64::from(update.late);
                 self.stats.video_skipped_frames += u64::from(update.skipped);
             }
@@ -376,6 +415,13 @@ impl Slideshow {
             self.begin_transition(fade_secs);
         } else if self.loading.is_some() {
             self.waiting_since.get_or_insert(due);
+        } else if !self.looping && self.pass_loaded {
+            // The single pass is over: fade the last item out to black.
+            self.outgoing = self.current.take();
+            self.fade = Some(Fade {
+                start: now,
+                secs: fade_secs,
+            });
         }
     }
 
@@ -533,11 +579,12 @@ impl Slideshow {
     /// Starts loading the next item in the playlist, looping at the end.
     /// Stops trying once every item has failed in a row.
     fn start_loading(&mut self) {
-        if self.items.is_empty() || self.failures_in_row >= self.items.len() {
+        if self.items.is_empty() || self.failures_in_row >= self.items.len() || self.pass_loaded {
             return;
         }
         let index = self.next_index;
         self.next_index = (index + 1) % self.items.len();
+        self.pass_loaded = !self.looping && self.next_index == 0;
         let path = self.items[index].clone();
         let renderer = self.renderer.clone();
         let ffmpeg = self.ffmpeg.clone();

@@ -15,6 +15,7 @@ pub mod bgm;
 pub mod calibration;
 mod caption;
 mod compositor;
+pub mod export;
 pub mod media;
 mod offscreen;
 mod overlay;
@@ -75,6 +76,7 @@ pub enum EngineError {
     },
     Media(String),
     Audio(String),
+    Export(String),
 }
 
 impl fmt::Display for EngineError {
@@ -90,6 +92,7 @@ impl fmt::Display for EngineError {
             }
             Self::Media(msg) => write!(f, "media error: {msg}"),
             Self::Audio(msg) => write!(f, "audio error: {msg}"),
+            Self::Export(msg) => write!(f, "export error: {msg}"),
         }
     }
 }

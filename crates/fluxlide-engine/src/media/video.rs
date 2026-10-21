@@ -138,7 +138,7 @@ impl SearchDirs {
     }
 }
 
-pub(super) fn command(program: &Path) -> Command {
+pub(crate) fn command(program: &Path) -> Command {
     #[allow(unused_mut)]
     let mut command = Command::new(program);
     #[cfg(windows)]
@@ -417,7 +417,7 @@ fn read_frames(
     }
 }
 
-pub(super) fn collect_log(pipe: impl Read, lines: &Mutex<VecDeque<String>>) {
+pub(crate) fn collect_log(pipe: impl Read, lines: &Mutex<VecDeque<String>>) {
     for line in BufReader::new(pipe).lines() {
         let Ok(line) = line else { return };
         let mut lines = lines.lock().unwrap();
