@@ -14,6 +14,7 @@ cpal = "0.18"
 rtrb = "0.4"
 serde = { version = "1", features = ["derive"] }
 cosmic-text = { version = "0.19", default-features = false, features = ["std", "swash"] }
+ts-rs = "12"
 
 [dev-dependencies]
 serde_json = "1"

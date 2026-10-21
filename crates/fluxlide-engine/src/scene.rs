@@ -8,7 +8,10 @@ use crate::overlay::Overlay;
 use crate::transition::Transition;
 
 /// How a picture whose aspect ratio differs from the output is placed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize, ts_rs::TS,
+)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub enum Fit {
     /// The whole picture is visible; the rest of the output stays black

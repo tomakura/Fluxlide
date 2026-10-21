@@ -24,6 +24,7 @@ use tauri::{AppHandle, Manager, State, WindowEvent};
 use tauri_plugin_global_shortcut::{
     Code, GlobalShortcutExt, Shortcut, ShortcutEvent, ShortcutState,
 };
+use ts_rs::TS;
 
 const WINDOW_LABEL: &str = "presenter";
 
@@ -59,7 +60,8 @@ pub fn handle_shortcut(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEven
     });
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct MonitorInfo {
     index: usize,
@@ -74,7 +76,8 @@ pub struct MonitorInfo {
 }
 
 /// Frame timing measured on the render thread.
-#[derive(Default, Clone, Serialize)]
+#[derive(Default, Clone, Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct FrameStats {
     frames: u64,
@@ -93,7 +96,8 @@ pub struct FrameStats {
 }
 
 /// Slideshow measurements shown in the management window.
-#[derive(Default, Clone, Serialize)]
+#[derive(Default, Clone, Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaybackStats {
     current_slide: Option<u64>,
@@ -116,10 +120,12 @@ pub struct PlaybackStats {
 }
 
 /// BGM measurements shown in the management window.
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicStats {
     /// "idle", "playing" or "gap".
+    #[ts(type = r#""idle" | "playing" | "gap""#)]
     state: &'static str,
     title: Option<String>,
     artist: Option<String>,
@@ -169,7 +175,8 @@ struct Sound {
 }
 
 /// Audio output measurements shown in the management window.
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct SoundStats {
     device: String,
@@ -246,7 +253,8 @@ impl PlaybackStats {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct PresentationStatus {
     running: bool,

@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use fluxlide_engine::show::ShowDefinition;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
+use ts_rs::TS;
 
 use crate::import;
 use crate::project::{self, Project};
@@ -29,7 +30,8 @@ impl EditorState {
 }
 
 /// What the management window needs to draw the open slideshow.
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct ShowState {
     dir: PathBuf,
@@ -58,7 +60,8 @@ pub fn notify(app: &AppHandle, session: &Session) {
     let _ = app.emit(SHOW_CHANGED, ShowState::of(session));
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectSummary {
     dir: PathBuf,

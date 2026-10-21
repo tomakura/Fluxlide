@@ -28,6 +28,7 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::{CaptionDesign, Corner, Direction, Fit};
 
@@ -40,23 +41,24 @@ pub const DEFAULT_PHOTO_MS: u32 = 10_000;
 pub const DEFAULT_TRANSITION_MS: u32 = 1_000;
 
 /// Identifies an [`Asset`] within its project.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct AssetId(pub u64);
 
 /// Identifies a [`Slide`] within its project. Stays the same when slides
 /// are reordered, so the selection and undo can refer to it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct SlideId(pub u64);
 
 /// Identifies a [`CustomTransition`] within its project.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct TransitionId(pub u64);
 
 /// Everything needed to show, preview or export one slideshow.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ShowDefinition {
     pub version: u32,
@@ -97,7 +99,8 @@ impl ShowDefinition {
 }
 
 /// A photo or video copied into the project's managed folder.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct Asset {
     pub id: AssetId,
@@ -128,7 +131,8 @@ impl Asset {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub enum AssetKind {
     Photo,
@@ -137,7 +141,8 @@ pub enum AssetKind {
 
 /// Whether an asset's copy can be used. How far a copy has got is not
 /// stored: it lives only while the import runs.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase", tag = "state")]
 pub enum AssetState {
     /// Being copied; its slide is shown in the list but skipped in playback.
@@ -150,7 +155,8 @@ pub enum AssetState {
 }
 
 /// What the user typed about a photo or video. Any of the three may be empty.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AssetMeta {
     pub title: String,
@@ -159,7 +165,8 @@ pub struct AssetMeta {
 }
 
 /// One entry of the slide list. Settings left as `None` follow [`Look`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct Slide {
     pub id: SlideId,
@@ -207,7 +214,8 @@ fn default_true() -> bool {
 }
 
 /// A transition chosen by name, turned into a shader by the engine.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum TransitionChoice {
     /// No transition: the next picture replaces the last at once.
@@ -228,7 +236,8 @@ pub enum TransitionChoice {
 
 /// A transition written by the user in WGSL (see `transition.rs` for the
 /// contract the source must follow).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct CustomTransition {
     pub id: TransitionId,
@@ -239,7 +248,8 @@ pub struct CustomTransition {
 }
 
 /// Slow zoom (Ken Burns effect) across the time a slide is on screen.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct Motion {
     /// Scale at the start and at the end, relative to the framing (1 = as framed).
@@ -253,7 +263,8 @@ pub struct Motion {
 }
 
 /// Placement of the picture on its slide.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Framing {
     /// `None` follows [`Look::fit`].
@@ -274,7 +285,8 @@ impl Default for Framing {
 }
 
 /// Which part of a video plays, and how loud.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase", default)]
 pub struct VideoOptions {
     /// Where playback starts in the file.
@@ -304,7 +316,8 @@ impl VideoOptions {
 }
 
 /// Settings shared by all slides (the "見た目" tab).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Look {
     pub photo_ms: u32,
@@ -330,7 +343,8 @@ impl Default for Look {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase", default)]
 pub struct CaptionLook {
     pub design: CaptionDesign,
@@ -347,7 +361,8 @@ impl Default for CaptionLook {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct WatermarkSpec {
     pub content: WatermarkSource,
@@ -357,7 +372,8 @@ pub struct WatermarkSpec {
     pub size: f32,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum WatermarkSource {
     Text {
@@ -370,7 +386,8 @@ pub enum WatermarkSource {
 }
 
 /// Background music (the "音楽" tab).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Music {
     pub source: Option<MusicSource>,
@@ -402,7 +419,8 @@ impl Default for Music {
 /// Where the music comes from. Unlike photos, music is not copied: a folder
 /// is read again each time playback starts, so songs added to it are
 /// picked up.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum MusicSource {
     Folder { path: String },
@@ -410,7 +428,8 @@ pub enum MusicSource {
 }
 
 /// How playback proceeds (chosen on the output screen, kept with the show).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Playback {
     pub advance: Advance,
@@ -418,7 +437,8 @@ pub struct Playback {
     pub order: Order,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub enum Advance {
     /// Each slide moves on after its time.
@@ -428,7 +448,8 @@ pub enum Advance {
     Manual,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub enum AtEnd {
     #[default]
@@ -437,7 +458,8 @@ pub enum AtEnd {
     Stop,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub enum Order {
     #[default]
