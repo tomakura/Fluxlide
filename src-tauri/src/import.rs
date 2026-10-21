@@ -1,0 +1,510 @@
+//! Copying photos and videos into the project's media folder.
+//!
+//! Adding files puts them in the slideshow at once, as assets that are
+//! still importing, so the user can type titles while they copy (overview
+//! 4.7). One worker copies them in turn: each file is written next to its
+//! final name as `<name>.part`, read back to check it is a usable photo or
+//! video and to make its thumbnail, and only then renamed. A file that
+//! fails is marked failed with a reason, and a partial copy is never taken
+//! for a finished one.
+
+use std::fs::File;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use fluxlide_engine::MediaKind;
+use fluxlide_engine::media::video::Ffmpeg;
+use fluxlide_engine::show::{Asset, AssetId, AssetKind, AssetMeta, AssetState, Slide};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, State};
+
+use crate::editor::{self, EditorState, ShowState};
+use crate::session::{Session, partial_path};
+
+/// Sent while a file copies, at most a few times a second.
+pub const IMPORT_PROGRESS: &str = "import-progress";
+
+/// Thumbnails fit in this many pixels.
+const THUMBNAIL_SIZE: (u32, u32) = (512, 512);
+const PROGRESS_EVERY: Duration = Duration::from_millis(200);
+const COPY_CHUNK: usize = 1 << 20;
+
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportProgress {
+    asset: AssetId,
+    copied: u64,
+    total: u64,
+}
+
+/// One file to copy into the media folder of the project in `dir`.
+struct Job {
+    dir: PathBuf,
+    media_dir: PathBuf,
+    asset: Asset,
+    source: PathBuf,
+}
+
+/// The worker that copies files, one at a time.
+pub struct Importer {
+    jobs: Mutex<Sender<Job>>,
+}
+
+impl Importer {
+    pub fn start(app: AppHandle, session: Arc<Mutex<Option<Session>>>) -> Self {
+        let (tx, rx) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("fluxlide-import".into())
+            .spawn(move || run(app, session, rx))
+            .expect("the import thread starts");
+        Self {
+            jobs: Mutex::new(tx),
+        }
+    }
+
+    fn queue(&self, job: Job) {
+        let _ = self.jobs.lock().unwrap().send(job);
+    }
+}
+
+fn run(app: AppHandle, session: Arc<Mutex<Option<Session>>>, jobs: Receiver<Job>) {
+    let ffmpeg = Ffmpeg::locate().ok();
+    // A job belongs to the project that was open when it was queued.
+    let still_open = |dir: &Path| {
+        session
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|session| session.dir() == dir)
+    };
+    for job in jobs {
+        if !still_open(&job.dir) {
+            continue;
+        }
+        let id = job.asset.id;
+        let mut last_report = Instant::now();
+        let outcome = import_file(
+            &job.source,
+            &job.media_dir,
+            &job.asset,
+            ffmpeg.as_ref(),
+            &mut |copied, total| {
+                if last_report.elapsed() >= PROGRESS_EVERY {
+                    last_report = Instant::now();
+                    let _ = app.emit(
+                        IMPORT_PROGRESS,
+                        ImportProgress {
+                            asset: id,
+                            copied,
+                            total,
+                        },
+                    );
+                }
+            },
+            &|| !still_open(&job.dir),
+        );
+        let mut asset = job.asset;
+        match outcome {
+            Ok(Some(facts)) => {
+                asset.state = AssetState::Ready;
+                asset.size = Some(facts.size);
+                asset.duration_ms = facts.duration_ms;
+                asset.has_audio = facts.has_audio;
+            }
+            Ok(None) => continue,
+            Err(reason) => asset.state = AssetState::Failed { reason },
+        }
+        let mut guard = session.lock().unwrap();
+        if let Some(session) = guard.as_mut().filter(|session| session.dir() == job.dir) {
+            session.update_file(asset);
+            editor::notify(&app, session);
+        }
+    }
+}
+
+/// What reading a copied file found out.
+#[derive(Debug, PartialEq)]
+struct FileFacts {
+    size: [u32; 2],
+    duration_ms: Option<u32>,
+    has_audio: bool,
+}
+
+/// Copies `source` into `media_dir` as `asset.file`, checks it and makes its
+/// thumbnail. `Ok(None)` means it was given up because `cancelled` said so;
+/// nothing is left behind then, nor after an error.
+fn import_file(
+    source: &Path,
+    media_dir: &Path,
+    asset: &Asset,
+    ffmpeg: Option<&Ffmpeg>,
+    progress: &mut dyn FnMut(u64, u64),
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Option<FileFacts>, String> {
+    let partial = partial_path(media_dir, &asset.file);
+    let result = copy_and_check(
+        source, &partial, media_dir, asset, ffmpeg, progress, cancelled,
+    );
+    match result {
+        Ok(Some(facts)) => {
+            std::fs::rename(&partial, media_dir.join(&asset.file))
+                .map_err(|err| format!("コピーを仕上げられませんでした: {err}"))
+                .inspect_err(|_| remove_partial(&partial, media_dir, &asset.file))?;
+            Ok(Some(facts))
+        }
+        other => {
+            remove_partial(&partial, media_dir, &asset.file);
+            other
+        }
+    }
+}
+
+fn remove_partial(partial: &Path, media_dir: &Path, file: &str) {
+    let _ = std::fs::remove_file(partial);
+    let _ = std::fs::remove_file(thumbnail_path(media_dir, file));
+}
+
+fn copy_and_check(
+    source: &Path,
+    partial: &Path,
+    media_dir: &Path,
+    asset: &Asset,
+    ffmpeg: Option<&Ffmpeg>,
+    progress: &mut dyn FnMut(u64, u64),
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Option<FileFacts>, String> {
+    let copy_failed = |err: std::io::Error| format!("コピーできませんでした: {err}");
+    let mut from = File::open(source).map_err(|err| match err.kind() {
+        std::io::ErrorKind::NotFound => "元のファイルが見つかりません。".to_string(),
+        _ => copy_failed(err),
+    })?;
+    let total = from.metadata().map_err(copy_failed)?.len();
+    let mut to = File::create(partial).map_err(copy_failed)?;
+    let mut buffer = vec![0; COPY_CHUNK];
+    let mut copied = 0;
+    loop {
+        if cancelled() {
+            return Ok(None);
+        }
+        let read = from.read(&mut buffer).map_err(copy_failed)?;
+        if read == 0 {
+            break;
+        }
+        to.write_all(&buffer[..read]).map_err(copy_failed)?;
+        copied += read as u64;
+        progress(copied, total);
+    }
+    to.sync_all().map_err(copy_failed)?;
+    drop(to);
+
+    let thumbnail = thumbnail_path(media_dir, &asset.file);
+    std::fs::create_dir_all(thumbnail.parent().unwrap()).map_err(copy_failed)?;
+    match asset.kind {
+        AssetKind::Photo => {
+            let (width, height) =
+                fluxlide_engine::media::write_thumbnail(partial, &thumbnail, THUMBNAIL_SIZE)
+                    .map_err(|_| {
+                        "写真として読み込めませんでした。壊れているか、対応していない形式です。"
+                            .to_string()
+                    })?;
+            Ok(Some(FileFacts {
+                size: [width, height],
+                duration_ms: None,
+                has_audio: false,
+            }))
+        }
+        AssetKind::Video => {
+            let ffmpeg = ffmpeg.ok_or("動画を読むための FFmpeg が見つかりません。")?;
+            let unreadable = |_| {
+                "動画として読み込めませんでした。壊れているか、対応していない形式です。".to_string()
+            };
+            let info = ffmpeg.probe(partial).map_err(unreadable)?;
+            let duration = info.duration.ok_or("動画の長さが分かりませんでした。")?;
+            // A picture from a little way in, as the first is often black.
+            let frame = media_dir.join(format!("{}.frame.png", asset.file));
+            let picture = ffmpeg
+                .extract_frame(partial, (duration / 2.0).min(1.0), &frame)
+                .and_then(|()| {
+                    fluxlide_engine::media::write_thumbnail(&frame, &thumbnail, THUMBNAIL_SIZE)
+                });
+            let _ = std::fs::remove_file(&frame);
+            let (width, height) = picture.map_err(unreadable)?;
+            Ok(Some(FileFacts {
+                size: [width, height],
+                duration_ms: Some((duration * 1000.0) as u32),
+                has_audio: info.has_audio,
+            }))
+        }
+    }
+}
+
+/// Where the thumbnail of the media file `file` is kept.
+pub fn thumbnail_path(media_dir: &Path, file: &str) -> PathBuf {
+    media_dir.join("thumbs").join(format!("{file}.jpg"))
+}
+
+/// The asset for `source` with the id `id`, still to be copied. A file of a
+/// kind that cannot be shown is failed at once.
+fn new_asset(id: AssetId, source: &Path) -> Asset {
+    let name = |part: Option<&std::ffi::OsStr>| {
+        part.map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    let extension = source
+        .extension()
+        .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let (kind, state) = match MediaKind::from_path(source) {
+        Some(MediaKind::Image) => (AssetKind::Photo, AssetState::Importing),
+        Some(MediaKind::Video) => (AssetKind::Video, AssetState::Importing),
+        None => (
+            AssetKind::Photo,
+            AssetState::Failed {
+                reason: "対応していない種類のファイルです（写真は jpg・png、動画は mp4・mov）。"
+                    .into(),
+            },
+        ),
+    };
+    Asset {
+        id,
+        kind,
+        file: format!("{}.{extension}", id.0),
+        original_name: name(source.file_name()),
+        state,
+        meta: AssetMeta {
+            title: name(source.file_stem()),
+            ..AssetMeta::default()
+        },
+        size: None,
+        duration_ms: None,
+        has_audio: false,
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportResult {
+    state: ShowState,
+    /// The new assets, in the order of the files given.
+    assets: Vec<AssetId>,
+}
+
+/// Adds `files` to the open slideshow and starts copying them. With
+/// `add_slides`, each also gets a slide at the end of the list (otherwise
+/// the asset is for something else, such as the watermark). Adding them is
+/// one step to undo.
+#[tauri::command]
+pub fn import_files(
+    editor: State<'_, EditorState>,
+    importer: State<'_, Importer>,
+    files: Vec<PathBuf>,
+    add_slides: bool,
+) -> Result<ImportResult, String> {
+    let session = editor.session();
+    let mut guard = session.lock().unwrap();
+    let session = guard.as_mut().ok_or("スライドショーが開かれていません。")?;
+    let mut next = session.show().clone();
+    let mut added = Vec::new();
+    for source in files {
+        let asset = new_asset(session.next_asset_id(), &source);
+        if add_slides {
+            next.slides
+                .push(Slide::new(session.next_slide_id(), asset.id));
+        }
+        next.assets.push(asset.clone());
+        session.update_file(asset.clone());
+        added.push((asset, source));
+    }
+    session.edit(next, None);
+    for (asset, source) in &added {
+        if asset.state == AssetState::Importing {
+            importer.queue(Job {
+                dir: session.dir().to_path_buf(),
+                media_dir: session.media_dir(),
+                asset: asset.clone(),
+                source: source.clone(),
+            });
+        }
+    }
+    Ok(ImportResult {
+        state: ShowState::of(session),
+        assets: added.into_iter().map(|(asset, _)| asset.id).collect(),
+    })
+}
+
+/// Copies `file` in place of the file of `asset` ("選び直す" for a file
+/// that failed). The title and the slides that show it stay.
+#[tauri::command]
+pub fn replace_asset_file(
+    editor: State<'_, EditorState>,
+    importer: State<'_, Importer>,
+    asset: AssetId,
+    file: PathBuf,
+) -> Result<ShowState, String> {
+    let session = editor.session();
+    let mut guard = session.lock().unwrap();
+    let session = guard.as_mut().ok_or("スライドショーが開かれていません。")?;
+    let current = session
+        .show()
+        .asset(asset)
+        .ok_or("その写真・動画はスライドショーにありません。")?;
+    let mut replaced = new_asset(asset, &file);
+    replaced.meta = current.meta.clone();
+    session.update_file(replaced.clone());
+    if replaced.state == AssetState::Importing {
+        importer.queue(Job {
+            dir: session.dir().to_path_buf(),
+            media_dir: session.media_dir(),
+            asset: replaced,
+            source: file,
+        });
+    }
+    Ok(ShowState::of(session))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::project::tests::TempDir;
+
+    fn import(source: &Path, media_dir: &Path, asset: &Asset) -> Result<Option<FileFacts>, String> {
+        import_file(
+            source,
+            media_dir,
+            asset,
+            Ffmpeg::locate().ok().as_ref(),
+            &mut |_, _| {},
+            &|| false,
+        )
+    }
+
+    fn leftovers(media_dir: &Path) -> Vec<String> {
+        let mut names: Vec<_> = std::fs::read_dir(media_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_photo_is_copied_with_its_size_and_thumbnail() {
+        let root = TempDir::new("import-photo");
+        let source = root.0.join("夕焼け.png");
+        image::RgbaImage::from_pixel(640, 480, image::Rgba([250, 120, 30, 255]))
+            .save(&source)
+            .unwrap();
+        let media = root.0.join("media");
+        std::fs::create_dir(&media).unwrap();
+        let asset = new_asset(AssetId(7), &source);
+        assert_eq!(asset.file, "7.png");
+        assert_eq!(asset.meta.title, "夕焼け");
+
+        let mut reports = Vec::new();
+        let facts = import_file(
+            &source,
+            &media,
+            &asset,
+            None,
+            &mut |copied, total| reports.push((copied, total)),
+            &|| false,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(facts.size, [640, 480]);
+        assert_eq!(
+            reports.last().map(|(copied, total)| copied == total),
+            Some(true)
+        );
+        assert_eq!(
+            std::fs::read(media.join("7.png")).unwrap(),
+            std::fs::read(&source).unwrap()
+        );
+        assert!(thumbnail_path(&media, "7.png").is_file());
+        assert_eq!(leftovers(&media), ["7.png", "thumbs"]);
+    }
+
+    #[test]
+    fn a_broken_or_missing_file_fails_and_leaves_nothing_behind() {
+        let root = TempDir::new("import-broken");
+        let media = root.0.join("media");
+        std::fs::create_dir(&media).unwrap();
+        let broken = root.0.join("broken.jpg");
+        std::fs::write(&broken, b"this is not a photo").unwrap();
+        let reason = import(&broken, &media, &new_asset(AssetId(1), &broken)).unwrap_err();
+        assert!(reason.contains("写真として読み込めません"), "{reason}");
+        assert_eq!(leftovers(&media), ["thumbs"]);
+
+        let missing = root.0.join("gone.jpg");
+        let reason = import(&missing, &media, &new_asset(AssetId(2), &missing)).unwrap_err();
+        assert!(reason.contains("見つかりません"), "{reason}");
+        assert_eq!(leftovers(&media), ["thumbs"]);
+    }
+
+    #[test]
+    fn a_cancelled_copy_leaves_nothing_behind() {
+        let root = TempDir::new("import-cancel");
+        let media = root.0.join("media");
+        std::fs::create_dir(&media).unwrap();
+        let source = root.0.join("big.jpg");
+        std::fs::write(&source, vec![0u8; COPY_CHUNK * 3]).unwrap();
+        let chunks = std::cell::Cell::new(0);
+        let outcome = import_file(
+            &source,
+            &media,
+            &new_asset(AssetId(1), &source),
+            None,
+            &mut |_, _| chunks.set(chunks.get() + 1),
+            &|| chunks.get() >= 1,
+        );
+        assert_eq!(outcome, Ok(None));
+        assert!(leftovers(&media).is_empty());
+    }
+
+    #[test]
+    fn unsupported_files_fail_before_copying() {
+        let asset = new_asset(AssetId(3), Path::new("/somewhere/notes.TXT"));
+        assert_eq!(asset.file, "3.txt");
+        assert!(matches!(asset.state, AssetState::Failed { .. }));
+        assert_eq!(
+            new_asset(AssetId(4), Path::new("clip.MOV")).kind,
+            AssetKind::Video
+        );
+    }
+
+    #[test]
+    fn a_video_is_copied_with_its_length_size_and_thumbnail() {
+        let Ok(ffmpeg) = Ffmpeg::locate() else {
+            eprintln!("skipping video import test: ffmpeg not found");
+            return;
+        };
+        let root = TempDir::new("import-video");
+        let source = root.0.join("clip.mp4");
+        let status = std::process::Command::new(ffmpeg.ffmpeg_path())
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
+            .arg("testsrc2=size=160x90:rate=30:duration=2")
+            .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=2"])
+            .args(["-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest"])
+            .arg(&source)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let media = root.0.join("media");
+        std::fs::create_dir(&media).unwrap();
+        let facts = import(&source, &media, &new_asset(AssetId(5), &source))
+            .unwrap()
+            .unwrap();
+        assert_eq!(facts.size, [160, 90]);
+        assert!(facts.has_audio);
+        assert!(
+            (1_900..=2_100).contains(&facts.duration_ms.unwrap()),
+            "{facts:?}"
+        );
+        assert!(thumbnail_path(&media, "5.mp4").is_file());
+        assert_eq!(leftovers(&media), ["5.mp4", "thumbs"]);
+    }
+}

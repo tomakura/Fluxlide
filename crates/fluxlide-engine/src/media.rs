@@ -236,6 +236,25 @@ pub fn load_image(
     ))
 }
 
+/// Writes a JPEG of the photo at `path`, turned by its EXIF orientation and
+/// shrunk to fit within `max_size`, to `out`. Returns the size of the
+/// photo itself after turning, which is also how a damaged file is found
+/// when it is imported.
+pub fn write_thumbnail(
+    path: &Path,
+    out: &Path,
+    max_size: (u32, u32),
+) -> Result<(u32, u32), EngineError> {
+    let image = decode_image(path, (u32::MAX, u32::MAX))?;
+    let size = (image.width(), image.height());
+    image
+        .thumbnail(max_size.0, max_size.1)
+        .into_rgb8()
+        .save_with_format(out, image::ImageFormat::Jpeg)
+        .map_err(|err| EngineError::Media(format!("could not write {}: {err}", out.display())))?;
+    Ok(size)
+}
+
 /// Caps `max_size` by the largest texture the GPU accepts.
 pub(crate) fn fit_limit(renderer: &Renderer, max_size: (u32, u32)) -> (u32, u32) {
     let limit = renderer.device().limits().max_texture_dimension_2d;
@@ -294,6 +313,28 @@ mod tests {
         let image = decode_image(&path, (1000, 1000)).unwrap();
         assert_eq!((image.width(), image.height()), (400, 100));
 
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_thumbnail_is_shrunk_and_reports_the_photo_size() {
+        let dir =
+            std::env::temp_dir().join(format!("fluxlide-thumbnail-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tall.png");
+        image::RgbaImage::from_pixel(300, 600, image::Rgba([200, 20, 30, 255]))
+            .save(&path)
+            .unwrap();
+        let out = dir.join("tall.jpg");
+        assert_eq!(
+            write_thumbnail(&path, &out, (100, 100)).unwrap(),
+            (300, 600)
+        );
+        let thumbnail = image::open(&out).unwrap();
+        assert_eq!((thumbnail.width(), thumbnail.height()), (50, 100));
+
+        std::fs::write(dir.join("broken.png"), b"not a picture").unwrap();
+        assert!(write_thumbnail(&dir.join("broken.png"), &out, (100, 100)).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

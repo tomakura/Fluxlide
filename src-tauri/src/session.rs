@@ -9,11 +9,11 @@
 //! laid over every definition that comes in, whether from the window, from
 //! undo or from redo.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use fluxlide_engine::show::{Asset, AssetId, AssetState, ShowDefinition};
+use fluxlide_engine::show::{Asset, AssetId, AssetState, ShowDefinition, SlideId};
 
 use crate::history::History;
 use crate::project::{Project, ProjectError};
@@ -28,24 +28,29 @@ pub struct Session {
     /// The latest file facts of every asset seen while open, including
     /// assets that an undo has taken out (a redo may bring them back).
     files: HashMap<AssetId, Asset>,
+    /// The highest slide number used while open, so that a slide brought
+    /// back by redo never shares its number with a newer one.
+    last_slide_id: u64,
     save_error: Option<String>,
 }
 
 impl Session {
     /// Starts editing `show` from `project`. Copies that were still running
-    /// when the project was last open have stopped: they are marked as failed
-    /// and their partial files removed.
+    /// when the project was last open have stopped, so they are marked as
+    /// failed. Files in the media folder that no asset uses (partial copies,
+    /// and files of assets removed before the project was closed) are
+    /// deleted.
     pub fn new(project: Project, mut show: ShowDefinition) -> Self {
         let mut interrupted = false;
         for asset in &mut show.assets {
             if asset.state == AssetState::Importing {
-                let _ = std::fs::remove_file(partial_path(&project.media_dir(), &asset.file));
                 asset.state = AssetState::Failed {
                     reason: INTERRUPTED.into(),
                 };
                 interrupted = true;
             }
         }
+        clean_media(&project.media_dir(), &show);
         let files = show
             .assets
             .iter()
@@ -56,8 +61,10 @@ impl Session {
             show,
             history: History::default(),
             files,
+            last_slide_id: 0,
             save_error: None,
         };
+        session.note_slide_ids();
         if interrupted {
             session.save();
         }
@@ -98,6 +105,7 @@ impl Session {
         }
         let before = std::mem::replace(&mut self.show, next);
         self.history.record(before, group, Instant::now());
+        self.note_slide_ids();
         self.save();
         true
     }
@@ -130,6 +138,18 @@ impl Session {
             self.save();
         }
         self.files.insert(asset.id, asset);
+    }
+
+    /// A slide number not used while open. Each call gives a new one.
+    pub fn next_slide_id(&mut self) -> SlideId {
+        self.note_slide_ids();
+        self.last_slide_id += 1;
+        SlideId(self.last_slide_id)
+    }
+
+    fn note_slide_ids(&mut self) {
+        let highest = self.show.slides.iter().map(|slide| slide.id.0).max();
+        self.last_slide_id = self.last_slide_id.max(highest.unwrap_or(0));
     }
 
     /// A number not used by any asset seen while open.
@@ -172,6 +192,34 @@ fn take_file_facts(asset: &mut Asset, file: &Asset) {
     asset.has_audio = file.has_audio;
 }
 
+/// Deletes what no asset of `show` uses from `media_dir` and its thumbnails.
+fn clean_media(media_dir: &Path, show: &ShowDefinition) {
+    let used: HashSet<&str> = show
+        .assets
+        .iter()
+        .map(|asset| asset.file.as_str())
+        .collect();
+    let remove_unused = |dir: &Path, name_of: &dyn Fn(&str) -> Option<String>| {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name_of(&name).is_some_and(|file| used.contains(file.as_str())) {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    };
+    remove_unused(media_dir, &|name| Some(name.to_string()));
+    remove_unused(&media_dir.join("thumbs"), &|name| {
+        name.strip_suffix(".jpg").map(str::to_string)
+    });
+}
+
 /// Where a copy into the media folder is written until it is complete.
 pub fn partial_path(media_dir: &Path, file: &str) -> PathBuf {
     media_dir.join(format!("{file}.part"))
@@ -181,7 +229,7 @@ pub fn partial_path(media_dir: &Path, file: &str) -> PathBuf {
 mod tests {
     use super::*;
     use crate::project::tests::{TempDir, photo_show};
-    use fluxlide_engine::show::{Slide, SlideId};
+    use fluxlide_engine::show::Slide;
 
     fn session(root: &TempDir, show: ShowDefinition) -> Session {
         let project = Project::create(&root.0, &show).unwrap();
@@ -244,6 +292,20 @@ mod tests {
     }
 
     #[test]
+    fn slide_numbers_are_not_reused_after_an_undo() {
+        let root = TempDir::new("session-slide-ids");
+        let mut session = session(&root, photo_show(1));
+        let mut next = session.show().clone();
+        let id = session.next_slide_id();
+        assert_eq!(id, SlideId(2));
+        next.slides.push(Slide::new(id, AssetId(1)));
+        session.edit(next, None);
+        session.undo();
+        assert_eq!(session.next_slide_id(), SlideId(3));
+        assert_eq!(session.next_slide_id(), SlideId(4));
+    }
+
+    #[test]
     fn copies_cut_short_are_marked_failed_when_opened_again() {
         let root = TempDir::new("session-interrupted");
         let mut show = photo_show(2);
@@ -251,6 +313,13 @@ mod tests {
         let project = Project::create(&root.0, &show).unwrap();
         let partial = partial_path(&project.media_dir(), "2.jpg");
         std::fs::write(&partial, b"half").unwrap();
+        let kept = project.media_dir().join("1.jpg");
+        std::fs::write(&kept, b"photo").unwrap();
+        let orphan = project.media_dir().join("8.png");
+        std::fs::write(&orphan, b"removed earlier").unwrap();
+        std::fs::create_dir(project.media_dir().join("thumbs")).unwrap();
+        let thumbnail = project.media_dir().join("thumbs").join("1.jpg.jpg");
+        std::fs::write(&thumbnail, b"thumb").unwrap();
         let dir = project.dir().to_path_buf();
         drop(project);
 
@@ -262,7 +331,8 @@ mod tests {
                 reason: INTERRUPTED.into()
             }
         );
-        assert!(!partial.exists());
+        assert!(!partial.exists() && !orphan.exists());
+        assert!(kept.exists() && thumbnail.exists());
         assert_eq!(
             stored(&session).assets[1].state,
             session.show().assets[1].state

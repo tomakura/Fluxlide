@@ -9,6 +9,7 @@ use fluxlide_engine::show::ShowDefinition;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::import;
 use crate::project::{self, Project};
 use crate::session::Session;
 
@@ -64,11 +65,17 @@ pub struct ProjectSummary {
     title: String,
     slide_count: usize,
     updated_at: i64,
+    /// The thumbnail of the first slide, if the show has slides.
+    thumbnail: Option<PathBuf>,
 }
 
 impl From<project::Summary> for ProjectSummary {
     fn from(summary: project::Summary) -> Self {
+        let media_dir = summary.dir.join(project::MEDIA_DIR);
         Self {
+            thumbnail: summary
+                .first_file
+                .map(|file| import::thumbnail_path(&media_dir, &file)),
             dir: summary.dir,
             title: summary.title,
             slide_count: summary.slide_count,
@@ -88,14 +95,19 @@ pub fn projects_dir(app: &AppHandle) -> Result<PathBuf, String> {
 #[tauri::command]
 pub async fn list_projects(app: AppHandle) -> Result<Vec<ProjectSummary>, String> {
     let root = projects_dir(&app)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        project::list(&root)
-            .into_iter()
-            .map(ProjectSummary::from)
-            .collect()
-    })
-    .await
-    .map_err(|err| err.to_string())
+    let summaries = tauri::async_runtime::spawn_blocking(move || project::list(&root))
+        .await
+        .map_err(|err| err.to_string())?;
+    let scope = app.asset_protocol_scope();
+    Ok(summaries
+        .into_iter()
+        .map(ProjectSummary::from)
+        .inspect(|summary| {
+            if let Some(thumbnail) = &summary.thumbnail {
+                let _ = scope.allow_file(thumbnail);
+            }
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -112,7 +124,7 @@ pub async fn create_project(
     let session = state.session();
     tauri::async_runtime::spawn_blocking(move || {
         let project = Project::create(&root, &show).map_err(|err| err.to_string())?;
-        Ok(replace(&session, Session::new(project, show)))
+        Ok(replace(&app, &session, Session::new(project, show)))
     })
     .await
     .map_err(|err| err.to_string())?
@@ -120,19 +132,24 @@ pub async fn create_project(
 
 #[tauri::command]
 pub async fn open_project(
+    app: AppHandle,
     state: State<'_, EditorState>,
     dir: PathBuf,
 ) -> Result<ShowState, String> {
     let session = state.session();
     tauri::async_runtime::spawn_blocking(move || {
         let (project, show) = Project::open(&dir).map_err(|err| err.to_string())?;
-        Ok(replace(&session, Session::new(project, show)))
+        Ok(replace(&app, &session, Session::new(project, show)))
     })
     .await
     .map_err(|err| err.to_string())?
 }
 
-fn replace(slot: &Mutex<Option<Session>>, session: Session) -> ShowState {
+/// Makes `session` the open one. The window may then show its media files.
+fn replace(app: &AppHandle, slot: &Mutex<Option<Session>>, session: Session) -> ShowState {
+    let _ = app
+        .asset_protocol_scope()
+        .allow_directory(session.media_dir(), true);
     let state = ShowState::of(&session);
     *slot.lock().unwrap() = Some(session);
     state
