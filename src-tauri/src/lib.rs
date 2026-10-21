@@ -1,5 +1,6 @@
 mod editor;
 mod history;
+mod import;
 mod presentation;
 mod preview;
 mod project;
@@ -78,6 +79,11 @@ pub fn run() {
         .manage(PresentationState::default())
         .manage(editor::EditorState::default())
         .manage(preview::PreviewState::default())
+        .setup(|app| {
+            let session = app.state::<editor::EditorState>().session();
+            app.manage(import::Importer::start(app.handle().clone(), session));
+            Ok(())
+        })
         .on_window_event(|window, event| {
             // Closing the management window ends the app, including any presentation.
             if window.label() != "main" {
@@ -107,6 +113,8 @@ pub fn run() {
             editor::edit_show,
             editor::undo_show,
             editor::redo_show,
+            import::import_files,
+            import::replace_asset_file,
             presentation::list_monitors,
             presentation::media_assets,
             presentation::presentation_status,
