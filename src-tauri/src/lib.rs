@@ -1,5 +1,9 @@
+mod editor;
+mod history;
 mod presentation;
 mod preview;
+mod project;
+mod session;
 
 use fluxlide_engine::media::video::Ffmpeg;
 use presentation::PresentationState;
@@ -72,6 +76,7 @@ pub fn run() {
                 .build(),
         )
         .manage(PresentationState::default())
+        .manage(editor::EditorState::default())
         .manage(preview::PreviewState::default())
         .on_window_event(|window, event| {
             // Closing the management window ends the app, including any presentation.
@@ -94,6 +99,14 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             engine_status,
             video_decoder_status,
+            editor::list_projects,
+            editor::create_project,
+            editor::open_project,
+            editor::close_project,
+            editor::show_state,
+            editor::edit_show,
+            editor::undo_show,
+            editor::redo_show,
             presentation::list_monitors,
             presentation::media_assets,
             presentation::presentation_status,
