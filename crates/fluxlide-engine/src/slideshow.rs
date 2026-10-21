@@ -14,6 +14,17 @@
 //! [`SlideshowStats`]. Export waits with its clock stopped, so its file
 //! keeps the timeline's times exactly.
 //!
+//! # Live control
+//!
+//! For a presentation, the operator can move to the next or the previous
+//! slide, pause, black out the output, and advance by hand only
+//! ([`Advance::Manual`]). Pausing stops the playback clock: the picture and
+//! a video's frame stay, its sound stops, and when playback resumes every
+//! later slide comes that much later. The mixer's clock does not stop, so
+//! playback time and mixer time differ by the time spent paused. With a
+//! title card, the show can wait on it before the first slide and end on
+//! it after the last.
+//!
 //! With an [`AudioMixer`] attached, a video's sound starts with its picture
 //! on the same playback clock and its volume follows the picture's opacity
 //! through transitions. With a [`Ducker`] attached, each video with sound is
@@ -32,7 +43,7 @@ use crate::media::audio::AudioTrack;
 use crate::media::video::{Ffmpeg, PlayRange, VideoPlayer};
 use crate::media::{MediaTexture, load_image};
 use crate::show::{
-    AssetKind, AtEnd, Order, ShowDefinition, Slide, SlideId, Timeline, TimelineEntry,
+    Advance, AssetKind, AtEnd, Order, ShowDefinition, Slide, SlideId, Timeline, TimelineEntry,
     TransitionChoice, TransitionId, WatermarkSource, WatermarkSpec,
 };
 use crate::{
@@ -86,6 +97,8 @@ impl Prepared {
 
 /// A slide loaded and waiting for its time.
 struct Ready {
+    /// Position of `entry` in its pass.
+    index: usize,
     entry: TimelineEntry,
     slide: Slide,
     media: Prepared,
@@ -93,6 +106,7 @@ struct Ready {
 }
 
 struct Showing {
+    index: usize,
     entry: TimelineEntry,
     slide: Slide,
     media: Prepared,
@@ -158,6 +172,7 @@ struct Announced {
 }
 
 struct Loading {
+    index: usize,
     entry: TimelineEntry,
     slide: Slide,
     since: Instant,
@@ -217,6 +232,39 @@ pub struct Slideshow {
     announced: Option<Announced>,
     /// The video frame due at the last update was not decoded yet.
     video_late: bool,
+    advance_mode: Advance,
+    /// The time given to the last update, on the mixer's clock.
+    real: f64,
+    /// Mixer time at which playback was paused.
+    paused_at: Option<f64>,
+    /// Mixer time spent paused so far: mixer time minus playback time.
+    paused_total: f64,
+    /// The operator asked for the next slide: it comes in as soon as it is ready.
+    advance_now: bool,
+    /// Where the first slide starts, and whether it starts fully visible.
+    first_entered: bool,
+    card: Option<Overlay>,
+    /// Waiting on the title card for [`Slideshow::start`].
+    held: bool,
+    /// The first slide is coming in from the title card.
+    from_card: bool,
+    /// Playback time at which the show started to go to the title card at the end.
+    ending: Option<f64>,
+    blackout: bool,
+}
+
+/// Where a presentation is, for the operator's screen.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Position {
+    /// On the title card, before the first slide.
+    pub before_start: bool,
+    /// On (or going to) the title card after the last slide.
+    pub at_end: bool,
+    pub current: Option<SlideId>,
+    /// The slides that come next, as far as they are known.
+    pub upcoming: Vec<SlideId>,
+    pub paused: bool,
+    pub blackout: bool,
 }
 
 impl Slideshow {
@@ -281,7 +329,19 @@ impl Slideshow {
             ducker: None,
             announced: None,
             video_late: false,
+            advance_mode: Advance::Auto,
+            real: 0.0,
+            paused_at: None,
+            paused_total: 0.0,
+            advance_now: false,
+            first_entered: false,
+            card: None,
+            held: false,
+            from_card: false,
+            ending: None,
+            blackout: false,
         };
+        slideshow.advance_mode = slideshow.show.playback.advance;
         slideshow.pass = slideshow.build_pass();
         if let Some(spec) = slideshow.show.look.watermark.clone() {
             slideshow.watermark = slideshow
@@ -392,6 +452,204 @@ impl Slideshow {
         self.finished
     }
 
+    /// Shows `card` (see [`Overlay::title_card`]) while waiting to start
+    /// ([`Slideshow::hold_start`]) and after the last slide.
+    pub fn set_title_card(&mut self, card: Overlay) {
+        self.card = Some(card);
+    }
+
+    /// Waits on the title card until [`Slideshow::start`] (or
+    /// [`Slideshow::next`]). The first slide is loaded meanwhile. Call
+    /// before the first update.
+    pub fn hold_start(&mut self) {
+        self.held = true;
+    }
+
+    /// Ends the wait of [`Slideshow::hold_start`]: the first slide comes in
+    /// from the title card as soon as it is ready.
+    pub fn start(&mut self) {
+        if self.held {
+            self.held = false;
+            self.from_card = self.card.is_some();
+            self.first_due = Some(self.playback_time());
+        }
+    }
+
+    /// Plays from slide `index` of the list (or the first usable one after
+    /// it) instead of the first. With `entered`, that slide is already fully
+    /// visible at the start rather than coming in from black. Call before
+    /// the first update.
+    pub fn start_at(&mut self, index: usize, entered: bool) {
+        let from: Vec<SlideId> = self.show.slides.iter().skip(index).map(|s| s.id).collect();
+        if let Some(position) = from.iter().find_map(|id| {
+            self.pass
+                .entries
+                .iter()
+                .position(|entry| entry.slide == *id)
+        }) {
+            self.next_entry = position;
+        }
+        self.first_entered = entered;
+    }
+
+    /// Brings in the next slide now (from the title card, the first). After
+    /// the last slide of a show that does not loop, goes to the title card.
+    pub fn next(&mut self) {
+        if self.held {
+            self.start();
+            return;
+        }
+        if self.ending.is_some() || self.finished {
+            return;
+        }
+        self.resume();
+        let no_more = self.ready.is_none()
+            && self.loading.is_none()
+            && self.next_entry >= self.pass.entries.len()
+            && self.pass_end != PassEnd::Loop;
+        if no_more && self.current.is_some() {
+            if self.card.is_some() {
+                self.ending = Some(self.playback_time());
+            }
+        } else {
+            self.advance_now = true;
+        }
+    }
+
+    /// Goes back to the slide before the current one (from the title card
+    /// at the end, back to the last slide).
+    pub fn previous(&mut self) {
+        if self.ending.take().is_some() || self.held {
+            return;
+        }
+        let Some(current) = &self.current else {
+            return;
+        };
+        let target = match current.index.checked_sub(1) {
+            Some(target) => target,
+            None if self.pass_end == PassEnd::Loop => self.pass.entries.len().saturating_sub(1),
+            None => return,
+        };
+        self.resume();
+        self.ready = None;
+        self.loading = None;
+        self.announced = None;
+        self.waiting_since = None;
+        self.failures_in_row = 0;
+        self.next_entry = target;
+        self.start_loading();
+        self.advance_now = true;
+    }
+
+    /// Stops the playback clock. The sound of a video stops with it.
+    pub fn pause(&mut self) {
+        if self.paused_at.is_some() || self.held || self.finished {
+            return;
+        }
+        self.paused_at = Some(self.real);
+        for showing in self.current.iter_mut().chain(self.outgoing.iter_mut()) {
+            showing.voice = None;
+            showing._duck = None;
+        }
+        self.announced = None;
+    }
+
+    /// Starts the playback clock again where it stopped. A video's sound
+    /// starts again from where its picture is.
+    pub fn resume(&mut self) {
+        let Some(at) = self.paused_at.take() else {
+            return;
+        };
+        self.paused_total += self.real - at;
+        let now = self.playback_time();
+        let Some(current) = &self.current else {
+            return;
+        };
+        let elapsed = now - current.anchor;
+        let remaining = span_secs(&current.entry) - elapsed;
+        let (Some(mixer), Ok(ffmpeg), Some(asset)) = (
+            &self.audio,
+            &self.ffmpeg,
+            self.show.asset(current.entry.asset),
+        ) else {
+            return;
+        };
+        if !current.media.has_sound() || remaining <= 0.05 {
+            return;
+        }
+        let range = PlayRange {
+            start: ms_to_secs(u64::from(current.entry.video_start_ms.unwrap_or(0))) + elapsed,
+            length: Some(remaining),
+        };
+        let path = self.media_dir.join(&asset.file);
+        let track = AudioTrack::open(ffmpeg, &path, mixer.format(), range);
+        let start = self.mixer_time(now);
+        let end = self.mixer_time(current.anchor + span_secs(&current.entry));
+        let duck = self
+            .ducker
+            .as_ref()
+            .map(|ducker| ducker.open_window(start, end));
+        let mixer = mixer.clone();
+        let current = self.current.as_mut().expect("checked above");
+        match track {
+            Ok(mut track) => {
+                current.voice = track
+                    .take_samples()
+                    .map(|(samples, finished)| mixer.play(samples, finished, start, 0.0));
+                current._duck = duck;
+                if let Prepared::Video { audio, .. } = &mut current.media {
+                    *audio = Some(track);
+                }
+            }
+            Err(err) => self.stats.last_error = Some(err.to_string()),
+        }
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.paused_at.is_some()
+    }
+
+    /// Shows black, with no caption or watermark, while playback goes on.
+    pub fn set_blackout(&mut self, blackout: bool) {
+        self.blackout = blackout;
+    }
+
+    /// Where the show is, with up to `count` upcoming slides.
+    pub fn position(&self, count: usize) -> Position {
+        let mut upcoming: Vec<SlideId> = self
+            .ready
+            .as_ref()
+            .map(|ready| ready.entry.slide)
+            .or(self.loading.as_ref().map(|loading| loading.entry.slide))
+            .into_iter()
+            .collect();
+        let rest = self.pass.entries.iter().skip(self.next_entry);
+        // The next pass is known only when it is not shuffled.
+        let again = (self.pass_end == PassEnd::Loop && self.show.playback.order == Order::AsListed)
+            .then(|| self.pass.entries.iter().cycle())
+            .into_iter()
+            .flatten();
+        upcoming.extend(rest.chain(again).map(|entry| entry.slide).take(count));
+        upcoming.truncate(count);
+        Position {
+            before_start: self.held,
+            at_end: self.ending.is_some(),
+            current: self.current.as_ref().map(|showing| showing.slide.id),
+            upcoming,
+            paused: self.is_paused(),
+            blackout: self.blackout,
+        }
+    }
+
+    /// Playback time now: mixer time less the time spent paused.
+    fn playback_time(&self) -> f64 {
+        self.paused_at.unwrap_or(self.real) - self.paused_total
+    }
+
+    fn mixer_time(&self, playback: f64) -> f64 {
+        playback + self.paused_total
+    }
+
     /// True when the last update could not show what is due at its time
     /// because a slide or a video frame was still being prepared. Live
     /// playback carries on regardless; export updates again at the same
@@ -424,7 +682,8 @@ impl Slideshow {
     /// transitions, uploads the video frames due at this time and sets the
     /// volume of each sound to its picture's opacity.
     pub fn update(&mut self, now: f64) {
-        self.advance(now);
+        self.real = now;
+        self.advance(self.playback_time());
         let progress = self.transition_progress();
         if let Some(showing) = &self.outgoing
             && let Some(voice) = &showing.voice
@@ -440,7 +699,10 @@ impl Slideshow {
 
     fn advance(&mut self, now: f64) {
         self.now = now;
-        let first_due = *self.first_due.get_or_insert(now);
+        let first_due = match self.held {
+            true => f64::INFINITY,
+            false => *self.first_due.get_or_insert(now),
+        };
         self.poll_loading();
 
         self.video_late = false;
@@ -453,6 +715,9 @@ impl Slideshow {
             }
         }
 
+        if self.paused_at.is_some() {
+            return;
+        }
         if let Some(fade) = &self.fade_out {
             if now - fade.start >= fade.secs {
                 self.fade_out = None;
@@ -462,13 +727,17 @@ impl Slideshow {
             return;
         }
         if let Some(current) = &self.current
-            && self.outgoing.is_some()
             && current.enter_progress(now) >= 1.0
         {
             self.outgoing = None;
+            self.from_card = false;
         }
 
         let due = match &self.current {
+            _ if self.advance_now => now,
+            Some(_) if self.advance_mode == Advance::Manual || self.ending.is_some() => {
+                f64::INFINITY
+            }
             Some(current) => current.leave_at(),
             None => first_due,
         };
@@ -481,8 +750,9 @@ impl Slideshow {
             // Every later slide moves back by the playback time spent waiting.
             // Export waits at one time, so its slides stay where they belong.
             let waited = self.waiting_since.take().map_or(0.0, |since| now - since);
-            // The first slide always waits for its load; only later ones are late.
-            if waited > 0.0 && self.current.is_some() {
+            // The first slide always waits for its load, and so does one the
+            // operator asked for; only slides due by the timeline are late.
+            if waited > 0.0 && self.current.is_some() && !self.advance_now {
                 self.stats.late_transitions += 1;
                 self.stats.longest_wait_ms = self.stats.longest_wait_ms.max(waited * 1000.0);
             }
@@ -513,6 +783,7 @@ impl Slideshow {
         if !ready.media.has_sound() {
             return;
         }
+        let start = self.mixer_time(start);
         let span = (start, start + span_secs(&ready.entry));
         match &mut self.announced {
             Some(announced) if announced.span == span => {}
@@ -531,6 +802,30 @@ impl Slideshow {
 
     /// What to draw for the time given to the last [`Slideshow::update`].
     pub fn frame(&self) -> Frame<'_> {
+        let empty = Frame {
+            from: None,
+            to: None,
+            transition: None,
+            overlays: Vec::new(),
+        };
+        if self.blackout {
+            return empty;
+        }
+        let card = |opacity: f32| {
+            self.card
+                .as_ref()
+                .filter(|_| opacity > 0.0)
+                .map(|overlay| OverlayRef { overlay, opacity })
+        };
+        if self.held {
+            return Frame {
+                overlays: card(1.0).into_iter().collect(),
+                ..empty
+            };
+        }
+        if let Some(start) = self.ending {
+            return self.ending_frame(start, card);
+        }
         let progress = self.transition_progress();
         let fit = self.show.look.fit;
         let in_transition = progress < 1.0;
@@ -561,6 +856,10 @@ impl Slideshow {
                 opacity: 1.0,
             });
         }
+        // Coming in from the title card, the card fades out like a caption.
+        if self.from_card && in_transition {
+            overlays.extend(card((1.0 - 2.0 * progress).max(0.0)));
+        }
         let transition = if self.fade_out.is_some() {
             Some(&*FADE_TO_BLACK)
         } else {
@@ -575,6 +874,46 @@ impl Slideshow {
                     transition,
                     progress,
                 }),
+            overlays,
+        }
+    }
+
+    /// The last slide fading to black while the title card comes up, from
+    /// playback time `start`.
+    fn ending_frame<'a>(
+        &'a self,
+        start: f64,
+        card: impl Fn(f32) -> Option<OverlayRef<'a>>,
+    ) -> Frame<'a> {
+        let secs = ms_to_secs(u64::from(self.show.look.transition_ms));
+        let progress = if secs > 0.0 {
+            ((self.now - start) / secs).clamp(0.0, 1.0) as f32
+        } else {
+            1.0
+        };
+        let current = self.current.as_ref().filter(|_| progress < 1.0);
+        let mut overlays: Vec<OverlayRef<'_>> = current
+            .and_then(|showing| showing.caption.as_ref())
+            .map(|overlay| OverlayRef {
+                overlay,
+                opacity: (1.0 - 2.0 * progress).max(0.0),
+            })
+            .into_iter()
+            .collect();
+        if let Some((_, overlay)) = self.watermark.as_ref().filter(|_| progress < 1.0) {
+            overlays.push(OverlayRef {
+                overlay,
+                opacity: 1.0 - progress,
+            });
+        }
+        overlays.extend(card((2.0 * progress - 1.0).max(0.0)));
+        Frame {
+            from: current.map(|showing| showing.layer(self.now, self.show.look.fit)),
+            to: None,
+            transition: current.map(|_| TransitionRun {
+                transition: &FADE_TO_BLACK,
+                progress,
+            }),
             overlays,
         }
     }
@@ -594,8 +933,9 @@ impl Slideshow {
     }
 
     /// Puts the ready slide on screen with its `start_ms` at `anchor`.
-    fn begin_slide(&mut self, anchor: f64) {
+    fn begin_slide(&mut self, mut anchor: f64) {
         let Some(Ready {
+            index,
             entry,
             slide,
             mut media,
@@ -604,6 +944,12 @@ impl Slideshow {
         else {
             return;
         };
+        self.advance_now = false;
+        if std::mem::take(&mut self.first_entered) && self.current.is_none() {
+            // Already fully visible: as if it had come in just before.
+            anchor -= ms_to_secs(u64::from(entry.enter_ms));
+        }
+        let mixer_anchor = self.mixer_time(anchor);
         // The sound starts at the same playback time as the picture, silent
         // until `update` raises it with the transition.
         let voice = match (&mut media, &self.audio) {
@@ -614,11 +960,11 @@ impl Slideshow {
                 Some(mixer),
             ) => track
                 .take_samples()
-                .map(|(samples, finished)| mixer.play(samples, finished, anchor, 0.0)),
+                .map(|(samples, finished)| mixer.play(samples, finished, mixer_anchor, 0.0)),
             _ => None,
         };
         let duck = media.has_sound().then(|| {
-            let (start, end) = (anchor, anchor + span_secs(&entry));
+            let (start, end) = (mixer_anchor, mixer_anchor + span_secs(&entry));
             match (self.announced.take(), &self.ducker) {
                 (Some(announced), _) => {
                     announced.window.set(start, end);
@@ -635,6 +981,7 @@ impl Slideshow {
         }
         self.stats.current = Some(slide.id);
         self.current = Some(Showing {
+            index,
             entry,
             slide,
             media,
@@ -672,6 +1019,7 @@ impl Slideshow {
                 }
             };
             let Some(Loading {
+                index,
                 entry,
                 slide,
                 since,
@@ -695,6 +1043,7 @@ impl Slideshow {
                         });
                     }
                     self.ready = Some(Ready {
+                        index,
                         entry,
                         slide,
                         media,
@@ -715,7 +1064,7 @@ impl Slideshow {
 
     /// The next entry to play: the rest of this pass, then the next pass
     /// when the show loops.
-    fn next_entry(&mut self) -> Option<TimelineEntry> {
+    fn next_entry(&mut self) -> Option<(usize, TimelineEntry)> {
         if self.next_entry >= self.pass.entries.len() {
             if self.pass_end != PassEnd::Loop || self.pass.entries.is_empty() {
                 return None;
@@ -723,9 +1072,10 @@ impl Slideshow {
             self.pass = self.build_pass();
             self.next_entry = 0;
         }
-        let entry = *self.pass.entries.get(self.next_entry)?;
+        let index = self.next_entry;
+        let entry = *self.pass.entries.get(index)?;
         self.next_entry += 1;
-        Some(entry)
+        Some((index, entry))
     }
 
     /// Starts loading the next slide. A slide that fails to load is skipped
@@ -735,7 +1085,7 @@ impl Slideshow {
         if self.failures_in_row >= self.pass.entries.len().max(1) {
             return;
         }
-        let Some(entry) = self.next_entry() else {
+        let Some((index, entry)) = self.next_entry() else {
             return;
         };
         let (Some(slide), Some(asset)) = (
@@ -779,6 +1129,7 @@ impl Slideshow {
         match spawned {
             Ok(_) => {
                 self.loading = Some(Loading {
+                    index,
                     entry,
                     slide,
                     since: Instant::now(),
@@ -978,6 +1329,7 @@ mod tests {
         let (_never_sent, result) = mpsc::channel();
         let ready = show.ready.take().unwrap();
         show.loading = Some(Loading {
+            index: ready.index,
             entry: ready.entry,
             slide: ready.slide.clone(),
             since: Instant::now(),
@@ -1216,6 +1568,234 @@ mod tests {
 
         update_until(&mut show, 2.5, |show| show.loading.is_none());
         // Stops the decoders, which keep the clip open on Windows.
+        drop(show);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Three photos, a.png to c.png, in a show of `playback`.
+    fn three_photos(name: &str, playback: Playback) -> (PathBuf, ShowDefinition) {
+        let dir = temp_dir(name);
+        for photo in ["a.png", "b.png", "c.png"] {
+            save_photo(&dir, photo, (32, 32));
+        }
+        let mut show = show_of(&[("a.png", None), ("b.png", None), ("c.png", None)]);
+        show.playback = playback;
+        (dir, show)
+    }
+
+    fn current(show: &Slideshow) -> Option<SlideId> {
+        show.position(0).current
+    }
+
+    #[test]
+    fn a_manual_show_moves_only_when_asked_and_can_go_back() {
+        let Some(renderer) = crate::test_renderer() else {
+            return;
+        };
+        let (dir, definition) = three_photos(
+            "manual",
+            Playback {
+                advance: Advance::Manual,
+                ..Default::default()
+            },
+        );
+        let mut show = Slideshow::new(renderer, definition, dir.clone(), (32, 32));
+        update_exactly(&mut show, 0.0);
+        update_until(&mut show, 10.0, |show| show.ready.is_some());
+        assert_eq!(current(&show), Some(SlideId(1)));
+
+        // The next slide comes in when asked, from that moment.
+        show.next();
+        show.update(10.0);
+        assert_eq!(current(&show), Some(SlideId(2)));
+        assert_eq!(opacities(&show), [1.0, 0.0]);
+        show.update(10.25);
+        assert_eq!(opacities(&show), [0.5, 0.5]);
+        assert_eq!(show.stats().late_transitions, 0);
+
+        // Going back loads the slide before, and comes in once it is ready.
+        update_until(&mut show, 11.0, |show| show.ready.is_some());
+        show.previous();
+        update_until(&mut show, 11.0, |show| current(show) == Some(SlideId(1)));
+        // From the first slide of a looping show, back is the last.
+        update_until(&mut show, 12.0, |show| show.ready.is_some());
+        show.previous();
+        update_until(&mut show, 12.0, |show| current(show) == Some(SlideId(3)));
+
+        update_until(&mut show, 13.0, |show| show.loading.is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn pausing_stops_the_clock_and_later_slides_come_that_much_later() {
+        let Some(renderer) = crate::test_renderer() else {
+            return;
+        };
+        let (dir, definition) = three_photos("pause", Playback::default());
+        let mut show = Slideshow::new(renderer, definition, dir.clone(), (32, 32));
+        update_exactly(&mut show, 0.0);
+        // Paused halfway through the first fade.
+        show.update(0.25);
+        show.pause();
+        update_until(&mut show, 5.0, |show| show.ready.is_some());
+        assert!(show.is_paused());
+        assert_eq!(opacities(&show), [0.5]);
+
+        // 4.75 s paused: the second slide is due at 1.5 + 4.75.
+        show.resume();
+        show.update(6.0);
+        assert_eq!(current(&show), Some(SlideId(1)));
+        show.update(6.25);
+        assert_eq!(current(&show), Some(SlideId(2)));
+        assert_eq!(opacities(&show), [1.0, 0.0]);
+
+        // Next works while paused, and resumes playback.
+        update_until(&mut show, 6.5, |show| show.ready.is_some());
+        show.pause();
+        show.next();
+        assert!(!show.is_paused());
+        show.update(6.5);
+        assert_eq!(current(&show), Some(SlideId(3)));
+
+        update_until(&mut show, 7.0, |show| show.loading.is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_held_show_waits_on_its_title_card_and_ends_on_it() {
+        let Some(renderer) = crate::test_renderer() else {
+            return;
+        };
+        let (dir, definition) = three_photos(
+            "title-card",
+            Playback {
+                at_end: AtEnd::Stop,
+                ..Default::default()
+            },
+        );
+        let card = Overlay::title_card(&renderer, "港の写真", (320, 180)).unwrap();
+        let mut show = Slideshow::new(renderer, definition, dir.clone(), (320, 180));
+        show.set_title_card(card);
+        show.hold_start();
+
+        // Only the card, however long it waits; the first slide is loaded.
+        update_until(&mut show, 30.0, |show| show.ready.is_some());
+        let frame = show.frame();
+        assert!(frame.to.is_none() && frame.from.is_none());
+        assert_eq!(frame.overlays.len(), 1);
+        drop(frame);
+        assert!(show.position(3).before_start);
+        assert_eq!(
+            show.position(3).upcoming,
+            [SlideId(1), SlideId(2), SlideId(3)]
+        );
+
+        // Started, the first slide comes in and the card fades out.
+        show.next();
+        show.update(30.0);
+        assert_eq!(current(&show), Some(SlideId(1)));
+        assert_eq!(show.frame().overlays.last().unwrap().opacity, 1.0);
+        show.update(30.5);
+        assert!(show.frame().overlays.is_empty());
+
+        // Through to the last slide, which stays.
+        update_exactly(&mut show, 32.0);
+        update_exactly(&mut show, 33.5);
+        update_exactly(&mut show, 40.0);
+        assert_eq!(current(&show), Some(SlideId(3)));
+
+        // Next goes to the card, and back returns to the last slide.
+        show.next();
+        assert!(show.position(0).at_end);
+        show.update(40.25);
+        assert_eq!(opacities(&show), [0.5]);
+        show.update(41.0);
+        let frame = show.frame();
+        assert!(frame.from.is_none() && frame.to.is_none());
+        assert_eq!(frame.overlays.len(), 1);
+        assert_eq!(frame.overlays[0].opacity, 1.0);
+        drop(frame);
+        show.previous();
+        show.update(41.0);
+        assert_eq!(opacities(&show), [1.0]);
+        assert!(!show.position(0).at_end);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_show_can_start_from_a_slide_already_shown_and_black_out() {
+        let Some(renderer) = crate::test_renderer() else {
+            return;
+        };
+        let (dir, definition) = three_photos("start-at", Playback::default());
+        let mut show = Slideshow::new(renderer, definition, dir.clone(), (32, 32));
+        show.start_at(1, true);
+        update_exactly(&mut show, 0.0);
+        assert_eq!(current(&show), Some(SlideId(2)));
+        assert_eq!(opacities(&show), [1.0]);
+        // Fully visible for its whole duration from the start.
+        assert_eq!(show.current.as_ref().unwrap().leave_at(), 1.0);
+        update_until(&mut show, 0.5, |show| show.ready.is_some());
+        assert_eq!(
+            show.position(4).upcoming,
+            [SlideId(3), SlideId(1), SlideId(2), SlideId(3)]
+        );
+
+        show.set_blackout(true);
+        let frame = show.frame();
+        assert!(frame.to.is_none() && frame.overlays.is_empty());
+        drop(frame);
+        // Playback goes on underneath.
+        show.update(1.0);
+        assert_eq!(current(&show), Some(SlideId(3)));
+
+        update_until(&mut show, 1.5, |show| show.loading.is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_paused_video_is_silent_and_its_sound_picks_up_where_its_picture_is() {
+        let Some(renderer) = crate::test_renderer() else {
+            return;
+        };
+        let Ok(ffmpeg) = Ffmpeg::locate() else {
+            eprintln!("skipping pause test: ffmpeg not found");
+            return;
+        };
+        let dir = temp_dir("pause-video");
+        let status = std::process::Command::new(ffmpeg.ffmpeg_path())
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
+            .arg("testsrc2=size=64x36:rate=30:duration=2")
+            .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=2"])
+            .args(["-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest"])
+            .arg(dir.join("clip.mp4"))
+            .status()
+            .unwrap();
+        if !status.success() {
+            eprintln!("skipping pause test: could not create a clip");
+            return;
+        }
+        let definition = show_of(&[("clip.mp4", Some(2_000))]);
+        let mut show = Slideshow::new(renderer, definition, dir.clone(), (32, 32));
+        let mixer = crate::audio::OfflineMixer::export(48_000);
+        show.set_audio(mixer.mixer());
+        let (ducker, mut probe) = crate::bgm::DuckProbe::new();
+        show.set_ducker(ducker);
+
+        update_exactly(&mut show, 0.0);
+        assert_eq!(probe.windows(), [(0.0, 2.0)]);
+        show.update(0.5);
+        show.pause();
+        assert!(show.current.as_ref().unwrap().voice.is_none());
+        assert_eq!(probe.windows(), []);
+
+        // After 3 s paused, the rest of the video (1.5 s) plays from now.
+        show.update(3.5);
+        show.resume();
+        assert!(show.current.as_ref().unwrap().voice.is_some());
+        assert_eq!(probe.windows(), [(3.5, 5.0)]);
+
         drop(show);
         std::fs::remove_dir_all(&dir).unwrap();
     }
