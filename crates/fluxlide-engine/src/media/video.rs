@@ -33,19 +33,13 @@ pub struct Ffmpeg {
 
 impl Ffmpeg {
     /// Looks for both tools in `FLUXLIDE_FFMPEG_DIR`, next to the running
-    /// executable (where a bundled copy would go), then on `PATH`.
+    /// executable (where the bundled copy is, named `fluxlide-ffmpeg` and
+    /// `fluxlide-ffprobe`), then on `PATH`.
     pub fn locate() -> Result<Self, EngineError> {
-        let dirs = search_dirs();
-        let find = |name: &str| {
-            let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
-            dirs.iter()
-                .map(|dir| dir.join(&file))
-                .find(|path| path.is_file())
-                .ok_or_else(|| EngineError::Media(format!("{name} was not found")))
-        };
+        let dirs = SearchDirs::current();
         Ok(Self {
-            ffmpeg: find("ffmpeg")?,
-            ffprobe: find("ffprobe")?,
+            ffmpeg: dirs.find("ffmpeg")?,
+            ffprobe: dirs.find("ffprobe")?,
         })
     }
 
@@ -95,28 +89,56 @@ impl Ffmpeg {
     }
 }
 
-fn search_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Some(dir) = std::env::var_os("FLUXLIDE_FFMPEG_DIR") {
-        dirs.push(PathBuf::from(dir));
-    }
-    if let Some(dir) = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(Path::to_path_buf))
-    {
-        dirs.push(dir);
-    }
-    if let Some(path) = std::env::var_os("PATH") {
-        dirs.extend(std::env::split_paths(&path));
-    }
-    // Apps opened from the Finder do not inherit the shell's PATH.
-    if cfg!(target_os = "macos") {
-        dirs.extend(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from));
-    }
-    dirs
+/// Where `ffmpeg` and `ffprobe` may be.
+struct SearchDirs {
+    /// Folder named by `FLUXLIDE_FFMPEG_DIR`.
+    env_dir: Option<PathBuf>,
+    /// Folder of the running executable, which holds the bundled copy.
+    exe_dir: Option<PathBuf>,
+    /// Folders searched for the plain names.
+    path_dirs: Vec<PathBuf>,
 }
 
-pub(super) fn command(program: &Path) -> Command {
+impl SearchDirs {
+    fn current() -> Self {
+        let mut path_dirs: Vec<PathBuf> = std::env::var_os("PATH")
+            .map(|path| std::env::split_paths(&path).collect())
+            .unwrap_or_default();
+        // Apps opened from the Finder do not inherit the shell's PATH.
+        if cfg!(target_os = "macos") {
+            path_dirs.extend(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from));
+        }
+        Self {
+            env_dir: std::env::var_os("FLUXLIDE_FFMPEG_DIR").map(PathBuf::from),
+            exe_dir: std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(Path::to_path_buf)),
+            path_dirs,
+        }
+    }
+
+    /// Candidate files for `tool`, in order of preference. The bundled copy
+    /// has a prefix because the Linux package installs it into `/usr/bin`,
+    /// where a plain `ffmpeg` would collide with the distribution's package.
+    fn candidates(&self, tool: &str) -> Vec<PathBuf> {
+        let plain = format!("{tool}{}", std::env::consts::EXE_SUFFIX);
+        let bundled = format!("fluxlide-{plain}");
+        let mut files = Vec::new();
+        files.extend(self.env_dir.iter().map(|dir| dir.join(&plain)));
+        files.extend(self.exe_dir.iter().map(|dir| dir.join(&bundled)));
+        files.extend(self.path_dirs.iter().map(|dir| dir.join(&plain)));
+        files
+    }
+
+    fn find(&self, tool: &str) -> Result<PathBuf, EngineError> {
+        self.candidates(tool)
+            .into_iter()
+            .find(|path| path.is_file())
+            .ok_or_else(|| EngineError::Media(format!("{tool} was not found")))
+    }
+}
+
+pub(crate) fn command(program: &Path) -> Command {
     #[allow(unused_mut)]
     let mut command = Command::new(program);
     #[cfg(windows)]
@@ -395,7 +417,7 @@ fn read_frames(
     }
 }
 
-pub(super) fn collect_log(pipe: impl Read, lines: &Mutex<VecDeque<String>>) {
+pub(crate) fn collect_log(pipe: impl Read, lines: &Mutex<VecDeque<String>>) {
     for line in BufReader::new(pipe).lines() {
         let Ok(line) = line else { return };
         let mut lines = lines.lock().unwrap();
@@ -532,6 +554,24 @@ impl VideoPlayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundled_tools_are_found_next_to_the_executable() {
+        let dirs = SearchDirs {
+            env_dir: Some(PathBuf::from("/env")),
+            exe_dir: Some(PathBuf::from("/app")),
+            path_dirs: vec![PathBuf::from("/usr/bin")],
+        };
+        let suffix = std::env::consts::EXE_SUFFIX;
+        assert_eq!(
+            dirs.candidates("ffprobe"),
+            [
+                PathBuf::from("/env").join(format!("ffprobe{suffix}")),
+                PathBuf::from("/app").join(format!("fluxlide-ffprobe{suffix}")),
+                PathBuf::from("/usr/bin").join(format!("ffprobe{suffix}")),
+            ]
+        );
+    }
 
     #[test]
     fn probe_output_is_parsed() {

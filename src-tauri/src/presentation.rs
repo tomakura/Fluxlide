@@ -1,8 +1,10 @@
 //! Prototype of the presentation window: a native window without a webview,
 //! placed fullscreen on the chosen display and rendered by wgpu on its own
 //! thread while the management window stays usable. It plays the chosen
-//! photos and videos in a loop with crossfades, or a test pattern when no
-//! files are chosen. Video sound goes to the default audio output.
+//! photos and videos in a loop with transitions and captions, or a test
+//! pattern when no files are chosen. Video sound goes to the default audio
+//! output, with music from a folder as BGM that fades out while videos with
+//! sound play.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,8 +13,11 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use fluxlide_engine::audio::{AudioOutput, AudioStats};
+use fluxlide_engine::bgm::{Bgm, BgmConfig, BgmSource, BgmState, BgmStats};
+use fluxlide_engine::media::video::Ffmpeg;
 use fluxlide_engine::{
-    FrameOutcome, Presenter, Renderer, Scene, Slideshow, SlideshowConfig, SlideshowStats,
+    Caption, CaptionStyle, Fit, FrameOutcome, Presenter, Renderer, Scene, Slideshow,
+    SlideshowConfig, SlideshowStats,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State, WindowEvent};
@@ -104,6 +109,62 @@ pub struct PlaybackStats {
     audio: Option<SoundStats>,
     /// Why the audio output could not be opened, if it could not.
     audio_error: Option<String>,
+    bgm: Option<MusicStats>,
+    /// Why the BGM could not be started, if it could not.
+    bgm_error: Option<String>,
+}
+
+/// BGM measurements shown in the management window.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicStats {
+    /// "idle", "playing" or "gap".
+    state: &'static str,
+    title: Option<String>,
+    artist: Option<String>,
+    tracks_started: u64,
+    tracks_failed: u64,
+    underruns: u64,
+    starved_transitions: u64,
+    last_error: Option<String>,
+}
+
+impl From<BgmStats> for MusicStats {
+    fn from(stats: BgmStats) -> Self {
+        Self {
+            state: match stats.state {
+                BgmState::Idle => "idle",
+                BgmState::Playing => "playing",
+                BgmState::Gap => "gap",
+            },
+            title: stats.now_playing.as_ref().map(|now| now.title.clone()),
+            artist: stats.now_playing.and_then(|now| now.artist),
+            tracks_started: stats.tracks_started,
+            tracks_failed: stats.tracks_failed,
+            underruns: stats.underruns,
+            starved_transitions: stats.starved_transitions,
+            last_error: stats.last_error,
+        }
+    }
+}
+
+/// Sound settings chosen in the management window.
+pub struct SoundOptions {
+    /// Folder of music played as BGM.
+    pub bgm_dir: Option<PathBuf>,
+    /// How much earlier the sound is delivered, for outputs such as
+    /// Bluetooth speakers that are heard later than they report.
+    pub sync_offset_ms: f64,
+}
+
+/// The sound side of a running presentation, owned by the render thread.
+#[derive(Default)]
+struct Sound {
+    // The BGM is dropped first, while the output it plays through is open.
+    bgm: Option<Bgm>,
+    output: Option<AudioOutput>,
+    audio_error: Option<String>,
+    bgm_error: Option<String>,
 }
 
 /// Audio output measurements shown in the management window.
@@ -113,6 +174,7 @@ pub struct SoundStats {
     device: String,
     sample_rate: u32,
     output_latency_ms: f64,
+    sync_offset_ms: f64,
     offset_ms: f64,
     max_offset_ms: f64,
     resyncs: u64,
@@ -126,6 +188,7 @@ impl From<AudioStats> for SoundStats {
             device,
             sample_rate,
             output_latency_ms,
+            sync_offset_ms,
             offset_ms,
             max_offset_ms,
             resyncs,
@@ -136,6 +199,7 @@ impl From<AudioStats> for SoundStats {
             device,
             sample_rate,
             output_latency_ms,
+            sync_offset_ms,
             offset_ms,
             max_offset_ms,
             resyncs,
@@ -146,7 +210,7 @@ impl From<AudioStats> for SoundStats {
 }
 
 impl PlaybackStats {
-    fn from_slideshow(show: &Slideshow, audio_error: Option<&str>) -> Self {
+    fn from_slideshow(show: &Slideshow, sound: &Sound) -> Self {
         let SlideshowStats {
             current,
             transitions,
@@ -173,7 +237,9 @@ impl PlaybackStats {
             failed_items,
             last_error,
             audio: show.audio_stats().map(SoundStats::from),
-            audio_error: audio_error.map(str::to_string),
+            audio_error: sound.audio_error.clone(),
+            bgm: sound.bgm.as_ref().map(|bgm| MusicStats::from(bgm.stats())),
+            bgm_error: sound.bgm_error.clone(),
         }
     }
 }
@@ -281,7 +347,13 @@ pub async fn start_presentation(
     state: State<'_, PresentationState>,
     monitor_index: usize,
     files: Vec<PathBuf>,
+    bgm_dir: Option<PathBuf>,
+    sync_offset_ms: Option<f64>,
 ) -> Result<PresentationStatus, String> {
+    let sound = SoundOptions {
+        bgm_dir,
+        sync_offset_ms: sync_offset_ms.unwrap_or(0.0),
+    };
     if let Some(active) = state.take_active() {
         shut_down(active).await;
     }
@@ -313,7 +385,7 @@ pub async fn start_presentation(
         .map_err(|err| err.to_string())?;
     // Any failure after this point must close the window and release Esc,
     // otherwise the "presenter" label stays taken until the app restarts.
-    match run_presentation(&app, &window, renderer, position, size, files).await {
+    match run_presentation(&app, &window, renderer, position, size, files, sound).await {
         Ok((stop, stats, thread)) => {
             *state.active.lock().unwrap() = Some(Active {
                 window,
@@ -332,6 +404,32 @@ pub async fn start_presentation(
     }
 }
 
+/// The slideshow of `files` as the presentation and the preview show it.
+/// Until the project has titles to show, each caption is the file name.
+pub fn build_slideshow(
+    renderer: Arc<Renderer>,
+    files: Vec<PathBuf>,
+    output_size: (u32, u32),
+) -> Slideshow {
+    let captions = files
+        .iter()
+        .map(|file| Caption {
+            title: file
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            ..Default::default()
+        })
+        .collect();
+    let config = SlideshowConfig {
+        fit: Fit::Blur,
+        ..Default::default()
+    };
+    let mut show = Slideshow::new(renderer, files, output_size, config);
+    show.set_captions(captions, CaptionStyle::default());
+    show
+}
+
 type RunningPresentation = (Arc<AtomicBool>, Arc<Mutex<FrameStats>>, JoinHandle<()>);
 
 /// Makes `window` fullscreen, attaches a surface and starts the render thread.
@@ -342,6 +440,7 @@ async fn run_presentation(
     position: tauri::PhysicalPosition<i32>,
     size: tauri::PhysicalSize<u32>,
     files: Vec<PathBuf>,
+    sound: SoundOptions,
 ) -> Result<RunningPresentation, String> {
     // Not `set_fullscreen_on_monitor`: it matches monitors by physical position,
     // and on macOS with mixed scale factors the physical ranges of displays
@@ -404,20 +503,24 @@ async fn run_presentation(
     set_escape_enabled(app, true);
 
     // Photos and videos are loaded at the display's full resolution.
-    let slideshow = (!files.is_empty()).then(|| {
-        Slideshow::new(
-            renderer.clone(),
-            files,
-            (size.width, size.height),
-            SlideshowConfig::default(),
-        )
-    });
+    let slideshow = (!files.is_empty())
+        .then(|| build_slideshow(renderer.clone(), files, (size.width, size.height)));
     let thread = {
         let stop = stop.clone();
         let stats = stats.clone();
         std::thread::Builder::new()
             .name("fluxlide-presenter".into())
-            .spawn(move || render_loop(renderer, presenter, slideshow, stop, stats, pending_size))
+            .spawn(move || {
+                render_loop(
+                    renderer,
+                    presenter,
+                    slideshow,
+                    sound,
+                    stop,
+                    stats,
+                    pending_size,
+                )
+            })
             .map_err(|err| err.to_string())?
     };
     Ok((stop, stats, thread))
@@ -458,21 +561,16 @@ fn render_loop(
     renderer: Arc<Renderer>,
     mut presenter: Presenter,
     mut slideshow: Option<Slideshow>,
+    options: SoundOptions,
     stop: Arc<AtomicBool>,
     stats: Arc<Mutex<FrameStats>>,
     pending_size: Arc<Mutex<Option<(u32, u32)>>>,
 ) {
     let start = Instant::now();
     // The output stays on this thread and shares the playback clock (`start`).
-    let (_audio, audio_error) = match slideshow.as_mut().map(|_| AudioOutput::open(start)) {
-        Some(Ok(output)) => {
-            if let Some(show) = slideshow.as_mut() {
-                show.set_audio(output.mixer());
-            }
-            (Some(output), None)
-        }
-        Some(Err(err)) => (None, Some(err.to_string())),
-        None => (None, None),
+    let sound = match slideshow.as_mut() {
+        Some(show) => open_sound(show, start, &options),
+        None => Sound::default(),
     };
     let mut last_frame: Option<Instant> = None;
     let mut window_start = start;
@@ -483,13 +581,19 @@ fn render_loop(
     while !stop.load(Ordering::Relaxed) {
         if let Some((width, height)) = pending_size.lock().unwrap().take() {
             presenter.resize(&renderer, width, height);
+            if let Some(Err(err)) = slideshow
+                .as_mut()
+                .map(|show| show.set_output_size(presenter.size()))
+            {
+                stats.lock().unwrap().last_error = Some(err.to_string());
+            }
         }
 
         let time = start.elapsed().as_secs_f64();
         let outcome = match slideshow.as_mut() {
             Some(show) => {
                 show.update(time);
-                presenter.render(&renderer, &Scene::Layers(&show.layers()))
+                presenter.render(&renderer, &Scene::Frame(show.frame()))
             }
             None => presenter.render(
                 &renderer,
@@ -499,8 +603,7 @@ fn render_loop(
             ),
         };
         if let Some(show) = &slideshow {
-            stats.lock().unwrap().playback =
-                Some(PlaybackStats::from_slideshow(show, audio_error.as_deref()));
+            stats.lock().unwrap().playback = Some(PlaybackStats::from_slideshow(show, &sound));
         }
 
         match outcome {
@@ -542,4 +645,41 @@ fn render_loop(
             }
         }
     }
+}
+
+/// Opens the audio output for `show` and starts the BGM on it.
+fn open_sound(show: &mut Slideshow, start: Instant, options: &SoundOptions) -> Sound {
+    let output = match AudioOutput::open_with_sync_offset(start, options.sync_offset_ms) {
+        Ok(output) => output,
+        Err(err) => {
+            return Sound {
+                audio_error: Some(err.to_string()),
+                ..Sound::default()
+            };
+        }
+    };
+    show.set_audio(output.mixer());
+    let mut sound = Sound::default();
+    if let Some(dir) = &options.bgm_dir {
+        let bgm = Ffmpeg::locate().and_then(|ffmpeg| {
+            Bgm::start(
+                ffmpeg,
+                &output.mixer(),
+                &BgmSource::Folder(dir.clone()),
+                BgmConfig {
+                    shuffle: true,
+                    ..BgmConfig::default()
+                },
+            )
+        });
+        match bgm {
+            Ok(bgm) => {
+                show.set_ducker(bgm.ducker());
+                sound.bgm = Some(bgm);
+            }
+            Err(err) => sound.bgm_error = Some(err.to_string()),
+        }
+    }
+    sound.output = Some(output);
+    sound
 }

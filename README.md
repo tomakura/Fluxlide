@@ -7,7 +7,7 @@ Fluxlide（フラックスライド）は、写真・動画・キャプション
 
 > **開発ステータス: 実装初期**
 >
-> アプリの雛形と描画エンジンの土台ができた段階で、スライドショーの機能はまだ実装していません。以下は実装済み機能の一覧ではなく、開発予定の内容です。
+> アプリの雛形と描画エンジンの土台ができ、方式を確かめる技術検証（[段階1](docs/roadmap.md)）を終えた段階です。スライドショーとして使える機能はまだ実装していません。以下は実装済み機能の一覧ではなく、開発予定の内容です。
 
 ## 主な機能（開発予定）
 
@@ -53,9 +53,17 @@ Fluxlide（フラックスライド）は、写真・動画・キャプション
 - [技術選定・アーキテクチャ・自動ビルド／リリース方針](docs/tech-stack.md)
 - [画面草案・ロゴ](docs/ui-draft.md)
 - [完成までの手順](docs/roadmap.md)
+- [進捗の記録](docs/progress.md)
 - [技術検証: 上映ウィンドウ](docs/spike-presentation-window.md)
 - [技術検証: 写真と動画の連続再生](docs/spike-media-playback.md)
 - [技術検証: 動画の音声と映像の同期](docs/spike-audio-sync.md)
+- [技術検証: FFmpegの同梱とライセンス](docs/spike-ffmpeg-bundling.md)
+- [技術検証: キャプション、ウォーターマーク、トランジション、日本語の文字描画](docs/spike-captions-transitions.md)
+- [技術検証: BGM、動画中のBGMの下げ、音ズレ補正](docs/spike-bgm.md)
+- [技術検証: 動画への書き出し](docs/spike-export.md)
+- [技術検証: 管理画面の中のプレビュー](docs/spike-preview.md)
+- [Linuxでの動作の確認（仮想ディスプレイ）](docs/check-linux.md)
+- [第三者のライセンス表記（下書き）](THIRD_PARTY_LICENSES.md)
 
 ## 開発・ビルドについて
 
@@ -64,7 +72,7 @@ Fluxlide（フラックスライド）は、写真・動画・キャプション
 - Node.js（LTS）と npm
 - Rust（stable）
 - [Tauri 2 の前提パッケージ](https://tauri.app/start/prerequisites/)（LinuxではWebKitGTKなど。音声出力のためにALSAの開発用パッケージ `libasound2-dev` も要ります）
-- 動画の再生を試す場合は FFmpeg（`ffmpeg` と `ffprobe`）。macOSでは `brew install ffmpeg`。`PATH` にない場所に置く場合は、そのフォルダを環境変数 `FLUXLIDE_FFMPEG_DIR` で指定します
+- 開発中に動画の再生を試す場合は FFmpeg（`ffmpeg` と `ffprobe`）。macOSでは `brew install ffmpeg`。`PATH` にない場所に置く場合は、そのフォルダを環境変数 `FLUXLIDE_FFMPEG_DIR` で指定します。リリース用には、`npm run ffmpeg:build`（`scripts/build-ffmpeg.sh`）でLGPL版を自分でビルドします。ビルドにはCコンパイラ、`make`、`nasm`（x86_64のみ）が要ります。詳しくは[FFmpegの同梱](docs/spike-ffmpeg-bundling.md)を参照してください
 
 ### 構成
 
@@ -82,7 +90,9 @@ npm install          # 依存関係のインストール
 npm run tauri dev    # 開発用に起動
 npm run check        # フロントエンドの型チェック
 cargo test --workspace
-npm run tauri build  # インストーラーの作成
+npm run ffmpeg:build # 同梱用のFFmpegをビルド（初回と、スクリプトの変更後）
+npm run tauri:release # FFmpegを同梱したインストーラーの作成
+npm run tauri build  # FFmpegなしのインストーラーの作成
 ```
 
 アプリアイコンは `assets/brand/fluxlide-app-icon.svg` から生成しています。ロゴを変えたときは `npx tauri icon assets/brand/fluxlide-app-icon.svg` で作り直し、モバイル用の `src-tauri/icons/android` と `src-tauri/icons/ios` は削除します。
@@ -90,10 +100,11 @@ npm run tauri build  # インストーラーの作成
 ### CI・リリース
 
 - `main` へのpushとPull Requestで、Windows / Linux / macOSのチェックとテストを実行します（`.github/workflows/ci.yml`）。
-- `v*` タグのpushで3OSのビルドとGitHub Releasesへのアップロードを行います（`.github/workflows/release.yml`、未検証）。一般配布には各OSの署名・公証等の整備が必要になる場合があります。
+- `scripts/build-ffmpeg.sh` や関連するワークフローを変えたときに、3OS（macOSはAppleとIntel）で同梱用のFFmpegのビルドを確かめます（`.github/workflows/ffmpeg.yml`、未検証）。
+- `v*` タグのpushで、FFmpegのビルド、3OSのビルド、GitHub Releasesへのアップロードを行います（`.github/workflows/release.yml`、未検証）。同梱のFFmpegは `src-tauri/tauri.bundle.conf.json` を重ねて追加します。一般配布には各OSの署名・公証等の整備が必要になる場合があります。
 
 ## ライセンス
 
 Fluxlideのリポジトリは [MIT License](LICENSE) のもとで公開されています。
 
-FFmpegを含む外部ライブラリ・コーデック等には、それぞれ別のライセンスや配布上の条件が適用されます。
+FFmpegを含む外部ライブラリ・コーデック等には、それぞれ別のライセンスや配布上の条件が適用されます。同梱するFFmpegはLGPL v2.1以降です（[第三者のライセンス表記](THIRD_PARTY_LICENSES.md)）。H.264などの特許の扱いは[FFmpegの同梱とライセンス](docs/spike-ffmpeg-bundling.md)にまとめています。

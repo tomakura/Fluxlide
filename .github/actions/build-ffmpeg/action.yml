@@ -1,0 +1,49 @@
+name: Build FFmpeg
+description: >
+  Builds the bundled LGPL FFmpeg (scripts/build-ffmpeg.sh) into
+  src-tauri/binaries, reusing a cached copy when the script is unchanged.
+inputs:
+  target:
+    description: Rust target triple the sidecar is built for
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Restore cached FFmpeg
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: src-tauri/binaries
+        key: ffmpeg-${{ inputs.target }}-${{ hashFiles('scripts/build-ffmpeg.sh') }}
+
+    - name: Install build tools (Linux)
+      if: steps.cache.outputs.cache-hit != 'true' && runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y nasm zlib1g-dev
+
+    - name: Install build tools (macOS)
+      if: steps.cache.outputs.cache-hit != 'true' && runner.os == 'macOS'
+      shell: bash
+      run: brew install nasm
+
+    - name: Set up MSYS2 (Windows)
+      if: steps.cache.outputs.cache-hit != 'true' && runner.os == 'Windows'
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: MINGW64
+        update: false
+        install: >-
+          make diffutils tar xz nasm
+          mingw-w64-x86_64-gcc mingw-w64-x86_64-zlib
+
+    - name: Build FFmpeg (Windows)
+      if: steps.cache.outputs.cache-hit != 'true' && runner.os == 'Windows'
+      shell: msys2 {0}
+      run: scripts/build-ffmpeg.sh "${{ inputs.target }}"
+
+    - name: Build FFmpeg
+      if: steps.cache.outputs.cache-hit != 'true' && runner.os != 'Windows'
+      shell: bash
+      run: scripts/build-ffmpeg.sh "${{ inputs.target }}"

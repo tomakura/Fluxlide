@@ -1,0 +1,54 @@
+# Checks that the bundled FFmpeg still builds on every target OS when its
+# build script or the bundle config changes.
+name: FFmpeg
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/build-ffmpeg.sh
+      - .github/actions/build-ffmpeg/**
+      - .github/workflows/ffmpeg.yml
+      - src-tauri/tauri.bundle.conf.json
+  pull_request:
+    paths:
+      - scripts/build-ffmpeg.sh
+      - .github/actions/build-ffmpeg/**
+      - .github/workflows/ffmpeg.yml
+      - src-tauri/tauri.bundle.conf.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build / ${{ matrix.name }}
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            platform: windows-latest
+            target: x86_64-pc-windows-msvc
+          - name: Linux x64
+            platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - name: macOS Apple Silicon
+            platform: macos-latest
+            target: aarch64-apple-darwin
+          - name: macOS Intel
+            platform: macos-latest
+            target: x86_64-apple-darwin
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Build FFmpeg
+        uses: ./.github/actions/build-ffmpeg
+        with:
+          target: ${{ matrix.target }}

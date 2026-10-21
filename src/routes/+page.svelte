@@ -30,10 +30,22 @@
     device: string;
     sampleRate: number;
     outputLatencyMs: number;
+    syncOffsetMs: number;
     offsetMs: number;
     maxOffsetMs: number;
     resyncs: number;
     underruns: number;
+    lastError: string | null;
+  };
+
+  type MusicStats = {
+    state: "idle" | "playing" | "gap";
+    title: string | null;
+    artist: string | null;
+    tracksStarted: number;
+    tracksFailed: number;
+    underruns: number;
+    starvedTransitions: number;
     lastError: string | null;
   };
 
@@ -50,6 +62,8 @@
     lastError: string | null;
     audio: SoundStats | null;
     audioError: string | null;
+    bgm: MusicStats | null;
+    bgmError: string | null;
   };
 
   type FrameStats = {
@@ -82,8 +96,115 @@
   const IMAGE_EXTENSIONS = ["jpg", "jpeg", "png"];
   const VIDEO_EXTENSIONS = ["mp4", "m4v", "mov"];
   const FILES_KEY = "fluxlide.spike.files";
+  const SOUND_KEY = "fluxlide.spike.sound";
 
   let files = $state<string[]>(loadSavedFiles());
+  let sound = $state<{ bgmDir: string | null; syncOffsetMs: number }>(loadSavedSound());
+
+  function loadSavedSound() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(SOUND_KEY) ?? "{}");
+      return {
+        bgmDir: typeof saved.bgmDir === "string" ? saved.bgmDir : null,
+        syncOffsetMs: typeof saved.syncOffsetMs === "number" ? saved.syncOffsetMs : 0,
+      };
+    } catch {
+      return { bgmDir: null, syncOffsetMs: 0 };
+    }
+  }
+
+  function saveSound() {
+    try {
+      localStorage.setItem(SOUND_KEY, JSON.stringify(sound));
+    } catch {
+      // Remembering the settings is a convenience only.
+    }
+  }
+
+  async function pickBgmDir() {
+    const picked = await open({ multiple: false, directory: true });
+    if (typeof picked === "string") {
+      sound.bgmDir = picked;
+      saveSound();
+    }
+  }
+
+  const BGM_STATES = { idle: "準備中", playing: "再生中", gap: "曲間" } as const;
+
+  // Preview: frames drawn by the engine offscreen, fetched one at a time.
+  const PREVIEW_CSS_WIDTH = 640;
+  let previewCanvas = $state<HTMLCanvasElement | null>(null);
+  let previewing = $state(false);
+  let previewError = $state<string | null>(null);
+  let previewStats = $state<{ fps: number; frameMs: number; width: number; height: number } | null>(null);
+  // Each start gets a new number; a loop whose number is no longer current
+  // (stopped or restarted meanwhile) ends quietly.
+  let previewGeneration = 0;
+
+  async function startPreview() {
+    if (!previewCanvas) return;
+    previewError = null;
+    const scale = Math.min(window.devicePixelRatio || 1, 2);
+    const width = Math.round((PREVIEW_CSS_WIDTH * scale) / 2) * 2;
+    const height = Math.round((width * 9) / 16 / 2) * 2;
+    try {
+      await invoke("start_preview", { files, width, height });
+    } catch (err) {
+      previewError = String(err);
+      return;
+    }
+    previewing = true;
+    pumpPreview(previewCanvas, ++previewGeneration);
+  }
+
+  async function stopPreview() {
+    previewing = false;
+    previewGeneration++;
+    await invoke("stop_preview");
+  }
+
+  async function pumpPreview(canvas: HTMLCanvasElement, generation: number) {
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    let windowStart = performance.now();
+    let frames = 0;
+    let busyMs = 0;
+    while (generation === previewGeneration) {
+      const started = performance.now();
+      let buffer: ArrayBuffer;
+      try {
+        buffer = await invoke<ArrayBuffer>("preview_frame");
+      } catch (err) {
+        if (generation === previewGeneration) {
+          previewError = String(err);
+          previewing = false;
+        }
+        return;
+      }
+      if (generation !== previewGeneration) return;
+      // Pixels, then width and height as little-endian u32.
+      const tail = new DataView(buffer, buffer.byteLength - 8);
+      const width = tail.getUint32(0, true);
+      const height = tail.getUint32(4, true);
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+      const pixels = new Uint8ClampedArray(buffer, 0, width * height * 4);
+      context.putImageData(new ImageData(pixels, width, height), 0, 0);
+      frames += 1;
+      busyMs += performance.now() - started;
+      const elapsed = performance.now() - windowStart;
+      if (elapsed >= 1000) {
+        previewStats = { fps: (frames * 1000) / elapsed, frameMs: busyMs / frames, width, height };
+        windowStart = performance.now();
+        frames = 0;
+        busyMs = 0;
+      }
+      // At most one frame per display refresh.
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+  }
 
   function loadSavedFiles(): string[] {
     try {
@@ -151,6 +272,8 @@
       status = await invoke<PresentationStatus>("start_presentation", {
         monitorIndex: selected,
         files,
+        bgmDir: sound.bgmDir,
+        syncOffsetMs: sound.syncOffsetMs,
       });
     } catch (err) {
       actionError = String(err);
@@ -246,6 +369,48 @@
       </p>
     </div>
 
+    <div class="media">
+      <div class="media-head">
+        <h3>音</h3>
+        <p>フォルダの中の曲をBGMとしてシャッフルで流し、音のある動画の間は下げます。Bluetoothのスピーカーなどで音が遅れて聞こえる場合は、音を早める量を指定します（負の値で遅らせます）。</p>
+      </div>
+      <div class="media-actions">
+        <button onclick={pickBgmDir} disabled={status?.running}>BGMのフォルダを選ぶ…</button>
+        {#if sound.bgmDir}
+          <span class="name" title={sound.bgmDir}>{fileName(sound.bgmDir)}</span>
+          <button class="ghost" onclick={() => { sound.bgmDir = null; saveSound(); }} disabled={status?.running}>BGMなし</button>
+        {:else}
+          <span class="empty">BGMなし</span>
+        {/if}
+      </div>
+      <label class="offset">
+        音ズレ補正（音を早める量）
+        <input type="number" min="-500" max="1000" step="10" bind:value={sound.syncOffsetMs} onchange={saveSound} disabled={status?.running} />
+        ms
+      </label>
+    </div>
+
+    <div class="media">
+      <div class="media-head">
+        <h3>プレビュー</h3>
+        <p>上映と同じ描画エンジンで画面外に描いた絵を、この画面に映します（音なし）。</p>
+      </div>
+      <canvas class="preview" bind:this={previewCanvas} width="640" height="360"></canvas>
+      <div class="media-actions">
+        {#if previewing}
+          <button onclick={stopPreview}>プレビューを止める</button>
+        {:else}
+          <button onclick={startPreview}>プレビューを始める</button>
+        {/if}
+        {#if previewStats}
+          <span class="empty">{previewStats.width}×{previewStats.height}・{previewStats.fps.toFixed(1)} fps・1フレーム {previewStats.frameMs.toFixed(1)} ms</span>
+        {/if}
+      </div>
+      {#if previewError}
+        <p class="error">プレビューのエラー: {previewError}</p>
+      {/if}
+    </div>
+
     <div class="monitors" role="radiogroup" aria-label="出力先の画面">
       {#each monitors as monitor (monitor.index)}
         <label class="monitor" class:on={selected === monitor.index}>
@@ -311,6 +476,7 @@
           <dl class="stats">
             <div><dt>音声の出力先</dt><dd class="file">{audio.device}（{(audio.sampleRate / 1000).toFixed(1)} kHz）</dd></div>
             <div><dt>出力の遅延</dt><dd class="num">{audio.outputLatencyMs.toFixed(1)} ms</dd></div>
+            <div><dt>音ズレ補正</dt><dd class="num">{audio.syncOffsetMs.toFixed(0)} ms</dd></div>
             <div><dt>映像に対する音のずれ</dt><dd class="num">{audio.offsetMs.toFixed(1)} ms</dd></div>
             <div><dt>最大のずれ</dt><dd class="num">{audio.maxOffsetMs.toFixed(1)} ms</dd></div>
             <div><dt>ずれの補正</dt><dd class="num">{audio.resyncs}</dd></div>
@@ -321,6 +487,21 @@
           {/if}
         {:else if playback.audioError}
           <p class="error">音声を出力できません: {playback.audioError}</p>
+        {/if}
+        {#if playback.bgm}
+          {@const bgm = playback.bgm}
+          <dl class="stats">
+            <div><dt>BGM</dt><dd class="file">{BGM_STATES[bgm.state]}{bgm.title ? `: ${bgm.title}` : ""}{bgm.artist ? `（${bgm.artist}）` : ""}</dd></div>
+            <div><dt>流した曲</dt><dd class="num">{bgm.tracksStarted}</dd></div>
+            <div><dt>再生できなかった曲</dt><dd class="num">{bgm.tracksFailed}</dd></div>
+            <div><dt>BGMの途切れ</dt><dd class="num">{bgm.underruns}</dd></div>
+            <div><dt>次の曲が間に合わなかった回数</dt><dd class="num">{bgm.starvedTransitions}</dd></div>
+          </dl>
+          {#if bgm.lastError}
+            <p class="error">BGMのエラー: {bgm.lastError}</p>
+          {/if}
+        {:else if playback.bgmError}
+          <p class="error">BGMを流せません: {playback.bgmError}</p>
         {/if}
       {/if}
     {/if}
@@ -547,6 +728,27 @@
     align-items: center;
     gap: 8px;
     overflow-wrap: anywhere;
+  }
+
+  .preview {
+    display: block;
+    width: 100%;
+    max-width: 640px;
+    aspect-ratio: 16 / 9;
+    background: #000;
+    border-radius: 6px;
+  }
+
+  .offset {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 12px;
+    color: var(--muted);
+  }
+
+  .offset input {
+    width: 6em;
   }
 
   .files {
