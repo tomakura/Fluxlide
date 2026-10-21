@@ -503,7 +503,9 @@ fn mux(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SlideshowConfig;
+    use crate::show::{
+        Asset, AssetId, AssetKind, AssetMeta, AssetState, ShowDefinition, Slide, SlideId,
+    };
 
     #[test]
     fn a_slideshow_is_written_once_with_picture_and_sound() {
@@ -531,18 +533,42 @@ mod tests {
             .unwrap();
         assert!(made.success());
 
-        let config = SlideshowConfig {
-            image_secs: 1.0,
-            fade_secs: 0.25,
-            ..Default::default()
-        };
+        // A photo shown for 0.5 s, then the video, joined by 0.25 s fades.
+        let video_ms = (ffmpeg.probe(&clip).unwrap().duration.unwrap() * 1000.0) as u32;
+        let mut definition = ShowDefinition::default();
+        for (id, file, duration_ms) in [(1, "photo.png", None), (2, "clip.mp4", Some(video_ms))] {
+            definition.assets.push(Asset {
+                id: AssetId(id),
+                kind: if duration_ms.is_some() {
+                    AssetKind::Video
+                } else {
+                    AssetKind::Photo
+                },
+                file: file.into(),
+                original_name: file.into(),
+                state: AssetState::Ready,
+                meta: AssetMeta::default(),
+                size: None,
+                duration_ms,
+                has_audio: duration_ms.is_some(),
+            });
+            definition.slides.push(Slide::new(SlideId(id), AssetId(id)));
+        }
+        definition.look.photo_ms = 500;
+        definition.look.transition_ms = 250;
+        let timeline = crate::show::Timeline::build(&definition, &[0, 1]);
         let settings = ExportSettings {
             size: (64, 36),
             fps: 20,
             video_encoder: Some("mpeg4".into()),
             ..Default::default()
         };
-        let mut show = Slideshow::new(renderer.clone(), vec![photo, clip], settings.size, config);
+        let mut show = Slideshow::new(
+            renderer.clone(),
+            definition.clone(),
+            dir.clone(),
+            settings.size,
+        );
         let out = dir.join("out.mp4");
         let mut last = None;
         let report = export_slideshow(
@@ -556,8 +582,12 @@ mod tests {
         )
         .unwrap();
 
-        // Photo (1 s) and video (1 s) overlap by one fade, plus the fade out.
-        assert!((1.7..=2.1).contains(&report.media_secs), "{report:?}");
+        // The file is as long as the timeline, to the frame.
+        let expected = timeline.end_ms as f64 / 1000.0;
+        assert!(
+            (report.media_secs - expected).abs() <= 1.0 / 20.0,
+            "{report:?}"
+        );
         assert_eq!(last.unwrap().frames, report.frames);
         assert!(!dir.join("out.mp4.fluxlide-video.mkv").exists());
         assert!(!dir.join("out.mp4.fluxlide-audio.f32").exists());
@@ -567,12 +597,7 @@ mod tests {
         assert!((duration - report.media_secs).abs() < 0.1, "{duration}");
 
         // A cancelled export leaves nothing behind.
-        let mut show = Slideshow::new(
-            renderer.clone(),
-            vec![dir.join("photo.png")],
-            settings.size,
-            config,
-        );
+        let mut show = Slideshow::new(renderer.clone(), definition, dir.clone(), settings.size);
         let cancelled = dir.join("cancelled.mp4");
         let err = export_slideshow(
             &renderer,

@@ -36,7 +36,7 @@ pub use offscreen::OffscreenTarget;
 pub use overlay::Overlay;
 pub use presenter::{FrameOutcome, Presenter};
 pub use scene::{Fit, Frame, Layer, OverlayRef, Scene, Transform, TransitionRun};
-pub use slideshow::{Slideshow, SlideshowConfig, SlideshowStats};
+pub use slideshow::{Slideshow, SlideshowStats};
 pub use transition::{Direction, Transition};
 pub use watermark::{Corner, Watermark, WatermarkContent};
 

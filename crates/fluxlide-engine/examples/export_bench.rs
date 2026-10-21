@@ -19,16 +19,17 @@ use std::time::Instant;
 
 use fluxlide_engine::export::{ExportSettings, export_slideshow, pick_video_encoder};
 use fluxlide_engine::media::video::Ffmpeg;
-use fluxlide_engine::{
-    Caption, CaptionStyle, Corner, Direction, Fit, OffscreenTarget, Renderer, Scene, Slideshow,
-    SlideshowConfig, Transition, Watermark,
+use fluxlide_engine::show::{
+    Asset, AssetId, AssetKind, AssetMeta, AssetState, ShowDefinition, Slide, SlideId,
+    TransitionChoice, WatermarkSource, WatermarkSpec,
 };
+use fluxlide_engine::{Corner, Direction, Fit, OffscreenTarget, Renderer, Scene, Slideshow};
 
 const SIZE: (u32, u32) = (1920, 1080);
 const FPS: u32 = 30;
-/// A photo's time on screen, so that the reference time falls in the
-/// middle of the first photo, with no transition running.
-const IMAGE_SECS: f64 = 5.0;
+/// How long a photo is fully visible, so that the reference time falls in
+/// the middle of the first photo, with no transition running.
+const PHOTO_MS: u32 = 3_000;
 const REFERENCE_SECS: f64 = 2.5;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -58,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The frame live playback shows at the reference time.
     let reference = dir.join("reference.png");
     {
-        let mut show = slideshow(&renderer, &items);
+        let mut show = slideshow(&renderer, &ffmpeg, &dir, &items)?;
         show.play_once();
         // Start at 0 as the export does: the first photo fades in from there.
         for time in [0.0, REFERENCE_SECS] {
@@ -78,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let out = dir.join("export.mp4");
-    let mut show = slideshow(&renderer, &items);
+    let mut show = slideshow(&renderer, &ffmpeg, &dir, &items)?;
     let started = Instant::now();
     let mut next_report = 0.0;
     let report = export_slideshow(
@@ -138,27 +139,60 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn slideshow(renderer: &Arc<Renderer>, items: &[PathBuf]) -> Slideshow {
-    let config = SlideshowConfig {
-        image_secs: IMAGE_SECS,
-        fade_secs: 1.0,
-        fit: Fit::Blur,
+/// The show of `items` (files in `dir`), with a caption on every slide,
+/// slide transitions and a watermark.
+fn slideshow(
+    renderer: &Arc<Renderer>,
+    ffmpeg: &Ffmpeg,
+    dir: &Path,
+    items: &[PathBuf],
+) -> Result<Slideshow, Box<dyn std::error::Error>> {
+    let mut show = ShowDefinition::default();
+    for (index, path) in items.iter().enumerate() {
+        let id = index as u64 + 1;
+        let file = path.file_name().ok_or("no file name")?.to_string_lossy();
+        let (kind, duration_ms) = if file.ends_with(".mp4") {
+            let duration = ffmpeg.probe(path)?.duration.ok_or("no duration")?;
+            (AssetKind::Video, Some((duration * 1000.0) as u32))
+        } else {
+            (AssetKind::Photo, None)
+        };
+        show.assets.push(Asset {
+            id: AssetId(id),
+            kind,
+            file: file.to_string(),
+            original_name: file.to_string(),
+            state: AssetState::Ready,
+            meta: AssetMeta {
+                title: format!("夕暮れの港 {}", index + 1),
+                author: "撮影　山田 太郎".into(),
+                description: "朝の光が差し込む静かな港町で、漁を終えた船がゆっくりと戻ってくる様子を撮影しました。".into(),
+            },
+            size: None,
+            duration_ms,
+            has_audio: duration_ms.is_some(),
+        });
+        show.slides.push(Slide::new(SlideId(id), AssetId(id)));
+    }
+    show.look.photo_ms = PHOTO_MS;
+    show.look.transition = TransitionChoice::Slide {
+        direction: Direction::Left,
     };
-    let mut show = Slideshow::new(renderer.clone(), items.to_vec(), SIZE, config);
-    let captions = items
-        .iter()
-        .enumerate()
-        .map(|(index, _)| Caption {
-            title: format!("夕暮れの港 {}", index + 1),
-            author: "撮影　山田 太郎".into(),
-            description: "朝の光が差し込む静かな港町で、漁を終えた船がゆっくりと戻ってくる様子を撮影しました。".into(),
-        })
-        .collect();
-    show.set_captions(captions, CaptionStyle::default());
-    show.set_transition(Transition::slide(Direction::Left));
-    show.set_watermark(Some(Watermark::text("FLUXLIDE", Corner::TopRight, 0.6)))
-        .expect("watermark");
-    show
+    show.look.fit = Fit::Blur;
+    show.look.watermark = Some(WatermarkSpec {
+        content: WatermarkSource::Text {
+            text: "FLUXLIDE".into(),
+        },
+        corner: Corner::TopRight,
+        opacity: 0.6,
+        size: 0.045,
+    });
+    Ok(Slideshow::new(
+        renderer.clone(),
+        show,
+        dir.to_path_buf(),
+        SIZE,
+    ))
 }
 
 /// Photo, video, photo, video, photo: 4032x3024 JPEGs and 1080p30 videos

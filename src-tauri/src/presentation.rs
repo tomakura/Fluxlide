@@ -1,12 +1,12 @@
 //! Prototype of the presentation window: a native window without a webview,
 //! placed fullscreen on the chosen display and rendered by wgpu on its own
-//! thread while the management window stays usable. It plays the chosen
-//! photos and videos in a loop with transitions and captions, or a test
-//! pattern when no files are chosen. Video sound goes to the default audio
+//! thread while the management window stays usable. It plays the show sent
+//! by the management window with transitions and captions, or a test
+//! pattern when the show has no slides. Video sound goes to the default audio
 //! output, with music from a folder as BGM that fades out while videos with
 //! sound play.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
@@ -15,9 +15,9 @@ use std::time::{Duration, Instant};
 use fluxlide_engine::audio::{AudioOutput, AudioStats};
 use fluxlide_engine::bgm::{Bgm, BgmConfig, BgmSource, BgmState, BgmStats};
 use fluxlide_engine::media::video::Ffmpeg;
+use fluxlide_engine::show::{Asset, AssetId, AssetKind, AssetMeta, AssetState, ShowDefinition};
 use fluxlide_engine::{
-    Caption, CaptionStyle, Fit, FrameOutcome, Presenter, Renderer, Scene, Slideshow,
-    SlideshowConfig, SlideshowStats,
+    FrameOutcome, MediaKind, Presenter, Renderer, Scene, Slideshow, SlideshowStats,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State, WindowEvent};
@@ -96,7 +96,7 @@ pub struct FrameStats {
 #[derive(Default, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaybackStats {
-    current_index: Option<usize>,
+    current_slide: Option<u64>,
     current_file: Option<String>,
     transitions: u64,
     late_transitions: u64,
@@ -105,6 +105,7 @@ pub struct PlaybackStats {
     video_late_frames: u64,
     video_skipped_frames: u64,
     failed_items: u64,
+    skipped_slides: usize,
     last_error: Option<String>,
     audio: Option<SoundStats>,
     /// Why the audio output could not be opened, if it could not.
@@ -220,14 +221,14 @@ impl PlaybackStats {
             video_late_frames,
             video_skipped_frames,
             failed_items,
+            skipped_slides,
             last_error,
         } = show.stats().clone();
         Self {
-            current_index: current,
+            current_slide: current.map(|slide| slide.0),
             current_file: show
                 .current_path()
-                .and_then(|path| path.file_name())
-                .map(|name| name.to_string_lossy().into_owned()),
+                .and_then(|path| Some(path.file_name()?.to_string_lossy().into_owned())),
             transitions,
             late_transitions,
             longest_wait_ms,
@@ -235,6 +236,7 @@ impl PlaybackStats {
             video_late_frames,
             video_skipped_frames,
             failed_items,
+            skipped_slides,
             last_error,
             audio: show.audio_stats().map(SoundStats::from),
             audio_error: sound.audio_error.clone(),
@@ -346,7 +348,7 @@ pub async fn start_presentation(
     app: AppHandle,
     state: State<'_, PresentationState>,
     monitor_index: usize,
-    files: Vec<PathBuf>,
+    show: ShowDefinition,
     bgm_dir: Option<PathBuf>,
     sync_offset_ms: Option<f64>,
 ) -> Result<PresentationStatus, String> {
@@ -385,7 +387,7 @@ pub async fn start_presentation(
         .map_err(|err| err.to_string())?;
     // Any failure after this point must close the window and release Esc,
     // otherwise the "presenter" label stays taken until the app restarts.
-    match run_presentation(&app, &window, renderer, position, size, files, sound).await {
+    match run_presentation(&app, &window, renderer, position, size, show, sound).await {
         Ok((stop, stats, thread)) => {
             *state.active.lock().unwrap() = Some(Active {
                 window,
@@ -404,30 +406,76 @@ pub async fn start_presentation(
     }
 }
 
-/// The slideshow of `files` as the presentation and the preview show it.
-/// Until the project has titles to show, each caption is the file name.
+/// The slideshow of `show` as the presentation and the preview show it.
+/// Until photos and videos are copied into a managed folder, each asset's
+/// `file` is the absolute path of the original (see [`media_assets`]).
 pub fn build_slideshow(
     renderer: Arc<Renderer>,
-    files: Vec<PathBuf>,
+    show: ShowDefinition,
     output_size: (u32, u32),
 ) -> Slideshow {
-    let captions = files
-        .iter()
-        .map(|file| Caption {
-            title: file
-                .file_stem()
-                .map(|stem| stem.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            ..Default::default()
-        })
-        .collect();
-    let config = SlideshowConfig {
-        fit: Fit::Blur,
-        ..Default::default()
+    Slideshow::new(renderer, show, PathBuf::new(), output_size)
+}
+
+/// Describes the photos and videos at `files` as the assets of a show,
+/// numbered from 1 in the given order. Each asset's `file` is the absolute
+/// path and its title the file name, until importing copies files into a
+/// managed folder (stage 2, step 3). Videos are probed for their length.
+#[tauri::command]
+pub async fn media_assets(files: Vec<PathBuf>) -> Result<Vec<Asset>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let ffmpeg = Ffmpeg::locate().map_err(|err| err.to_string());
+        files
+            .iter()
+            .enumerate()
+            .map(|(index, path)| describe_asset(index as u64 + 1, path, &ffmpeg))
+            .collect()
+    })
+    .await
+    .map_err(|err| err.to_string())
+}
+
+fn describe_asset(id: u64, path: &Path, ffmpeg: &Result<Ffmpeg, String>) -> Asset {
+    let name = |part: Option<&std::ffi::OsStr>| {
+        part.map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default()
     };
-    let mut show = Slideshow::new(renderer, files, output_size, config);
-    show.set_captions(captions, CaptionStyle::default());
-    show
+    let mut asset = Asset {
+        id: AssetId(id),
+        kind: AssetKind::Photo,
+        file: path.to_string_lossy().into_owned(),
+        original_name: name(path.file_name()),
+        state: AssetState::Ready,
+        meta: AssetMeta {
+            title: name(path.file_stem()),
+            ..AssetMeta::default()
+        },
+        size: None,
+        duration_ms: None,
+        has_audio: false,
+    };
+    match MediaKind::from_path(path) {
+        Some(MediaKind::Image) => {}
+        Some(MediaKind::Video) => {
+            asset.kind = AssetKind::Video;
+            let probed = ffmpeg
+                .clone()
+                .and_then(|ffmpeg| ffmpeg.probe(path).map_err(|err| err.to_string()));
+            match probed {
+                Ok(info) => {
+                    asset.duration_ms = info.duration.map(|secs| (secs * 1000.0) as u32);
+                    asset.has_audio = info.has_audio;
+                }
+                Err(reason) => asset.state = AssetState::Failed { reason },
+            }
+        }
+        None => {
+            asset.state = AssetState::Failed {
+                reason: "対応していない種類のファイルです。".into(),
+            }
+        }
+    }
+    asset
 }
 
 type RunningPresentation = (Arc<AtomicBool>, Arc<Mutex<FrameStats>>, JoinHandle<()>);
@@ -439,7 +487,7 @@ async fn run_presentation(
     renderer: Arc<Renderer>,
     position: tauri::PhysicalPosition<i32>,
     size: tauri::PhysicalSize<u32>,
-    files: Vec<PathBuf>,
+    show: ShowDefinition,
     sound: SoundOptions,
 ) -> Result<RunningPresentation, String> {
     // Not `set_fullscreen_on_monitor`: it matches monitors by physical position,
@@ -503,8 +551,8 @@ async fn run_presentation(
     set_escape_enabled(app, true);
 
     // Photos and videos are loaded at the display's full resolution.
-    let slideshow = (!files.is_empty())
-        .then(|| build_slideshow(renderer.clone(), files, (size.width, size.height)));
+    let slideshow = (!show.slides.is_empty())
+        .then(|| build_slideshow(renderer.clone(), show, (size.width, size.height)));
     let thread = {
         let stop = stop.clone();
         let stats = stats.clone();

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { open } from "@tauri-apps/plugin-dialog";
+  import { showOfFiles } from "$lib/show";
 
   type EngineStatus = {
     gpuName: string;
@@ -50,7 +51,7 @@
   };
 
   type PlaybackStats = {
-    currentIndex: number | null;
+    currentSlide: number | null;
     currentFile: string | null;
     transitions: number;
     lateTransitions: number;
@@ -59,6 +60,7 @@
     videoLateFrames: number;
     videoSkippedFrames: number;
     failedItems: number;
+    skippedSlides: number;
     lastError: string | null;
     audio: SoundStats | null;
     audioError: string | null;
@@ -148,7 +150,7 @@
     const width = Math.round((PREVIEW_CSS_WIDTH * scale) / 2) * 2;
     const height = Math.round((width * 9) / 16 / 2) * 2;
     try {
-      await invoke("start_preview", { files, width, height });
+      await invoke("start_preview", { show: await showOfFiles(files), width, height });
     } catch (err) {
       previewError = String(err);
       return;
@@ -271,7 +273,7 @@
     try {
       status = await invoke<PresentationStatus>("start_presentation", {
         monitorIndex: selected,
-        files,
+        show: await showOfFiles(files),
         bgmDir: sound.bgmDir,
         syncOffsetMs: sound.syncOffsetMs,
       });
@@ -333,12 +335,12 @@
     <div class="media">
       <div class="media-head">
         <h3>上映する素材</h3>
-        <p>写真（JPEG・PNG）は5秒ずつ、動画（MP4など）は音とともに最後まで流します。写真→動画→写真の順に並べると、切り替えを確かめられます。</p>
+        <p>写真（JPEG・PNG）は10秒ずつ（前後の切り替えの1秒は別）、動画（MP4など）は音とともに最後まで流します。写真→動画→写真の順に並べると、切り替えを確かめられます。</p>
       </div>
       {#if files.length > 0}
         <ol class="files">
           {#each files as file, index (index)}
-            <li class:now={status?.running && status.stats.playback?.currentIndex === index}>
+            <li class:now={status?.running && status.stats.playback?.currentSlide === index + 1}>
               <span class="kind">{fileKind(file)}</span>
               <span class="name" title={file}>{fileName(file)}</span>
               <span class="tools">
@@ -467,6 +469,7 @@
           <div><dt>動画のデコード遅れ</dt><dd class="num">{playback.videoLateFrames}</dd></div>
           <div><dt>動画の飛ばしたコマ</dt><dd class="num">{playback.videoSkippedFrames}</dd></div>
           <div><dt>読み込めなかった素材</dt><dd class="num">{playback.failedItems}</dd></div>
+          <div><dt>飛ばしたスライド</dt><dd class="num">{playback.skippedSlides}</dd></div>
         </dl>
         {#if playback.lastError}
           <p class="error">素材のエラー: {playback.lastError}</p>
