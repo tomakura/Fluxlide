@@ -1,4 +1,5 @@
 mod presentation;
+mod preview;
 
 use fluxlide_engine::media::video::Ffmpeg;
 use presentation::PresentationState;
@@ -71,6 +72,7 @@ pub fn run() {
                 .build(),
         )
         .manage(PresentationState::default())
+        .manage(preview::PreviewState::default())
         .on_window_event(|window, event| {
             // Closing the management window ends the app, including any presentation.
             if window.label() != "main" {
@@ -96,6 +98,9 @@ pub fn run() {
             presentation::presentation_status,
             presentation::start_presentation,
             presentation::stop_presentation,
+            preview::start_preview,
+            preview::stop_preview,
+            preview::preview_frame,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

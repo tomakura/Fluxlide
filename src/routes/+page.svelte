@@ -131,6 +131,74 @@
 
   const BGM_STATES = { idle: "準備中", playing: "再生中", gap: "曲間" } as const;
 
+  // Preview: frames drawn by the engine offscreen, fetched one at a time.
+  const PREVIEW_CSS_WIDTH = 640;
+  let previewCanvas = $state<HTMLCanvasElement | null>(null);
+  let previewing = $state(false);
+  let previewError = $state<string | null>(null);
+  let previewStats = $state<{ fps: number; frameMs: number; width: number; height: number } | null>(null);
+
+  async function startPreview() {
+    if (!previewCanvas) return;
+    previewError = null;
+    const scale = Math.min(window.devicePixelRatio || 1, 2);
+    const width = Math.round((PREVIEW_CSS_WIDTH * scale) / 2) * 2;
+    const height = Math.round((width * 9) / 16 / 2) * 2;
+    try {
+      await invoke("start_preview", { files, width, height });
+    } catch (err) {
+      previewError = String(err);
+      return;
+    }
+    previewing = true;
+    pumpPreview(previewCanvas);
+  }
+
+  async function stopPreview() {
+    previewing = false;
+    await invoke("stop_preview");
+  }
+
+  async function pumpPreview(canvas: HTMLCanvasElement) {
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    let windowStart = performance.now();
+    let frames = 0;
+    let busyMs = 0;
+    while (previewing) {
+      const started = performance.now();
+      let buffer: ArrayBuffer;
+      try {
+        buffer = await invoke<ArrayBuffer>("preview_frame");
+      } catch (err) {
+        previewError = String(err);
+        previewing = false;
+        return;
+      }
+      // Pixels, then width and height as little-endian u32.
+      const tail = new DataView(buffer, buffer.byteLength - 8);
+      const width = tail.getUint32(0, true);
+      const height = tail.getUint32(4, true);
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+      const pixels = new Uint8ClampedArray(buffer, 0, width * height * 4);
+      context.putImageData(new ImageData(pixels, width, height), 0, 0);
+      frames += 1;
+      busyMs += performance.now() - started;
+      const elapsed = performance.now() - windowStart;
+      if (elapsed >= 1000) {
+        previewStats = { fps: (frames * 1000) / elapsed, frameMs: busyMs / frames, width, height };
+        windowStart = performance.now();
+        frames = 0;
+        busyMs = 0;
+      }
+      // At most one frame per display refresh.
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+  }
+
   function loadSavedFiles(): string[] {
     try {
       const saved = JSON.parse(localStorage.getItem(FILES_KEY) ?? "[]");
@@ -313,6 +381,27 @@
         <input type="number" min="-500" max="1000" step="10" bind:value={sound.syncOffsetMs} onchange={saveSound} disabled={status?.running} />
         ms
       </label>
+    </div>
+
+    <div class="media">
+      <div class="media-head">
+        <h3>プレビュー</h3>
+        <p>上映と同じ描画エンジンで画面外に描いた絵を、この画面に映します（音なし）。</p>
+      </div>
+      <canvas class="preview" bind:this={previewCanvas} width="640" height="360"></canvas>
+      <div class="media-actions">
+        {#if previewing}
+          <button onclick={stopPreview}>プレビューを止める</button>
+        {:else}
+          <button onclick={startPreview}>プレビューを始める</button>
+        {/if}
+        {#if previewStats}
+          <span class="empty">{previewStats.width}×{previewStats.height}・{previewStats.fps.toFixed(1)} fps・1フレーム {previewStats.frameMs.toFixed(1)} ms</span>
+        {/if}
+      </div>
+      {#if previewError}
+        <p class="error">プレビューのエラー: {previewError}</p>
+      {/if}
     </div>
 
     <div class="monitors" role="radiogroup" aria-label="出力先の画面">
@@ -632,6 +721,15 @@
     align-items: center;
     gap: 8px;
     overflow-wrap: anywhere;
+  }
+
+  .preview {
+    display: block;
+    width: 100%;
+    max-width: 640px;
+    aspect-ratio: 16 / 9;
+    background: #000;
+    border-radius: 6px;
   }
 
   .offset {

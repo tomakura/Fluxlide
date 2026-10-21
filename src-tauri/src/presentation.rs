@@ -404,6 +404,32 @@ pub async fn start_presentation(
     }
 }
 
+/// The slideshow of `files` as the presentation and the preview show it.
+/// Until the project has titles to show, each caption is the file name.
+pub fn build_slideshow(
+    renderer: Arc<Renderer>,
+    files: Vec<PathBuf>,
+    output_size: (u32, u32),
+) -> Slideshow {
+    let captions = files
+        .iter()
+        .map(|file| Caption {
+            title: file
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            ..Default::default()
+        })
+        .collect();
+    let config = SlideshowConfig {
+        fit: Fit::Blur,
+        ..Default::default()
+    };
+    let mut show = Slideshow::new(renderer, files, output_size, config);
+    show.set_captions(captions, CaptionStyle::default());
+    show
+}
+
 type RunningPresentation = (Arc<AtomicBool>, Arc<Mutex<FrameStats>>, JoinHandle<()>);
 
 /// Makes `window` fullscreen, attaches a surface and starts the render thread.
@@ -477,26 +503,8 @@ async fn run_presentation(
     set_escape_enabled(app, true);
 
     // Photos and videos are loaded at the display's full resolution.
-    // Until the project has titles to show, each caption is the file name.
-    let slideshow = (!files.is_empty()).then(|| {
-        let captions = files
-            .iter()
-            .map(|file| Caption {
-                title: file
-                    .file_stem()
-                    .map(|stem| stem.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-                ..Default::default()
-            })
-            .collect();
-        let config = SlideshowConfig {
-            fit: Fit::Blur,
-            ..Default::default()
-        };
-        let mut show = Slideshow::new(renderer.clone(), files, (size.width, size.height), config);
-        show.set_captions(captions, CaptionStyle::default());
-        show
-    });
+    let slideshow = (!files.is_empty())
+        .then(|| build_slideshow(renderer.clone(), files, (size.width, size.height)));
     let thread = {
         let stop = stop.clone();
         let stats = stats.clone();
