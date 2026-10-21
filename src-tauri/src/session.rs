@@ -8,9 +8,15 @@
 //! since been copied. So the file facts of each asset are kept apart and
 //! laid over every definition that comes in, whether from the window, from
 //! undo or from redo.
+//!
+//! The window sends whole definitions, so an edit made from an older one
+//! would quietly undo whatever changed since (slides added by an import, a
+//! file that finished copying). Every change raises [`Session::revision`],
+//! and an edit is applied only if it was made from the current revision.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use fluxlide_engine::show::{Asset, AssetId, AssetState, ShowDefinition, SlideId};
@@ -32,7 +38,12 @@ pub struct Session {
     /// back by redo never shares its number with a newer one.
     last_slide_id: u64,
     save_error: Option<String>,
+    revision: u64,
+    epoch: u64,
 }
+
+/// Counts the sessions opened since the app started.
+static EPOCHS: AtomicU64 = AtomicU64::new(0);
 
 impl Session {
     /// Starts editing `show` from `project`. Copies that were still running
@@ -63,6 +74,8 @@ impl Session {
             files,
             last_slide_id: 0,
             save_error: None,
+            revision: 0,
+            epoch: EPOCHS.fetch_add(1, Ordering::Relaxed) + 1,
         };
         session.note_slide_ids();
         if interrupted {
@@ -89,6 +102,17 @@ impl Session {
 
     pub fn can_redo(&self) -> bool {
         self.history.can_redo()
+    }
+
+    /// Raised by every change to the definition.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Different for every session, even of the same project, so work
+    /// queued for one is not applied to another.
+    pub fn epoch(&self) -> u64 {
+        self.epoch
     }
 
     /// Why the last save failed, until one succeeds.
@@ -173,6 +197,7 @@ impl Session {
     }
 
     fn save(&mut self) {
+        self.revision += 1;
         self.save_error = self
             .project
             .save(&self.show)
@@ -289,6 +314,30 @@ mod tests {
         session.redo();
         assert_eq!(session.show().assets[0].state, AssetState::Ready);
         assert_eq!(session.next_asset_id(), AssetId(2));
+    }
+
+    #[test]
+    fn every_change_raises_the_revision_and_sessions_differ() {
+        let root = TempDir::new("session-revision");
+        let mut session = session(&root, photo_show(1));
+        let first = session.revision();
+        let mut next = session.show().clone();
+        next.title = "別の題名".into();
+        session.edit(next.clone(), None);
+        assert_eq!(session.revision(), first + 1);
+        session.edit(next, None);
+        assert_eq!(session.revision(), first + 1, "no change, same revision");
+        let mut copied = session.show().assets[0].clone();
+        copied.size = Some([1, 1]);
+        session.update_file(copied);
+        session.undo();
+        assert_eq!(session.revision(), first + 3);
+
+        let other = Session::new(
+            Project::create(&root.0, &photo_show(1)).unwrap(),
+            photo_show(1),
+        );
+        assert_ne!(other.epoch(), session.epoch());
     }
 
     #[test]

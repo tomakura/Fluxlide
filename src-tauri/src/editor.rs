@@ -34,6 +34,9 @@ impl EditorState {
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct ShowState {
+    /// Sent back with an edit, so that one made from an older state is
+    /// refused (see [`edit_show`]).
+    revision: u64,
     dir: PathBuf,
     media_dir: PathBuf,
     show: ShowDefinition,
@@ -45,6 +48,7 @@ pub struct ShowState {
 impl ShowState {
     pub fn of(session: &Session) -> Self {
         Self {
+            revision: session.revision(),
             dir: session.dir().to_path_buf(),
             media_dir: session.media_dir(),
             show: session.show().clone(),
@@ -126,6 +130,7 @@ pub async fn create_project(
     };
     let session = state.session();
     tauri::async_runtime::spawn_blocking(move || {
+        close(&session);
         let project = Project::create(&root, &show).map_err(|err| err.to_string())?;
         Ok(replace(&app, &session, Session::new(project, show)))
     })
@@ -141,11 +146,18 @@ pub async fn open_project(
 ) -> Result<ShowState, String> {
     let session = state.session();
     tauri::async_runtime::spawn_blocking(move || {
+        // Imports of the session being closed stop before the media folder
+        // is cleaned, even when it is the same project opened again.
+        close(&session);
         let (project, show) = Project::open(&dir).map_err(|err| err.to_string())?;
         Ok(replace(&app, &session, Session::new(project, show)))
     })
     .await
     .map_err(|err| err.to_string())?
+}
+
+fn close(slot: &Mutex<Option<Session>>) {
+    slot.lock().unwrap().take();
 }
 
 /// Makes `session` the open one. The window may then show its media files.
@@ -160,7 +172,7 @@ fn replace(app: &AppHandle, slot: &Mutex<Option<Session>>, session: Session) -> 
 
 #[tauri::command]
 pub fn close_project(state: State<'_, EditorState>) {
-    state.session.lock().unwrap().take();
+    close(&state.session);
 }
 
 #[tauri::command]
@@ -168,17 +180,34 @@ pub fn show_state(state: State<'_, EditorState>) -> Option<ShowState> {
     state.session.lock().unwrap().as_ref().map(ShowState::of)
 }
 
-/// Replaces the definition with `show`. `group` names the control being
-/// changed, so that typing or dragging in it is undone in one step.
+#[derive(Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct EditOutcome {
+    state: ShowState,
+    /// False when the edit was made from an older revision than the
+    /// current one. The window then makes its change again on `state`.
+    applied: bool,
+}
+
+/// Replaces the definition with `show`, made from the state of `revision`.
+/// `group` names the control being changed, so that typing or dragging in
+/// it is undone in one step.
 #[tauri::command]
 pub fn edit_show(
     state: State<'_, EditorState>,
     show: ShowDefinition,
     group: Option<String>,
-) -> Result<ShowState, String> {
-    with_session(&state, |session| {
-        session.edit(show, group.as_deref());
-    })
+    revision: u64,
+) -> Result<EditOutcome, String> {
+    let mut applied = false;
+    let state = with_session(&state, |session| {
+        if session.revision() == revision {
+            session.edit(show, group.as_deref());
+            applied = true;
+        }
+    })?;
+    Ok(EditOutcome { state, applied })
 }
 
 #[tauri::command]
