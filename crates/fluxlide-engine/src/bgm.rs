@@ -349,6 +349,45 @@ impl Ducker {
     }
 }
 
+/// Reads back what a [`Ducker`] was told, for tests of its callers.
+#[cfg(test)]
+pub(crate) struct DuckProbe {
+    commands: Receiver<DuckCommand>,
+    open: Vec<(u64, f64, f64)>,
+}
+
+#[cfg(test)]
+impl DuckProbe {
+    pub(crate) fn new() -> (Ducker, Self) {
+        let (commands, incoming) = mpsc::channel();
+        let ducker = Ducker {
+            commands,
+            next_id: Arc::new(AtomicU64::new(1)),
+        };
+        let probe = Self {
+            commands: incoming,
+            open: Vec::new(),
+        };
+        (ducker, probe)
+    }
+
+    /// The windows that are open, as (start, end), in the order announced.
+    pub(crate) fn windows(&mut self) -> Vec<(f64, f64)> {
+        for command in self.commands.try_iter() {
+            match command {
+                DuckCommand::Set { id, start, end } => {
+                    match self.open.iter_mut().find(|window| window.0 == id) {
+                        Some(window) => (window.1, window.2) = (start, end),
+                        None => self.open.push((id, start, end)),
+                    }
+                }
+                DuckCommand::Close { id } => self.open.retain(|window| window.0 != id),
+            }
+        }
+        self.open.iter().map(|&(_, start, end)| (start, end)).collect()
+    }
+}
+
 pub struct DuckWindow {
     id: u64,
     commands: Sender<DuckCommand>,
