@@ -135,7 +135,7 @@ pub(crate) fn plan_caption(
     };
     let shadow = (style.design == CaptionDesign::Simple).then(|| {
         (
-            (height * 0.010).round().max(2.0) as u32,
+            (height * 0.006).round().max(2.0) as u32,
             (height * 0.003).round().max(1.0) as u32,
         )
     });

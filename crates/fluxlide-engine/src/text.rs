@@ -20,7 +20,7 @@ const FONT: &[u8] = include_bytes!("../../../assets/fonts/NotoSansJP-VariableFon
 const FONT_FAMILY: &str = "Noto Sans JP";
 
 /// How much a blurred shadow is strengthened before it is clamped.
-const SHADOW_GAIN: f32 = 2.5;
+const SHADOW_GAIN: f32 = 4.0;
 
 /// Appended when text is cut to fit its line limit.
 const ELLIPSIS: char = '…';

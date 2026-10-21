@@ -694,6 +694,7 @@ mod tests {
         assert_eq!(show.frame().overlays[1].overlay.opacity(), 0.5);
 
         // Changing items: the old caption fades out first, then the new one in.
+        show.update(1.5);
         show.update(1.5 + 0.125);
         assert_eq!(overlays(&show), [0.5, 0.0, 1.0]);
         show.update(1.5 + 0.375);
