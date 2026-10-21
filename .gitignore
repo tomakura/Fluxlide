@@ -13,3 +13,6 @@ vite.config.ts.timestamp-*
 
 # Rust
 /target/
+
+# FFmpeg built for bundling (scripts/build-ffmpeg.sh)
+/src-tauri/binaries/
