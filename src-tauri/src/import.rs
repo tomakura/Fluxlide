@@ -44,7 +44,8 @@ pub struct ImportProgress {
 
 /// One file to copy into the media folder of the project in `dir`.
 struct Job {
-    dir: PathBuf,
+    /// The [`Session::epoch`] it was queued in.
+    epoch: u64,
     media_dir: PathBuf,
     asset: Asset,
     source: PathBuf,
@@ -74,16 +75,16 @@ impl Importer {
 
 fn run(app: AppHandle, session: Arc<Mutex<Option<Session>>>, jobs: Receiver<Job>) {
     let ffmpeg = Ffmpeg::locate().ok();
-    // A job belongs to the project that was open when it was queued.
-    let still_open = |dir: &Path| {
+    // A job belongs to the session that was open when it was queued.
+    let still_open = |epoch: u64| {
         session
             .lock()
             .unwrap()
             .as_ref()
-            .is_some_and(|session| session.dir() == dir)
+            .is_some_and(|session| session.epoch() == epoch)
     };
     for job in jobs {
-        if !still_open(&job.dir) {
+        if !still_open(job.epoch) {
             continue;
         }
         let id = job.asset.id;
@@ -106,7 +107,7 @@ fn run(app: AppHandle, session: Arc<Mutex<Option<Session>>>, jobs: Receiver<Job>
                     );
                 }
             },
-            &|| !still_open(&job.dir),
+            &|| !still_open(job.epoch),
         );
         let mut asset = job.asset;
         match outcome {
@@ -120,7 +121,10 @@ fn run(app: AppHandle, session: Arc<Mutex<Option<Session>>>, jobs: Receiver<Job>
             Err(reason) => asset.state = AssetState::Failed { reason },
         }
         let mut guard = session.lock().unwrap();
-        if let Some(session) = guard.as_mut().filter(|session| session.dir() == job.dir) {
+        if let Some(session) = guard
+            .as_mut()
+            .filter(|session| session.epoch() == job.epoch)
+        {
             session.update_file(asset);
             editor::notify(&app, session);
         }
@@ -325,7 +329,7 @@ pub fn import_files(
     for (asset, source) in &added {
         if asset.state == AssetState::Importing {
             importer.queue(Job {
-                dir: session.dir().to_path_buf(),
+                epoch: session.epoch(),
                 media_dir: session.media_dir(),
                 asset: asset.clone(),
                 source: source.clone(),
@@ -359,7 +363,7 @@ pub fn replace_asset_file(
     session.update_file(replaced.clone());
     if replaced.state == AssetState::Importing {
         importer.queue(Job {
-            dir: session.dir().to_path_buf(),
+            epoch: session.epoch(),
             media_dir: session.media_dir(),
             asset: replaced,
             source: file,
