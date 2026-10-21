@@ -53,6 +53,7 @@ Fluxlide（フラックスライド）は、写真・動画・キャプション
 - [技術選定・アーキテクチャ・自動ビルド／リリース方針](docs/tech-stack.md)
 - [画面草案・ロゴ](docs/ui-draft.md)
 - [完成までの手順](docs/roadmap.md)
+- [進捗の記録](docs/progress.md)
 - [技術検証: 上映ウィンドウ](docs/spike-presentation-window.md)
 - [技術検証: 写真と動画の連続再生](docs/spike-media-playback.md)
 - [技術検証: 動画の音声と映像の同期](docs/spike-audio-sync.md)
