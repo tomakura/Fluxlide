@@ -41,7 +41,8 @@ use crate::{EngineError, Renderer};
 pub(crate) const TRANSITION_UNIFORM_SIZE: u64 = 32;
 
 /// The four ways something can move on a flat output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Direction {
     Left,
     Right,

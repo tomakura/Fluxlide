@@ -95,6 +95,7 @@ pub fn run() {
             engine_status,
             video_decoder_status,
             presentation::list_monitors,
+            presentation::media_assets,
             presentation::presentation_status,
             presentation::start_presentation,
             presentation::stop_presentation,

@@ -151,6 +151,35 @@ pub(crate) fn command(program: &Path) -> Command {
     command
 }
 
+/// The part of a file to play.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PlayRange {
+    /// Seconds into the file where playback starts.
+    pub start: f64,
+    /// How many seconds to play; `None` plays to the end of the file.
+    pub length: Option<f64>,
+}
+
+impl PlayRange {
+    /// `ffmpeg` input options that read only this range. They go before `-i`.
+    pub(crate) fn input_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        if self.start > 0.0 {
+            args.extend(["-ss".to_string(), format!("{:.3}", self.start)]);
+        }
+        if let Some(length) = self.length {
+            args.extend(["-t".to_string(), format!("{length:.3}")]);
+        }
+        args
+    }
+
+    /// How long the range plays in a file `duration` seconds long.
+    fn length_in(&self, duration: f64) -> f64 {
+        let rest = (duration - self.start).max(0.0);
+        self.length.map_or(rest, |length| length.min(rest))
+    }
+}
+
 /// What `ffprobe` reports about a video.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VideoInfo {
@@ -298,6 +327,7 @@ impl VideoDecoder {
         path: &Path,
         info: &VideoInfo,
         max_size: (u32, u32),
+        range: PlayRange,
     ) -> Result<Self, EngineError> {
         let (max_w, max_h) = max_size;
         // Shrink to the output size (never enlarge), keep even dimensions for
@@ -312,6 +342,7 @@ impl VideoDecoder {
             // Software decoding. With `-hwaccel auto` (VideoToolbox on macOS)
             // frames are copied back from the GPU for the pipe, and 4K playback
             // fell behind more often than without it.
+            .args(range.input_args())
             .arg("-i")
             .arg(path)
             .args(["-map", "0:v:0", "-an", "-sn", "-dn", "-vf", &filter])
@@ -466,8 +497,8 @@ pub struct VideoPlayer {
 }
 
 impl VideoPlayer {
-    /// Starts decoding and waits until the first frame is on the GPU, so the
-    /// video can be shown the moment it is due.
+    /// Starts decoding `range` of the file and waits until its first frame
+    /// is on the GPU, so the video can be shown the moment it is due.
     ///
     /// This blocks, so call it off the render thread.
     pub fn open(
@@ -475,10 +506,11 @@ impl VideoPlayer {
         ffmpeg: &Ffmpeg,
         path: &Path,
         max_size: (u32, u32),
+        range: PlayRange,
     ) -> Result<Self, EngineError> {
         let info = ffmpeg.probe(path)?;
-        let decoder =
-            VideoDecoder::spawn(ffmpeg, path, &info, super::fit_limit(renderer, max_size))?;
+        let max_size = super::fit_limit(renderer, max_size);
+        let decoder = VideoDecoder::spawn(ffmpeg, path, &info, max_size, range)?;
         let header = decoder.header;
         let first = match decoder.frames.recv_timeout(OPEN_TIMEOUT) {
             Ok(frame) => frame,
@@ -495,14 +527,14 @@ impl VideoPlayer {
         Ok(Self {
             decoder,
             texture,
-            duration: info.duration,
+            duration: info.duration.map(|duration| range.length_in(duration)),
             has_audio: info.has_audio,
             next_index: 1,
             ended: false,
         })
     }
 
-    /// Shows the frame due `time_secs` after the start of the video.
+    /// Shows the frame due `time_secs` after the start of the range.
     /// Past the end, the last frame stays on screen.
     pub fn update(&mut self, renderer: &Renderer, time_secs: f64) -> VideoUpdate {
         let mut update = VideoUpdate::default();
@@ -535,7 +567,7 @@ impl VideoPlayer {
         &self.texture
     }
 
-    /// Length in seconds as stated by the file, if known.
+    /// Length of the range in seconds, from the length stated by the file.
     pub fn duration(&self) -> Option<f64> {
         self.duration
     }

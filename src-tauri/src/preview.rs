@@ -8,10 +8,10 @@
 //!
 //! The preview runs its own slideshow on its own clock and is silent.
 
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use fluxlide_engine::show::ShowDefinition;
 use fluxlide_engine::{OffscreenTarget, Renderer, Scene, Slideshow};
 use tauri::ipc::Response;
 use tauri::{AppHandle, Manager, State};
@@ -33,20 +33,20 @@ pub struct PreviewState {
     preview: Arc<Mutex<Option<Preview>>>,
 }
 
-/// Starts (or restarts) the preview of `files` at `width` x `height`. With
-/// no files it shows the test pattern.
+/// Starts (or restarts) the preview of `show` at `width` x `height`. With
+/// no slides it shows the test pattern.
 #[tauri::command]
 pub async fn start_preview(
     presentation: State<'_, PresentationState>,
     state: State<'_, PreviewState>,
-    files: Vec<PathBuf>,
+    show: ShowDefinition,
     width: u32,
     height: u32,
 ) -> Result<(), String> {
     let renderer = presentation.renderer().await?;
     let size = (width.clamp(2, MAX_SIZE.0), height.clamp(2, MAX_SIZE.1));
     let target = OffscreenTarget::new(&renderer, size.0, size.1).map_err(|err| err.to_string())?;
-    let show = (!files.is_empty()).then(|| build_slideshow(renderer.clone(), files, size));
+    let show = (!show.slides.is_empty()).then(|| build_slideshow(renderer.clone(), show, size));
     *state.preview.lock().unwrap() = Some(Preview {
         renderer,
         show,

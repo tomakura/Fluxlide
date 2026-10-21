@@ -759,7 +759,7 @@ impl Source for PlaylistSource {
 
 /// A small random number generator (SplitMix64): the shuffle needs no more
 /// than this, and it makes a seeded shuffle the same on every platform.
-struct Rng(u64);
+pub(crate) struct Rng(pub(crate) u64);
 
 impl Rng {
     fn next(&mut self) -> u64 {
@@ -771,7 +771,7 @@ impl Rng {
     }
 
     /// A number from 0 to `bound` - 1.
-    fn below(&mut self, bound: usize) -> usize {
+    pub(crate) fn below(&mut self, bound: usize) -> usize {
         ((u128::from(self.next()) * bound as u128) >> 64) as usize
     }
 }
@@ -1176,7 +1176,7 @@ impl Drop for Bgm {
     }
 }
 
-fn random_seed() -> u64 {
+pub(crate) fn random_seed() -> u64 {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_nanos() as u64);

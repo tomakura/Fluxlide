@@ -1208,6 +1208,8 @@ dependencies = [
  "image",
  "pollster",
  "rtrb",
+ "serde",
+ "serde_json",
  "wgpu",
 ]
 
