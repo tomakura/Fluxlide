@@ -21,7 +21,7 @@ use std::time::Instant;
 use crate::audio::{AudioFormat, AudioMixer, AudioStats, VoiceHandle};
 use crate::bgm::{DuckWindow, Ducker};
 use crate::media::audio::AudioTrack;
-use crate::media::video::{Ffmpeg, VideoPlayer};
+use crate::media::video::{Ffmpeg, PlayRange, VideoPlayer};
 use crate::media::{MediaKind, MediaTexture, load_image};
 use crate::{
     Caption, CaptionStyle, EngineError, Fit, Frame, Layer, Overlay, OverlayRef, Renderer,
@@ -665,11 +665,15 @@ fn prepare(
         Some(MediaKind::Image) => load_image(renderer, path, output_size).map(Prepared::Image),
         Some(MediaKind::Video) => {
             let ffmpeg = ffmpeg.map_err(EngineError::Media)?;
-            let player = VideoPlayer::open(renderer, &ffmpeg, path, output_size)?;
+            let player =
+                VideoPlayer::open(renderer, &ffmpeg, path, output_size, PlayRange::default())?;
             let audio = match audio {
-                Some(format) if player.has_audio() => {
-                    Some(AudioTrack::open(&ffmpeg, path, format)?)
-                }
+                Some(format) if player.has_audio() => Some(AudioTrack::open(
+                    &ffmpeg,
+                    path,
+                    format,
+                    PlayRange::default(),
+                )?),
                 _ => None,
             };
             Ok(Prepared::Video {
@@ -956,7 +960,17 @@ mod tests {
             return;
         }
 
-        let mut player = VideoPlayer::open(&renderer, &ffmpeg, &clip, (80, 80)).unwrap();
+        // Only the range from 0.5 s plays.
+        let range = PlayRange {
+            start: 0.5,
+            length: None,
+        };
+        let player = VideoPlayer::open(&renderer, &ffmpeg, &clip, (80, 80), range).unwrap();
+        assert!((player.duration().unwrap() - 0.5).abs() < 0.05);
+        drop(player);
+
+        let mut player =
+            VideoPlayer::open(&renderer, &ffmpeg, &clip, (80, 80), PlayRange::default()).unwrap();
         // Shrunk to fit 80x80 with even dimensions for 4:2:0.
         let (width, height) = player.texture().size();
         assert!(width == 80 && height % 2 == 0 && (44..=46).contains(&height));

@@ -1,9 +1,10 @@
 //! The sound of a video, decoded by `ffmpeg` into the mixer's format.
 //!
 //! The sound runs in its own `ffmpeg` process next to the one for the
-//! picture. Both start at the start of the file: the picture repeats its
-//! first frame and the sound is padded with silence when one of them begins
-//! later, so they share one timeline and need no offset between them.
+//! picture. Both start at the start of the range being played: the picture
+//! repeats its first frame and the sound is padded with silence when one of
+//! them begins later, so they share one timeline and need no offset between
+//! them.
 
 use std::io::Read;
 use std::path::Path;
@@ -12,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::video::{Ffmpeg, collect_log, command};
+use super::video::{Ffmpeg, PlayRange, collect_log, command};
 use crate::EngineError;
 use crate::audio::{AudioFormat, TRACK_CHANNELS};
 
@@ -27,15 +28,22 @@ pub struct AudioTrack {
 }
 
 impl AudioTrack {
-    /// Starts decoding the first sound stream of `path` as stereo `f32`
-    /// samples at the output's rate.
-    pub fn open(ffmpeg: &Ffmpeg, path: &Path, format: AudioFormat) -> Result<Self, EngineError> {
+    /// Starts decoding the first sound stream of `range` of `path` as
+    /// stereo `f32` samples at the output's rate.
+    pub fn open(
+        ffmpeg: &Ffmpeg,
+        path: &Path,
+        format: AudioFormat,
+        range: PlayRange,
+    ) -> Result<Self, EngineError> {
         let rate = format.sample_rate.to_string();
         let mut child = command(ffmpeg.ffmpeg_path())
-            .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-i"])
+            .args(["-nostdin", "-hide_banner", "-loglevel", "error"])
+            .args(range.input_args())
+            .arg("-i")
             .arg(path)
             .args(["-map", "0:a:0", "-vn", "-sn", "-dn"])
-            // Pads with silence so the first sample is at the start of the file.
+            // Pads with silence so the first sample is at the start of the range.
             .args(["-af", "aresample=async=1:first_pts=0"])
             .args(["-ac", &TRACK_CHANNELS.to_string(), "-ar", &rate])
             .args(["-f", "f32le", "-"])
@@ -117,7 +125,7 @@ mod tests {
     use std::time::Instant;
 
     #[test]
-    fn sound_is_aligned_to_the_start_of_the_file() {
+    fn sound_is_aligned_to_the_start_of_the_range() {
         let Ok(ffmpeg) = Ffmpeg::locate() else {
             eprintln!("skipping audio test: ffmpeg not found");
             return;
@@ -156,9 +164,33 @@ mod tests {
             return;
         }
 
+        // The whole file, then 1 s of it from 0.25 s.
+        let whole = decode_left(&ffmpeg, &clip, PlayRange::default());
+        let part = decode_left(
+            &ffmpeg,
+            &clip,
+            PlayRange {
+                start: 0.25,
+                length: Some(1.0),
+            },
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        // The leading silence is padded (AAC priming shifts it slightly).
+        for ((first_sound, len), (expected_first, expected_len)) in
+            [(whole, (0.5, 2.0)), (part, (0.25, 1.0))]
+        {
+            assert!((first_sound - expected_first).abs() < 0.05, "{first_sound}");
+            assert!((len - expected_len).abs() < 0.05, "{len}");
+        }
+    }
+
+    /// Decodes `range` of `clip` and returns when the sound starts and how
+    /// long it lasts, in seconds.
+    fn decode_left(ffmpeg: &Ffmpeg, clip: &Path, range: PlayRange) -> (f64, f64) {
         let rate = 8000;
         let mut track =
-            AudioTrack::open(&ffmpeg, &clip, AudioFormat { sample_rate: rate }).unwrap();
+            AudioTrack::open(ffmpeg, clip, AudioFormat { sample_rate: rate }, range).unwrap();
         let (mut samples, finished) = track.take_samples().unwrap();
         assert!(track.take_samples().is_none());
         let mut left = Vec::new();
@@ -172,20 +204,8 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        std::fs::remove_dir_all(&dir).unwrap();
-
         let secs = |frames: usize| frames as f64 / f64::from(rate);
         let first_sound = left.iter().position(|s| s.abs() > 0.01).unwrap();
-        // The leading 0.5 s is padded with silence (AAC priming shifts it slightly).
-        assert!(
-            (secs(first_sound) - 0.5).abs() < 0.05,
-            "{}",
-            secs(first_sound)
-        );
-        assert!(
-            (secs(left.len()) - 2.0).abs() < 0.05,
-            "{}",
-            secs(left.len())
-        );
+        (secs(first_sound), secs(left.len()))
     }
 }
