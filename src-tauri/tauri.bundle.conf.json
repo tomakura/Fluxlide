@@ -1,0 +1,9 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "externalBin": ["binaries/fluxlide-ffmpeg", "binaries/fluxlide-ffprobe"],
+    "resources": {
+      "binaries/ffmpeg-licenses/": "licenses/ffmpeg/"
+    }
+  }
+}
