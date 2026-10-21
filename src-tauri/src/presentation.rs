@@ -1,7 +1,7 @@
 //! Prototype of the presentation window: a native window without a webview,
 //! placed fullscreen on the chosen display and rendered by wgpu on its own
 //! thread while the management window stays usable. It plays the chosen
-//! photos and videos in a loop with crossfades, or a test pattern when no
+//! photos and videos in a loop with transitions and captions, or a test pattern when no
 //! files are chosen. Video sound goes to the default audio output.
 
 use std::path::PathBuf;
@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 
 use fluxlide_engine::audio::{AudioOutput, AudioStats};
 use fluxlide_engine::{
-    FrameOutcome, Presenter, Renderer, Scene, Slideshow, SlideshowConfig, SlideshowStats,
+    Caption, CaptionStyle, Fit, FrameOutcome, Presenter, Renderer, Scene, Slideshow,
+    SlideshowConfig, SlideshowStats,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State, WindowEvent};
@@ -404,13 +405,25 @@ async fn run_presentation(
     set_escape_enabled(app, true);
 
     // Photos and videos are loaded at the display's full resolution.
+    // Until the project has titles to show, each caption is the file name.
     let slideshow = (!files.is_empty()).then(|| {
-        Slideshow::new(
-            renderer.clone(),
-            files,
-            (size.width, size.height),
-            SlideshowConfig::default(),
-        )
+        let captions = files
+            .iter()
+            .map(|file| Caption {
+                title: file
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                ..Default::default()
+            })
+            .collect();
+        let config = SlideshowConfig {
+            fit: Fit::Blur,
+            ..Default::default()
+        };
+        let mut show = Slideshow::new(renderer.clone(), files, (size.width, size.height), config);
+        show.set_captions(captions, CaptionStyle::default());
+        show
     });
     let thread = {
         let stop = stop.clone();
@@ -483,13 +496,19 @@ fn render_loop(
     while !stop.load(Ordering::Relaxed) {
         if let Some((width, height)) = pending_size.lock().unwrap().take() {
             presenter.resize(&renderer, width, height);
+            if let Some(Err(err)) = slideshow
+                .as_mut()
+                .map(|show| show.set_output_size(presenter.size()))
+            {
+                stats.lock().unwrap().last_error = Some(err.to_string());
+            }
         }
 
         let time = start.elapsed().as_secs_f64();
         let outcome = match slideshow.as_mut() {
             Some(show) => {
                 show.update(time);
-                presenter.render(&renderer, &Scene::Layers(&show.layers()))
+                presenter.render(&renderer, &Scene::Frame(show.frame()))
             }
             None => presenter.render(
                 &renderer,

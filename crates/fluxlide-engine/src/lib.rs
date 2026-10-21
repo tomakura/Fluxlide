@@ -3,18 +3,38 @@
 //! The same [`Renderer`] drives both live playback windows and offscreen
 //! video export, so both paths share one GPU pipeline. This crate does not
 //! depend on Tauri or any UI toolkit.
+//!
+//! A [`Scene`] says what one frame shows. The [`Compositor`] draws it into
+//! any texture view; a [`Presenter`] (window) and an [`OffscreenTarget`]
+//! (export, previews) are the two places it is drawn into.
 
 use std::fmt;
-use std::sync::mpsc;
 
 pub mod audio;
+mod caption;
+mod compositor;
 pub mod media;
+mod offscreen;
+mod overlay;
 mod presenter;
+#[cfg(test)]
+mod render_tests;
+mod scene;
 mod slideshow;
+mod text;
+mod transition;
+mod watermark;
 
+pub use caption::{Caption, CaptionDesign, CaptionStyle};
+pub use compositor::Compositor;
 pub use media::{MediaKind, MediaTexture};
-pub use presenter::{FrameOutcome, Layer, MAX_LAYERS, Presenter, Scene};
+pub use offscreen::OffscreenTarget;
+pub use overlay::Overlay;
+pub use presenter::{FrameOutcome, Presenter};
+pub use scene::{Fit, Frame, Layer, OverlayRef, Scene, Transform, TransitionRun};
 pub use slideshow::{Slideshow, SlideshowConfig, SlideshowStats};
+pub use transition::{Direction, Transition};
+pub use watermark::{Corner, Watermark, WatermarkContent};
 
 /// Pixel format used for offscreen frames handed to the encoder.
 pub const FRAME_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -43,6 +63,14 @@ pub enum EngineError {
     Device(wgpu::RequestDeviceError),
     Readback(String),
     Surface(String),
+    /// A scene that cannot be drawn (an output with no pixels, an overlay
+    /// made for another size, too many draw calls).
+    Scene(String),
+    /// A transition shader the GPU rejected. `message` is the compiler's.
+    Shader {
+        name: String,
+        message: String,
+    },
     Media(String),
     Audio(String),
 }
@@ -54,6 +82,10 @@ impl fmt::Display for EngineError {
             Self::Device(err) => write!(f, "failed to open GPU device: {err}"),
             Self::Readback(msg) => write!(f, "failed to read frame from GPU: {msg}"),
             Self::Surface(msg) => write!(f, "window surface error: {msg}"),
+            Self::Scene(msg) => write!(f, "cannot draw the scene: {msg}"),
+            Self::Shader { name, message } => {
+                write!(f, "transition shader \"{name}\" is invalid: {message}")
+            }
             Self::Media(msg) => write!(f, "media error: {msg}"),
             Self::Audio(msg) => write!(f, "audio error: {msg}"),
         }
@@ -126,8 +158,8 @@ impl Renderer {
 
     /// Renders a solid-color frame offscreen and returns tightly packed RGBA8 pixels.
     ///
-    /// This is the minimal export path: render to a texture, copy it into a
-    /// mappable buffer and read it back on the CPU.
+    /// The minimal offscreen path, kept as a smoke test of readback. Real
+    /// scenes go through [`OffscreenTarget`].
     pub fn render_solid_frame(
         &self,
         width: u32,
@@ -150,17 +182,7 @@ impl Renderer {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        // Buffer rows must be aligned to COPY_BYTES_PER_ROW_ALIGNMENT.
-        let unpadded_row = width * 4;
-        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let padded_row = unpadded_row.div_ceil(align) * align;
-        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("fluxlide-readback"),
-            size: u64::from(padded_row) * u64::from(height),
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        let buffer = offscreen::create_readback_buffer(self, width, height);
 
         let mut encoder = self
             .device
@@ -182,45 +204,10 @@ impl Renderer {
                 ..Default::default()
             });
         }
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded_row),
-                    rows_per_image: Some(height),
-                },
-            },
-            size,
-        );
         self.queue.submit([encoder.finish()]);
 
-        let (tx, rx) = mpsc::channel();
-        buffer.map_async(wgpu::MapMode::Read, .., move |result| {
-            let _ = tx.send(result);
-        });
-        self.device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|err| EngineError::Readback(err.to_string()))?;
-        rx.recv()
-            .map_err(|err| EngineError::Readback(err.to_string()))?
-            .map_err(|err| EngineError::Readback(err.to_string()))?;
-
-        let mapped = buffer
-            .get_mapped_range(..)
-            .map_err(|err| EngineError::Readback(format!("{err:?}")))?;
-        let mut pixels = Vec::with_capacity((unpadded_row * height) as usize);
-        for row in mapped.chunks(padded_row as usize) {
-            pixels.extend_from_slice(&row[..unpadded_row as usize]);
-        }
-        drop(mapped);
-        buffer.unmap();
+        let mut pixels = Vec::new();
+        offscreen::read_texture_rgba(self, &texture, (width, height), &buffer, &mut pixels)?;
         Ok(pixels)
     }
 }

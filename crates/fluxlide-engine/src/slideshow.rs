@@ -1,4 +1,4 @@
-//! A looping playlist of photos and videos joined by crossfades.
+//! A looping playlist of photos and videos joined by transitions.
 //!
 //! While one item is on screen, the next one is loaded on a background
 //! thread: photos are decoded and uploaded, videos are probed and decoded up
@@ -20,15 +20,19 @@ use crate::audio::{AudioFormat, AudioMixer, AudioStats, VoiceHandle};
 use crate::media::audio::AudioTrack;
 use crate::media::video::{Ffmpeg, VideoPlayer};
 use crate::media::{MediaKind, MediaTexture, load_image};
-use crate::presenter::Layer;
-use crate::{EngineError, Renderer};
+use crate::{
+    Caption, CaptionStyle, EngineError, Fit, Frame, Layer, Overlay, OverlayRef, Renderer,
+    Transition, TransitionRun, Watermark,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct SlideshowConfig {
-    /// How long a photo stays, including the crossfades at both ends.
+    /// How long a photo stays, including the transitions at both ends.
     pub image_secs: f64,
-    /// Length of a crossfade. Shortened for items shorter than twice this.
+    /// Length of a transition. Shortened for items shorter than twice this.
     pub fade_secs: f64,
+    /// How pictures whose aspect ratio differs from the output are placed.
+    pub fit: Fit,
 }
 
 impl Default for SlideshowConfig {
@@ -36,6 +40,7 @@ impl Default for SlideshowConfig {
         Self {
             image_secs: 5.0,
             fade_secs: 1.0,
+            fit: Fit::default(),
         }
     }
 }
@@ -88,16 +93,25 @@ impl Prepared {
 struct Showing {
     index: usize,
     media: Prepared,
+    caption: Option<Overlay>,
     /// Playback time at which this item started fading in.
     started: f64,
     /// The item's sound while it plays.
     voice: Option<VoiceHandle>,
 }
 
+impl Showing {
+    fn layer(&self, fit: Fit) -> Layer<'_> {
+        let mut layer = Layer::new(self.media.texture());
+        layer.fit = fit;
+        layer
+    }
+}
+
 struct Loading {
     index: usize,
     since: Instant,
-    result: Receiver<Result<Prepared, EngineError>>,
+    result: Receiver<Result<(Prepared, Option<Overlay>), EngineError>>,
 }
 
 struct Fade {
@@ -115,7 +129,7 @@ pub struct Slideshow {
     outgoing: Option<Showing>,
     fade: Option<Fade>,
     loading: Option<Loading>,
-    ready: Option<(usize, Prepared)>,
+    ready: Option<(usize, Prepared, Option<Overlay>)>,
     next_index: usize,
     failures_in_row: usize,
     /// Time the current transition became due while the next item was not ready.
@@ -123,6 +137,11 @@ pub struct Slideshow {
     now: f64,
     stats: SlideshowStats,
     audio: Option<AudioMixer>,
+    transition: Transition,
+    /// Captions by item index; items past the end have none.
+    captions: Vec<Caption>,
+    caption_style: CaptionStyle,
+    watermark: Option<(Watermark, Overlay)>,
 }
 
 impl Slideshow {
@@ -151,7 +170,78 @@ impl Slideshow {
             now: 0.0,
             stats: SlideshowStats::default(),
             audio: None,
+            transition: Transition::fade(),
+            captions: Vec::new(),
+            caption_style: CaptionStyle::default(),
+            watermark: None,
         }
+    }
+
+    /// Sets how items are joined. Takes effect from the next transition.
+    pub fn set_transition(&mut self, transition: Transition) {
+        self.transition = transition;
+    }
+
+    /// Sets the caption of each item, in playlist order. Items loaded
+    /// before this call keep the caption they were loaded with.
+    pub fn set_captions(&mut self, captions: Vec<Caption>, style: CaptionStyle) {
+        self.captions = captions;
+        self.caption_style = style;
+    }
+
+    /// Shows `watermark` over every item, or removes it with `None`.
+    pub fn set_watermark(&mut self, watermark: Option<Watermark>) -> Result<(), EngineError> {
+        self.watermark = match watermark {
+            Some(watermark) => {
+                let overlay = Overlay::watermark(&self.renderer, &watermark, self.output_size)?;
+                Some((watermark, overlay))
+            }
+            None => None,
+        };
+        Ok(())
+    }
+
+    /// Tells the slideshow the output changed size. Captions and the
+    /// watermark are laid out again for it; pictures keep the size they
+    /// were loaded at.
+    pub fn set_output_size(&mut self, output_size: (u32, u32)) -> Result<(), EngineError> {
+        if output_size == self.output_size {
+            return Ok(());
+        }
+        self.output_size = output_size;
+        if let Some((watermark, overlay)) = &mut self.watermark {
+            *overlay = Overlay::watermark(&self.renderer, watermark, output_size)?;
+        }
+        let relayout = |index: usize| -> Result<Option<Overlay>, EngineError> {
+            caption_overlay(
+                &self.renderer,
+                self.captions.get(index),
+                &self.caption_style,
+                output_size,
+            )
+        };
+        let current = match &self.current {
+            Some(showing) => Some(relayout(showing.index)?),
+            None => None,
+        };
+        let outgoing = match &self.outgoing {
+            Some(showing) => Some(relayout(showing.index)?),
+            None => None,
+        };
+        let ready = match &self.ready {
+            Some((index, ..)) => Some(relayout(*index)?),
+            None => None,
+        };
+        if let (Some(showing), Some(caption)) = (&mut self.current, current) {
+            showing.caption = caption;
+        }
+        if let (Some(showing), Some(caption)) = (&mut self.outgoing, outgoing) {
+            showing.caption = caption;
+        }
+        if let (Some((_, _, slot)), Some(caption)) = (&mut self.ready, ready) {
+            *slot = caption;
+        }
+        Ok(())
     }
 
     /// Plays the sound of videos through `mixer`. `mixer` must count
@@ -219,7 +309,7 @@ impl Slideshow {
         let next_duration = self
             .ready
             .as_ref()
-            .and_then(|(_, media)| media.duration(&self.config));
+            .and_then(|(_, media, _)| media.duration(&self.config));
         let fade_secs = [current.media.duration(&self.config), next_duration]
             .into_iter()
             .flatten()
@@ -251,26 +341,47 @@ impl Slideshow {
         }
     }
 
-    /// Layers to draw for the time given to the last [`Slideshow::update`].
-    pub fn layers(&self) -> Vec<Layer<'_>> {
+    /// What to draw for the time given to the last [`Slideshow::update`].
+    pub fn frame(&self) -> Frame<'_> {
         let progress = self.fade_progress();
-        let mut layers = Vec::with_capacity(2);
-        if let Some(outgoing) = &self.outgoing {
-            layers.push(Layer {
-                texture: outgoing.media.texture(),
-                opacity: 1.0 - progress,
+        let fit = self.config.fit;
+        let mut overlays = Vec::with_capacity(3);
+        // While pictures change, the old caption fades out in the first
+        // half and the new one in during the second, so the two never overlap.
+        let (outgoing_opacity, incoming_opacity) = if self.fade.is_some() {
+            (
+                (1.0 - 2.0 * progress).max(0.0),
+                (2.0 * progress - 1.0).max(0.0),
+            )
+        } else {
+            (0.0, 1.0)
+        };
+        for (showing, opacity) in [
+            (&self.outgoing, outgoing_opacity),
+            (&self.current, incoming_opacity),
+        ] {
+            if let Some(overlay) = showing.as_ref().and_then(|s| s.caption.as_ref()) {
+                overlays.push(OverlayRef { overlay, opacity });
+            }
+        }
+        if let Some((_, overlay)) = &self.watermark {
+            overlays.push(OverlayRef {
+                overlay,
+                opacity: 1.0,
             });
         }
-        if let Some(current) = &self.current {
-            layers.push(Layer {
-                texture: current.media.texture(),
-                opacity: progress,
-            });
+        Frame {
+            from: self.outgoing.as_ref().map(|showing| showing.layer(fit)),
+            to: self.current.as_ref().map(|showing| showing.layer(fit)),
+            transition: self.fade.is_some().then_some(TransitionRun {
+                transition: &self.transition,
+                progress,
+            }),
+            overlays,
         }
-        layers
     }
 
-    /// How far the current crossfade has gone, from 0 to 1 (1 when none).
+    /// How far the current transition has gone, from 0 to 1 (1 when none).
     fn fade_progress(&self) -> f32 {
         let progress = match &self.fade {
             Some(fade) if fade.secs > 0.0 => ((self.now - fade.start) / fade.secs).clamp(0.0, 1.0),
@@ -280,7 +391,7 @@ impl Slideshow {
     }
 
     fn begin_transition(&mut self, fade_secs: f64) {
-        let Some((index, mut media)) = self.ready.take() else {
+        let Some((index, mut media, caption)) = self.ready.take() else {
             return;
         };
         // The sound starts at the same playback time as the picture, silent
@@ -300,6 +411,7 @@ impl Slideshow {
         self.current = Some(Showing {
             index,
             media,
+            caption,
             started: self.now,
             voice,
         });
@@ -326,10 +438,10 @@ impl Slideshow {
             let (index, since) = (loading.index, loading.since);
             self.loading = None;
             match result {
-                Ok(media) => {
+                Ok((media, caption)) => {
                     self.stats.last_load_ms = since.elapsed().as_secs_f64() * 1000.0;
                     self.failures_in_row = 0;
-                    self.ready = Some((index, media));
+                    self.ready = Some((index, media, caption));
                 }
                 Err(err) => {
                     self.stats.failed_items += 1;
@@ -356,11 +468,23 @@ impl Slideshow {
         let ffmpeg = self.ffmpeg.clone();
         let output_size = self.output_size;
         let audio = self.audio.as_ref().map(AudioMixer::format);
+        let caption = self.captions.get(index).cloned();
+        let caption_style = self.caption_style;
         let (tx, result) = mpsc::channel();
         let spawned = std::thread::Builder::new()
             .name("fluxlide-preload".into())
             .spawn(move || {
-                let _ = tx.send(prepare(&renderer, ffmpeg, &path, output_size, audio));
+                let loaded =
+                    prepare(&renderer, ffmpeg, &path, output_size, audio).and_then(|media| {
+                        let caption = caption_overlay(
+                            &renderer,
+                            caption.as_ref(),
+                            &caption_style,
+                            output_size,
+                        )?;
+                        Ok((media, caption))
+                    });
+                let _ = tx.send(loaded);
             });
         match spawned {
             Ok(_) => {
@@ -376,6 +500,19 @@ impl Slideshow {
                 self.failures_in_row += 1;
             }
         }
+    }
+}
+
+/// The overlay for an item's caption, laid out for `output_size`.
+fn caption_overlay(
+    renderer: &Renderer,
+    caption: Option<&Caption>,
+    style: &CaptionStyle,
+    output_size: (u32, u32),
+) -> Result<Option<Overlay>, EngineError> {
+    match caption {
+        Some(caption) => Overlay::caption(renderer, caption, style, output_size),
+        None => Ok(None),
     }
 }
 
@@ -426,8 +563,17 @@ mod tests {
         panic!("timed out at {now}: {:?}", show.stats());
     }
 
+    /// Opacity of each picture drawn: the outgoing one fades out as the
+    /// incoming one fades in.
     fn opacities(show: &Slideshow) -> Vec<f32> {
-        show.layers().iter().map(|layer| layer.opacity).collect()
+        let frame = show.frame();
+        let progress = frame.transition.map_or(1.0, |run| run.progress);
+        frame
+            .from
+            .iter()
+            .map(|_| 1.0 - progress)
+            .chain(frame.to.iter().map(|_| progress))
+            .collect()
     }
 
     #[test]
@@ -450,13 +596,14 @@ mod tests {
         let config = SlideshowConfig {
             image_secs: 2.0,
             fade_secs: 0.5,
+            ..Default::default()
         };
         let mut show = Slideshow::new(renderer, vec![red, missing, blue], (32, 32), config);
 
         // The first photo fades in from black once loaded.
         update_until(&mut show, 0.0, |show| show.current.is_some());
         assert_eq!(opacities(&show), [0.0]);
-        assert_eq!(show.layers()[0].texture.size(), (32, 24));
+        assert_eq!(show.frame().to.unwrap().texture.size(), (32, 24));
         show.update(0.25);
         assert_eq!(opacities(&show), [0.5]);
 
@@ -493,6 +640,83 @@ mod tests {
 
         // Let the preload thread finish before the test ends.
         update_until(&mut show, 4.0, |show| show.loading.is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn captions_and_the_watermark_follow_the_transition() {
+        let Some(renderer) = crate::test_renderer() else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("fluxlide-captions-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = dir.join("first.png");
+        let second = dir.join("second.png");
+        for path in [&first, &second] {
+            image::RgbImage::from_pixel(64, 36, image::Rgb([90, 120, 200]))
+                .save(path)
+                .unwrap();
+        }
+        let config = SlideshowConfig {
+            image_secs: 2.0,
+            fade_secs: 0.5,
+            fit: Fit::Blur,
+        };
+        let mut show = Slideshow::new(renderer, vec![first, second], (320, 180), config);
+        let caption = |title: &str| Caption {
+            title: title.into(),
+            ..Default::default()
+        };
+        show.set_captions(
+            vec![caption("one"), caption("two")],
+            CaptionStyle::default(),
+        );
+        show.set_transition(Transition::slide(crate::Direction::Left));
+        show.set_watermark(Some(Watermark::text(
+            "FLUXLIDE",
+            crate::Corner::TopRight,
+            0.5,
+        )))
+        .unwrap();
+
+        // Overlay opacities of the current frame, back to front.
+        let overlays = |show: &Slideshow| -> Vec<f32> {
+            show.frame().overlays.iter().map(|o| o.opacity).collect()
+        };
+        update_until(&mut show, 0.0, |show| show.current.is_some());
+        // Fading in: the caption waits for the second half, the watermark never moves.
+        show.update(0.125);
+        assert_eq!(overlays(&show), [0.0, 1.0]);
+        show.update(0.375);
+        assert_eq!(overlays(&show), [0.5, 1.0]);
+        update_until(&mut show, 1.0, |show| show.ready.is_some());
+        assert_eq!(overlays(&show), [1.0, 1.0]);
+        assert_eq!(show.frame().overlays[1].overlay.opacity(), 0.5);
+
+        // Changing items: the old caption fades out first, then the new one in.
+        show.update(1.5 + 0.125);
+        assert_eq!(overlays(&show), [0.5, 0.0, 1.0]);
+        show.update(1.5 + 0.375);
+        assert_eq!(overlays(&show), [0.0, 0.5, 1.0]);
+        let frame = show.frame();
+        assert_eq!(frame.transition.unwrap().transition.name(), "slide");
+        drop(frame);
+        show.update(2.0);
+        assert_eq!(overlays(&show), [1.0, 1.0]);
+        assert!(show.frame().transition.is_none());
+
+        // A new output size lays the captions and the watermark out again.
+        show.set_output_size((640, 360)).unwrap();
+        let frame = show.frame();
+        assert!(
+            frame
+                .overlays
+                .iter()
+                .all(|o| o.overlay.size() == (640, 360))
+        );
+        drop(frame);
+
+        update_until(&mut show, 2.2, |show| show.loading.is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
