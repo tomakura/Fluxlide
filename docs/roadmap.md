@@ -6,11 +6,15 @@
 
 ## 現在地
 
-- 済み（macOSのみ）
-  - アプリの雛形
-  - [上映ウィンドウ](spike-presentation-window.md)（[技術課題](tech-stack.md)の2番）
-  - [写真と動画の連続再生](spike-media-playback.md)（1番）
-  - [動画の音声と映像の同期](spike-audio-sync.md)（4番の一部）
+- 段階1（技術検証）は、実機での確認を除いて済み（2026-10-21）。結果は[技術選定](tech-stack.md)の6章と[進捗の記録](progress.md)にまとめた
+  - [上映ウィンドウ](spike-presentation-window.md)、[写真と動画の連続再生](spike-media-playback.md)、[動画の音声と映像の同期](spike-audio-sync.md)（macOS）
+  - [キャプション、ウォーターマーク、トランジション、日本語の文字描画](spike-captions-transitions.md)
+  - [BGM、動画中のBGMの下げ、音ズレ補正](spike-bgm.md)
+  - [動画への書き出し](spike-export.md)
+  - [管理画面の中のプレビュー](spike-preview.md)
+  - [FFmpegの同梱とライセンス](spike-ffmpeg-bundling.md)（macOS）
+  - [Linuxでの動作の確認（仮想ディスプレイ）](check-linux.md)
+- 残り: Windowsと実機（実際のGPU、HDMIの外部ディスプレイ、Bluetoothなどの出力機器）での確認
 
 ## 段階1: 技術検証を終えて方式を確定する
 
