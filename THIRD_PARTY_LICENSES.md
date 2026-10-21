@@ -1,8 +1,8 @@
 # Third-party licenses
 
 This file lists the third-party software that Fluxlide releases include or
-use. It is a draft; the fonts and the Rust and npm dependencies are still to
-be added (see docs/roadmap.md, stage 7).
+use. It is a draft; the Rust and npm dependencies are still to be added
+(see docs/roadmap.md, stage 7).
 
 ## FFmpeg
 
@@ -39,3 +39,17 @@ originator of the FFmpeg project.
 
 Video and audio formats such as H.264, HEVC and AAC may be covered by patents
 in some countries. This license file does not grant any patent license.
+
+## Noto Sans JP
+
+Fluxlide draws captions and text watermarks with Noto Sans JP, which is
+embedded in the application's executable. The font file is unmodified.
+
+- Project: Noto Sans JP, <https://fonts.google.com/noto/specimen/Noto+Sans+JP>
+- File: `NotoSansJP-VariableFont_wght.ttf` (variable font, weight axis)
+- Copyright 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name
+  'Source'.
+- License: SIL Open Font License, Version 1.1. The license text is in
+  `assets/fonts/OFL.txt` in the Fluxlide repository.
+  Shipping that text inside the release packages, as is done for FFmpeg,
+  is still to be set up.
