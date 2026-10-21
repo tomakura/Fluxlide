@@ -67,8 +67,10 @@ case "$target" in
       echo "$target must be built in an MSYS2 MINGW64 shell" >&2; exit 1 ;;
     esac
     exe=.exe
+    # h264_mf uses Direct3D 11 types that are only declared with d3d11va,
+    # which --disable-autodetect turns off. Both are parts of Windows.
     configure_args+=(
-      --arch=x86_64 --target-os=mingw32 --enable-mediafoundation
+      --arch=x86_64 --target-os=mingw32 --enable-mediafoundation --enable-d3d11va
       --extra-ldexeflags=-static
     )
     encoder=h264_mf

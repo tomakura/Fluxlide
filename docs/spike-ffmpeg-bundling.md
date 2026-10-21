@@ -58,7 +58,7 @@ BtbNの `lgpl` 版（`autobuild-2026-09-30-13-08` のLinux x86_64、FFmpeg 9.0.2
 | --- | --- | --- |
 | `aarch64-apple-darwin` | `--enable-videotoolbox --enable-audiotoolbox`、最低macOS 11.0 | `h264_videotoolbox` |
 | `x86_64-apple-darwin` | 同上、最低macOS 10.15。Apple Siliconのrunnerでクロスビルドする（`nasm` が要る） | `h264_videotoolbox` |
-| `x86_64-pc-windows-msvc` | MSYS2のgccで `--enable-mediafoundation`、`-static` でリンク | `h264_mf` |
+| `x86_64-pc-windows-msvc` | MSYS2のgccで `--enable-mediafoundation --enable-d3d11va`（`h264_mf` がDirect3D 11の型を使うため）、`-static` でリンク | `h264_mf` |
 | `x86_64-unknown-linux-gnu` | なし | なし |
 
 Linuxにエンコーダを入れなかったのは、`--enable-vaapi` で作るとlibvaを実行時に要求し、ない環境では `ffmpeg` と `ffprobe` が起動しなくなるためである。`libopenh264` を自分でビルドするとCiscoの特許ライセンスが及ばない。LinuxのH.264書き出しの方式は、段階5で決める。
