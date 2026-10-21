@@ -78,6 +78,8 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'Fluxlide ${{ github.ref_name }}'
           releaseBody: 'Cross-platform Fluxlide release. See the attached platform installers.'
-          releaseDraft: false
+          # A draft until the FFmpeg source offer and the license notices in the
+          # app are settled (docs/spike-ffmpeg-bundling.md, 5.4).
+          releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }} --config src-tauri/tauri.bundle.conf.json

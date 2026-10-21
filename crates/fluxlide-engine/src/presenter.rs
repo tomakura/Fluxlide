@@ -20,6 +20,9 @@ pub enum FrameOutcome {
 pub struct Presenter {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
+    /// The sRGB format the compositor draws in: the surface's own, or an
+    /// sRGB view of it.
+    view_format: wgpu::TextureFormat,
     compositor: Compositor,
 }
 
@@ -46,13 +49,21 @@ impl Presenter {
         }
         let caps = surface.get_capabilities(renderer.adapter());
         // The compositor writes linear light and relies on an sRGB format
-        // to encode it, so a surface without one cannot be drawn correctly.
-        let format = caps
-            .formats
-            .iter()
-            .copied()
-            .find(wgpu::TextureFormat::is_srgb)
-            .ok_or_else(|| EngineError::Surface("the window surface has no sRGB format".into()))?;
+        // to encode it. A surface that offers only plain formats is drawn
+        // through an sRGB view of one; without either it cannot be drawn
+        // correctly.
+        let (format, view_format) = match caps.formats.iter().copied().find(|f| f.is_srgb()) {
+            Some(format) => (format, format),
+            None => caps
+                .formats
+                .iter()
+                .copied()
+                .map(|format| (format, format.add_srgb_suffix()))
+                .find(|(_, view)| view.is_srgb())
+                .ok_or_else(|| {
+                    EngineError::Surface("the window surface has no sRGB format".into())
+                })?,
+        };
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -63,14 +74,19 @@ impl Presenter {
             present_mode: wgpu::PresentMode::Fifo,
             desired_maximum_frame_latency: 2,
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
-            view_formats: vec![],
+            view_formats: if view_format == format {
+                vec![]
+            } else {
+                vec![view_format]
+            },
         };
         surface.configure(device, &config);
 
         Ok(Self {
             surface,
             config,
-            compositor: Compositor::new(renderer, format)?,
+            view_format,
+            compositor: Compositor::new(renderer, view_format)?,
         })
     }
 
@@ -116,9 +132,10 @@ impl Presenter {
             }
         };
 
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(self.view_format),
+            ..Default::default()
+        });
         self.compositor.draw(renderer, &view, self.size(), scene)?;
         renderer.queue().present(frame);
         Ok(FrameOutcome::Presented)

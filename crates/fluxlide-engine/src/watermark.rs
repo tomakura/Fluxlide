@@ -88,6 +88,8 @@ pub(crate) fn plan_watermark(
     let mut pieces = Vec::new();
 
     // Width and height of the watermark, then where it goes.
+    // The text is laid out once, so the frame fits what is drawn in it.
+    let mut text_block = None;
     let (content_width, content_height) = match &watermark.content {
         WatermarkContent::Image(texture) => {
             let (tw, th) = texture.size();
@@ -108,7 +110,8 @@ pub(crate) fn plan_watermark(
                 line_height: 1.2,
             };
             let max_width = width - 2.0 * margin - frame_height;
-            let Some(block) = render_text(text, &style, max_width, 1, None) else {
+            let shadow = ((frame_height * 0.08).round().max(2.0) as u32, 1);
+            let Some(block) = render_text(text, &style, max_width, 1, Some(shadow)) else {
                 // Nothing to show for an empty text.
                 return Ok(OverlayPlan {
                     size,
@@ -117,7 +120,9 @@ pub(crate) fn plan_watermark(
                 });
             };
             let padding = frame_height * 0.5;
-            (block.width.ceil() + 2.0 * padding, frame_height)
+            let content = (block.width.ceil() + 2.0 * padding, frame_height);
+            text_block = Some(block);
+            content
         }
     };
     let x = match watermark.corner {
@@ -140,16 +145,8 @@ pub(crate) fn plan_watermark(
             rect,
             texture: texture.clone(),
         }),
-        WatermarkContent::Text(text) => {
-            let style = TextStyle {
-                size: content_height * TEXT_TO_FRAME,
-                weight: TEXT_WEIGHT,
-                tracking: TEXT_TRACKING,
-                line_height: 1.2,
-            };
-            let shadow = ((content_height * 0.08).round().max(2.0) as u32, 1);
-            let block = render_text(text, &style, width, 1, Some(shadow))
-                .expect("the text was laid out before");
+        WatermarkContent::Text(_) => {
+            let block = text_block.expect("the text was laid out above");
             let white = Color::new([255, 255, 255], 1.0);
             pieces.push(PlanPiece::Shape {
                 rect,
@@ -202,6 +199,25 @@ mod tests {
         let bottom_right = text_rect(Corner::BottomRight, size);
         assert_eq!(bottom_right.x + bottom_right.width, 1920.0 - margin);
         assert_eq!(bottom_right.y + bottom_right.height, 1080.0 - margin);
+    }
+
+    #[test]
+    fn a_long_text_is_cut_to_fit_inside_its_frame_and_the_output() {
+        let text = "FLUXLIDE ".repeat(40);
+        let watermark = Watermark::text(text, Corner::TopRight, 0.6);
+        let plan = plan_watermark(&watermark, (640, 360)).unwrap();
+        let PlanPiece::Shape { rect, .. } = plan.pieces[0] else {
+            panic!("the frame comes first");
+        };
+        let PlanPiece::Text { x, ref block, .. } = plan.pieces[1] else {
+            panic!("the text comes second");
+        };
+        assert!(rect.x >= 0.0, "{rect:?}");
+        assert!(x as f32 >= rect.x, "{x} {rect:?}");
+        assert!(
+            x as f32 + block.width <= rect.x + rect.width + 1.0,
+            "{rect:?}"
+        );
     }
 
     #[test]

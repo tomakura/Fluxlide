@@ -9,11 +9,13 @@ on:
       - scripts/build-ffmpeg.sh
       - .github/actions/build-ffmpeg/**
       - .github/workflows/ffmpeg.yml
+      - src-tauri/tauri.bundle.conf.json
   pull_request:
     paths:
       - scripts/build-ffmpeg.sh
       - .github/actions/build-ffmpeg/**
       - .github/workflows/ffmpeg.yml
+      - src-tauri/tauri.bundle.conf.json
   workflow_dispatch:
 
 permissions:

@@ -137,6 +137,9 @@
   let previewing = $state(false);
   let previewError = $state<string | null>(null);
   let previewStats = $state<{ fps: number; frameMs: number; width: number; height: number } | null>(null);
+  // Each start gets a new number; a loop whose number is no longer current
+  // (stopped or restarted meanwhile) ends quietly.
+  let previewGeneration = 0;
 
   async function startPreview() {
     if (!previewCanvas) return;
@@ -151,30 +154,34 @@
       return;
     }
     previewing = true;
-    pumpPreview(previewCanvas);
+    pumpPreview(previewCanvas, ++previewGeneration);
   }
 
   async function stopPreview() {
     previewing = false;
+    previewGeneration++;
     await invoke("stop_preview");
   }
 
-  async function pumpPreview(canvas: HTMLCanvasElement) {
+  async function pumpPreview(canvas: HTMLCanvasElement, generation: number) {
     const context = canvas.getContext("2d");
     if (!context) return;
     let windowStart = performance.now();
     let frames = 0;
     let busyMs = 0;
-    while (previewing) {
+    while (generation === previewGeneration) {
       const started = performance.now();
       let buffer: ArrayBuffer;
       try {
         buffer = await invoke<ArrayBuffer>("preview_frame");
       } catch (err) {
-        previewError = String(err);
-        previewing = false;
+        if (generation === previewGeneration) {
+          previewError = String(err);
+          previewing = false;
+        }
         return;
       }
+      if (generation !== previewGeneration) return;
       // Pixels, then width and height as little-endian u32.
       const tail = new DataView(buffer, buffer.byteLength - 8);
       const width = tail.getUint32(0, true);

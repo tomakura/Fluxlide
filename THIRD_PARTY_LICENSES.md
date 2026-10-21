@@ -50,6 +50,5 @@ embedded in the application's executable. The font file is unmodified.
 - Copyright 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name
   'Source'.
 - License: SIL Open Font License, Version 1.1. The license text is in
-  `assets/fonts/OFL.txt` in the Fluxlide repository.
-  Shipping that text inside the release packages, as is done for FFmpeg,
-  is still to be set up.
+  `licenses/noto-sans-jp/OFL.txt` next to the application (from
+  `assets/fonts/OFL.txt` in the Fluxlide repository).

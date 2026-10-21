@@ -447,6 +447,16 @@ impl VideoEncoder {
     }
 }
 
+impl Drop for VideoEncoder {
+    fn drop(&mut self) {
+        // `finish` takes the writer: anything else still running belongs to an
+        // export that failed half way, and ffmpeg must not keep the file open.
+        if self.writer.is_some() {
+            self.abort();
+        }
+    }
+}
+
 fn write_frames(
     stdin: ChildStdin,
     frames: Receiver<Vec<u8>>,

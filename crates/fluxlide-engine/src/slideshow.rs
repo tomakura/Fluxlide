@@ -559,9 +559,25 @@ impl Slideshow {
             let (index, since) = (loading.index, loading.since);
             self.loading = None;
             match result {
-                Ok((media, caption)) => {
+                Ok((media, mut caption)) => {
                     self.stats.last_load_ms = since.elapsed().as_secs_f64() * 1000.0;
                     self.failures_in_row = 0;
+                    // Laid out for an older size if the output changed while loading.
+                    if caption
+                        .as_ref()
+                        .is_some_and(|overlay| overlay.size() != self.output_size)
+                    {
+                        caption = caption_overlay(
+                            &self.renderer,
+                            self.captions.get(index),
+                            &self.caption_style,
+                            self.output_size,
+                        )
+                        .unwrap_or_else(|err| {
+                            self.stats.last_error = Some(err.to_string());
+                            None
+                        });
+                    }
                     self.ready = Some((index, media, caption));
                 }
                 Err(err) => {
@@ -896,8 +912,13 @@ mod tests {
         assert_eq!(overlays(&show), [1.0, 1.0]);
         assert!(show.frame().transition.is_none());
 
-        // A new output size lays the captions and the watermark out again.
+        // A new output size lays the captions and the watermark out again,
+        // including the caption of an item that is still loading.
+        assert!(show.loading.is_some() || show.ready.is_some());
         show.set_output_size((640, 360)).unwrap();
+        update_until(&mut show, 2.0, |show| show.ready.is_some());
+        let (_, _, ready_caption) = show.ready.as_ref().unwrap();
+        assert_eq!(ready_caption.as_ref().unwrap().size(), (640, 360));
         let frame = show.frame();
         assert!(
             frame
