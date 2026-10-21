@@ -624,7 +624,13 @@ impl MixerCore {
             for slot in &mut self.sources {
                 slot.source.render(&mut self.scratch, &timeline);
             }
-            for (frame, stereo) in self.scratch.chunks_exact(TRACK_CHANNELS).enumerate() {
+            for (frame, stereo) in self
+                .scratch
+                .as_chunks::<TRACK_CHANNELS>()
+                .0
+                .iter()
+                .enumerate()
+            {
                 let frame_out = &mut out[frame * self.out_channels..][..self.out_channels];
                 add_stereo(frame_out, stereo[0], stereo[1]);
             }
