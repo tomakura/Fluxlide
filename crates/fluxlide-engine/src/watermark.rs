@@ -11,7 +11,8 @@ use crate::overlay::{Color, Overlay, OverlayPlan, PlanPiece, Rect, check_size};
 use crate::text::{TextStyle, render_text};
 use crate::{EngineError, Renderer};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Corner {
     TopLeft,
     TopRight,

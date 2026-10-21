@@ -23,6 +23,7 @@ mod presenter;
 #[cfg(test)]
 mod render_tests;
 mod scene;
+pub mod show;
 mod slideshow;
 mod text;
 mod transition;

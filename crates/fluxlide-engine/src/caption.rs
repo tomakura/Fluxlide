@@ -25,7 +25,8 @@ impl Caption {
 }
 
 /// How a caption is laid out and decorated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum CaptionDesign {
     /// A soft dark gradient along the bottom edge, text at the bottom left.
     #[default]
