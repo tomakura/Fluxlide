@@ -9,7 +9,9 @@
 //!
 //! With an [`AudioMixer`] attached, a video's sound starts with its picture
 //! on the same playback clock and its volume follows the picture's opacity
-//! through crossfades.
+//! through crossfades. With a [`Ducker`] attached, each video with sound is
+//! announced to the BGM as soon as the time it will start is known, so the
+//! BGM can be faded out before it.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -17,6 +19,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Instant;
 
 use crate::audio::{AudioFormat, AudioMixer, AudioStats, VoiceHandle};
+use crate::bgm::{DuckWindow, Ducker};
 use crate::media::audio::AudioTrack;
 use crate::media::video::{Ffmpeg, VideoPlayer};
 use crate::media::{MediaKind, MediaTexture, load_image};
@@ -83,6 +86,20 @@ impl Prepared {
             Self::Video { player, .. } => player.duration(),
         }
     }
+
+    fn has_sound(&self) -> bool {
+        matches!(self, Self::Video { audio: Some(_), .. })
+    }
+
+    /// The span of playback time the item's sound plays when the item
+    /// starts at `start` (endless while the length is not known).
+    fn sound_span(&self, start: f64) -> (f64, f64) {
+        let end = match self {
+            Self::Video { player, .. } => player.duration().map_or(f64::INFINITY, |d| start + d),
+            Self::Image(_) => start,
+        };
+        (start, end)
+    }
 }
 
 struct Showing {
@@ -92,6 +109,14 @@ struct Showing {
     started: f64,
     /// The item's sound while it plays.
     voice: Option<VoiceHandle>,
+    /// Keeps the BGM down while the item's sound plays.
+    _duck: Option<DuckWindow>,
+}
+
+/// The announcement of the ready item's sound, made before it starts.
+struct Announced {
+    window: DuckWindow,
+    span: (f64, f64),
 }
 
 struct Loading {
@@ -123,6 +148,9 @@ pub struct Slideshow {
     now: f64,
     stats: SlideshowStats,
     audio: Option<AudioMixer>,
+    ducker: Option<Ducker>,
+    /// For the ready item, when it has sound and a ducker is attached.
+    announced: Option<Announced>,
 }
 
 impl Slideshow {
@@ -151,6 +179,8 @@ impl Slideshow {
             now: 0.0,
             stats: SlideshowStats::default(),
             audio: None,
+            ducker: None,
+            announced: None,
         }
     }
 
@@ -159,6 +189,12 @@ impl Slideshow {
     /// [`Slideshow::update`]. Items loaded before this stay silent.
     pub fn set_audio(&mut self, mixer: AudioMixer) {
         self.audio = Some(mixer);
+    }
+
+    /// Announces the sound of videos to the BGM through `ducker`, so it is
+    /// faded out while they play.
+    pub fn set_ducker(&mut self, ducker: Ducker) {
+        self.ducker = Some(ducker);
     }
 
     pub fn audio_stats(&self) -> Option<AudioStats> {
@@ -237,6 +273,8 @@ impl Slideshow {
             }
             media => current.started + media.duration(&self.config).unwrap_or(0.0) - fade_secs,
         };
+        // The next item starts at the latest when due, or once it is ready.
+        self.announce_ready(due.max(now));
         if now < due {
             return;
         }
@@ -248,6 +286,31 @@ impl Slideshow {
             self.begin_transition(fade_secs);
         } else if self.loading.is_some() {
             self.waiting_since.get_or_insert(due);
+        }
+    }
+
+    /// Tells the BGM that the ready item's sound will start at `start`.
+    /// Only sent again when the time changes, as when the item is late.
+    fn announce_ready(&mut self, start: f64) {
+        let (Some(ducker), Some((_, media))) = (&self.ducker, &self.ready) else {
+            return;
+        };
+        if !start.is_finite() || !media.has_sound() {
+            return;
+        }
+        let span = media.sound_span(start);
+        match &mut self.announced {
+            Some(announced) if announced.span == span => {}
+            Some(announced) => {
+                announced.window.set(span.0, span.1);
+                announced.span = span;
+            }
+            None => {
+                self.announced = Some(Announced {
+                    window: ducker.open_window(span.0, span.1),
+                    span,
+                });
+            }
         }
     }
 
@@ -296,12 +359,24 @@ impl Slideshow {
                 .map(|(samples, finished)| mixer.play(samples, finished, self.now, 0.0)),
             _ => None,
         };
+        let duck = media.has_sound().then(|| {
+            let (start, end) = media.sound_span(self.now);
+            match (self.announced.take(), &self.ducker) {
+                (Some(announced), _) => {
+                    announced.window.set(start, end);
+                    Some(announced.window)
+                }
+                (None, Some(ducker)) => Some(ducker.open_window(start, end)),
+                (None, None) => None,
+            }
+        });
         self.outgoing = self.current.take();
         self.current = Some(Showing {
             index,
             media,
             started: self.now,
             voice,
+            _duck: duck.flatten(),
         });
         self.fade = Some(Fade {
             start: self.now,
@@ -493,6 +568,73 @@ mod tests {
 
         // Let the preload thread finish before the test ends.
         update_until(&mut show, 4.0, |show| show.loading.is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn videos_with_sound_are_announced_to_the_bgm_before_they_start() {
+        let Some(renderer) = crate::test_renderer() else {
+            return;
+        };
+        let Ok(ffmpeg) = Ffmpeg::locate() else {
+            eprintln!("skipping duck test: ffmpeg not found");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("fluxlide-duck-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let photo = dir.join("photo.png");
+        image::RgbImage::from_pixel(32, 32, image::Rgb([255, 0, 0]))
+            .save(&photo)
+            .unwrap();
+        let clip = dir.join("clip.mp4");
+        let status = std::process::Command::new(ffmpeg.ffmpeg_path())
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
+            .arg("testsrc2=size=64x36:rate=30:duration=1")
+            .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=1"])
+            .args(["-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest"])
+            .arg(&clip)
+            .status()
+            .unwrap();
+        if !status.success() {
+            eprintln!("skipping duck test: could not create a clip");
+            return;
+        }
+
+        let config = SlideshowConfig {
+            image_secs: 2.0,
+            fade_secs: 0.5,
+        };
+        let mut show = Slideshow::new(renderer, vec![photo, clip], (32, 32), config);
+        let mixer = crate::audio::OfflineMixer::export(48_000);
+        show.set_audio(mixer.mixer());
+        let (ducker, mut probe) = crate::bgm::DuckProbe::new();
+        show.set_ducker(ducker);
+
+        update_until(&mut show, 0.0, |show| show.current.is_some());
+        update_until(&mut show, 1.0, |show| show.ready.is_some());
+        // Announced as soon as it is ready, for the time its fade in is due.
+        let windows = probe.windows();
+        assert_eq!(windows.len(), 1);
+        let (start, end) = windows[0];
+        assert_eq!(start, 1.5);
+        assert!((end - start - 1.0).abs() < 0.05, "{windows:?}");
+
+        // Started late: the window moves to the actual start.
+        show.update(1.6);
+        assert_eq!(show.stats().current, Some(1));
+        let windows = probe.windows();
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].0, 1.6);
+
+        // Gone once the video has faded out.
+        update_until(&mut show, 2.0, |show| show.ready.is_some());
+        show.update(2.2);
+        show.update(3.0);
+        assert_eq!(show.stats().current, Some(0));
+        assert!(show.outgoing.is_none());
+        assert_eq!(probe.windows(), []);
+
+        update_until(&mut show, 3.0, |show| show.loading.is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

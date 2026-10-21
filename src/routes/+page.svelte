@@ -30,10 +30,22 @@
     device: string;
     sampleRate: number;
     outputLatencyMs: number;
+    syncOffsetMs: number;
     offsetMs: number;
     maxOffsetMs: number;
     resyncs: number;
     underruns: number;
+    lastError: string | null;
+  };
+
+  type MusicStats = {
+    state: "idle" | "playing" | "gap";
+    title: string | null;
+    artist: string | null;
+    tracksStarted: number;
+    tracksFailed: number;
+    underruns: number;
+    starvedTransitions: number;
     lastError: string | null;
   };
 
@@ -50,6 +62,8 @@
     lastError: string | null;
     audio: SoundStats | null;
     audioError: string | null;
+    bgm: MusicStats | null;
+    bgmError: string | null;
   };
 
   type FrameStats = {
@@ -82,8 +96,40 @@
   const IMAGE_EXTENSIONS = ["jpg", "jpeg", "png"];
   const VIDEO_EXTENSIONS = ["mp4", "m4v", "mov"];
   const FILES_KEY = "fluxlide.spike.files";
+  const SOUND_KEY = "fluxlide.spike.sound";
 
   let files = $state<string[]>(loadSavedFiles());
+  let sound = $state<{ bgmDir: string | null; syncOffsetMs: number }>(loadSavedSound());
+
+  function loadSavedSound() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(SOUND_KEY) ?? "{}");
+      return {
+        bgmDir: typeof saved.bgmDir === "string" ? saved.bgmDir : null,
+        syncOffsetMs: typeof saved.syncOffsetMs === "number" ? saved.syncOffsetMs : 0,
+      };
+    } catch {
+      return { bgmDir: null, syncOffsetMs: 0 };
+    }
+  }
+
+  function saveSound() {
+    try {
+      localStorage.setItem(SOUND_KEY, JSON.stringify(sound));
+    } catch {
+      // Remembering the settings is a convenience only.
+    }
+  }
+
+  async function pickBgmDir() {
+    const picked = await open({ multiple: false, directory: true });
+    if (typeof picked === "string") {
+      sound.bgmDir = picked;
+      saveSound();
+    }
+  }
+
+  const BGM_STATES = { idle: "準備中", playing: "再生中", gap: "曲間" } as const;
 
   function loadSavedFiles(): string[] {
     try {
@@ -151,6 +197,8 @@
       status = await invoke<PresentationStatus>("start_presentation", {
         monitorIndex: selected,
         files,
+        bgmDir: sound.bgmDir,
+        syncOffsetMs: sound.syncOffsetMs,
       });
     } catch (err) {
       actionError = String(err);
@@ -246,6 +294,27 @@
       </p>
     </div>
 
+    <div class="media">
+      <div class="media-head">
+        <h3>音</h3>
+        <p>フォルダの中の曲をBGMとしてシャッフルで流し、音のある動画の間は下げます。Bluetoothのスピーカーなどで音が遅れて聞こえる場合は、音を早める量を指定します（負の値で遅らせます）。</p>
+      </div>
+      <div class="media-actions">
+        <button onclick={pickBgmDir} disabled={status?.running}>BGMのフォルダを選ぶ…</button>
+        {#if sound.bgmDir}
+          <span class="name" title={sound.bgmDir}>{fileName(sound.bgmDir)}</span>
+          <button class="ghost" onclick={() => { sound.bgmDir = null; saveSound(); }} disabled={status?.running}>BGMなし</button>
+        {:else}
+          <span class="empty">BGMなし</span>
+        {/if}
+      </div>
+      <label class="offset">
+        音ズレ補正（音を早める量）
+        <input type="number" min="-500" max="1000" step="10" bind:value={sound.syncOffsetMs} onchange={saveSound} disabled={status?.running} />
+        ms
+      </label>
+    </div>
+
     <div class="monitors" role="radiogroup" aria-label="出力先の画面">
       {#each monitors as monitor (monitor.index)}
         <label class="monitor" class:on={selected === monitor.index}>
@@ -311,6 +380,7 @@
           <dl class="stats">
             <div><dt>音声の出力先</dt><dd class="file">{audio.device}（{(audio.sampleRate / 1000).toFixed(1)} kHz）</dd></div>
             <div><dt>出力の遅延</dt><dd class="num">{audio.outputLatencyMs.toFixed(1)} ms</dd></div>
+            <div><dt>音ズレ補正</dt><dd class="num">{audio.syncOffsetMs.toFixed(0)} ms</dd></div>
             <div><dt>映像に対する音のずれ</dt><dd class="num">{audio.offsetMs.toFixed(1)} ms</dd></div>
             <div><dt>最大のずれ</dt><dd class="num">{audio.maxOffsetMs.toFixed(1)} ms</dd></div>
             <div><dt>ずれの補正</dt><dd class="num">{audio.resyncs}</dd></div>
@@ -321,6 +391,21 @@
           {/if}
         {:else if playback.audioError}
           <p class="error">音声を出力できません: {playback.audioError}</p>
+        {/if}
+        {#if playback.bgm}
+          {@const bgm = playback.bgm}
+          <dl class="stats">
+            <div><dt>BGM</dt><dd class="file">{BGM_STATES[bgm.state]}{bgm.title ? `: ${bgm.title}` : ""}{bgm.artist ? `（${bgm.artist}）` : ""}</dd></div>
+            <div><dt>流した曲</dt><dd class="num">{bgm.tracksStarted}</dd></div>
+            <div><dt>再生できなかった曲</dt><dd class="num">{bgm.tracksFailed}</dd></div>
+            <div><dt>BGMの途切れ</dt><dd class="num">{bgm.underruns}</dd></div>
+            <div><dt>次の曲が間に合わなかった回数</dt><dd class="num">{bgm.starvedTransitions}</dd></div>
+          </dl>
+          {#if bgm.lastError}
+            <p class="error">BGMのエラー: {bgm.lastError}</p>
+          {/if}
+        {:else if playback.bgmError}
+          <p class="error">BGMを流せません: {playback.bgmError}</p>
         {/if}
       {/if}
     {/if}
@@ -547,6 +632,18 @@
     align-items: center;
     gap: 8px;
     overflow-wrap: anywhere;
+  }
+
+  .offset {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 12px;
+    color: var(--muted);
+  }
+
+  .offset input {
+    width: 6em;
   }
 
   .files {
