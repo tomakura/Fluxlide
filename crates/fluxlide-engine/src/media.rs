@@ -51,7 +51,8 @@ pub struct MediaTexture {
 }
 
 impl MediaTexture {
-    /// Creates an sRGB texture from tightly packed RGBA8 pixels.
+    /// Creates an sRGB texture from tightly packed RGBA8 pixels, their color
+    /// already multiplied by their alpha (as `load_image` makes them).
     pub fn from_rgba(renderer: &Renderer, width: u32, height: u32, pixels: &[u8]) -> Self {
         let texture = create_plane(
             renderer,
@@ -262,7 +263,7 @@ pub(crate) fn fit_limit(renderer: &Renderer, max_size: (u32, u32)) -> (u32, u32)
     (max_size.0.clamp(1, limit), max_size.1.clamp(1, limit))
 }
 
-fn decode_image(path: &Path, max_size: (u32, u32)) -> Result<DynamicImage, EngineError> {
+pub(crate) fn decode_image(path: &Path, max_size: (u32, u32)) -> Result<DynamicImage, EngineError> {
     decode_with_size(path, max_size).map(|(image, _)| image)
 }
 
@@ -275,7 +276,7 @@ fn decode_with_size(
     // A JPEG is decoded at a fraction of its size when that is enough: a
     // phone's 12-megapixel photo for a 1080p screen takes a quarter of the
     // memory and time. Anything it cannot read goes the usual way.
-    let (mut image, size) = match decode_jpeg_scaled(path, max_size) {
+    let (image, size) = match decode_jpeg_scaled(path, max_size) {
         Some(decoded) => decoded,
         None => {
             let image = decode_full(path)?;
@@ -283,11 +284,64 @@ fn decode_with_size(
             (image, size)
         }
     };
+    let mut image = premultiplied(image);
     if image.width() > max_size.0 || image.height() > max_size.1 {
         // `resize` keeps the aspect ratio and fits inside the bounds.
         image = image.resize(max_size.0, max_size.1, FilterType::Triangle);
     }
     Ok((image, size))
+}
+
+/// `image` with its color multiplied by its alpha, if it has one. A PNG
+/// keeps some color under its transparent parts (often black or white),
+/// which must not show, nor run into the edges when the picture is shrunk
+/// or filtered. Textures are drawn as premultiplied (`layer.wgsl`).
+fn premultiplied(image: DynamicImage) -> DynamicImage {
+    if !image.color().has_alpha() {
+        return image;
+    }
+    let mut rgba = image.into_rgba8();
+    premultiply_rgba(&mut rgba);
+    DynamicImage::ImageRgba8(rgba)
+}
+
+/// Multiplies the color of sRGB RGBA8 pixels by their alpha, as
+/// [`MediaTexture::from_rgba`] expects. The multiplication is in linear
+/// light, then encoded back to sRGB, so that what the GPU decodes from the
+/// texture is exactly the linear color times alpha: a half transparent
+/// white over black is the middle grey of light (188), not 128.
+pub fn premultiply_rgba(pixels: &mut [u8]) {
+    static DECODE: std::sync::OnceLock<[f32; 256]> = std::sync::OnceLock::new();
+    let decode = DECODE.get_or_init(|| {
+        std::array::from_fn(|value| {
+            let c = value as f32 / 255.0;
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        })
+    });
+    let encode = |linear: f32| {
+        let c = if linear <= 0.003_130_8 {
+            linear * 12.92
+        } else {
+            1.055 * linear.powf(1.0 / 2.4) - 0.055
+        };
+        (c * 255.0).round().clamp(0.0, 255.0) as u8
+    };
+    for pixel in pixels.as_chunks_mut::<4>().0 {
+        match pixel[3] {
+            255 => {}
+            0 => pixel[..3].fill(0),
+            alpha => {
+                let alpha = f32::from(alpha) / 255.0;
+                for channel in &mut pixel[..3] {
+                    *channel = encode(decode[usize::from(*channel)] * alpha);
+                }
+            }
+        }
+    }
 }
 
 /// Decodes a JPEG with `jpeg-decoder`, which can leave out detail while

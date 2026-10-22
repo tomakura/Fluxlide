@@ -82,9 +82,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         alpha = text + shadow;
         rgb = draw.color.rgb * text;
     } else {
+        // Pictures are uploaded premultiplied (`media::load_image`).
         let c = textureSampleLevel(overlay_tex, overlay_sampler, in.uv, 0.0);
         alpha = c.a;
-        rgb = c.rgb * c.a;
+        rgb = c.rgb;
     }
     return vec4<f32>(rgb, alpha) * draw.opacity;
 }

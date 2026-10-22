@@ -1,6 +1,6 @@
 // Draws one picture (photo or video frame) into a rectangle of the target.
-// Output is premultiplied by the layer's opacity and is meant to be blended
-// "over" what is already there. Colors are linear light: the targets are
+// Output is premultiplied (by the picture's own alpha and the layer's
+// opacity) and is meant to be blended "over" what is already there. Colors are linear light: the targets are
 // sRGB textures, so the hardware encodes on write and blends in linear light.
 
 struct Layer {
@@ -8,7 +8,8 @@ struct Layer {
     // beyond the target (cover fit, zoom); the extra part is clipped.
     rect: vec4<f32>,
     opacity: f32,
-    // 0: sRGB RGBA in tex0. 1: Y, U, V planes in tex0..tex2 (BT.709 limited range).
+    // 0: sRGB RGBA in tex0, its color already multiplied by its alpha.
+    // 1: Y, U, V planes in tex0..tex2 (BT.709 limited range).
     mode: u32,
     // Samples per axis. 1 reads the picture once per pixel; more averages a
     // grid of samples over the pixel's footprint, for large shrinking.
@@ -48,12 +49,13 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     return select(high, low, c <= vec3<f32>(0.04045));
 }
 
-// Linear-light RGB of the picture at `uv`.
-fn picture_at(uv: vec2<f32>) -> vec3<f32> {
+// Linear-light, premultiplied color of the picture at `uv`.
+fn picture_at(uv: vec2<f32>) -> vec4<f32> {
     let s0 = textureSampleLevel(tex0, picture_sampler, uv, 0.0);
     if (layer.mode == 0u) {
-        // The texture is sRGB, so sampling already decoded it.
-        return s0.rgb;
+        // The texture is sRGB, so sampling already decoded it. A transparent
+        // part is (0, 0, 0, 0), whatever color the file kept there.
+        return s0;
     }
     let s1 = textureSampleLevel(tex1, picture_sampler, uv, 0.0).r;
     let s2 = textureSampleLevel(tex2, picture_sampler, uv, 0.0).r;
@@ -65,7 +67,7 @@ fn picture_at(uv: vec2<f32>) -> vec3<f32> {
         y - 0.1873 * u - 0.4681 * v,
         y + 1.8556 * u,
     );
-    return srgb_to_linear(clamp(encoded, vec3<f32>(0.0), vec3<f32>(1.0)));
+    return vec4<f32>(srgb_to_linear(clamp(encoded, vec3<f32>(0.0), vec3<f32>(1.0))), 1.0);
 }
 
 @fragment
@@ -73,18 +75,18 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Derivatives must be taken in uniform control flow, before any branch.
     let step_x = dpdx(in.uv);
     let step_y = dpdy(in.uv);
-    var rgb = vec3<f32>(0.0);
+    var color = vec4<f32>(0.0);
     if (layer.supersample <= 1u) {
-        rgb = picture_at(in.uv);
+        color = picture_at(in.uv);
     } else {
         let n = f32(layer.supersample);
         for (var j = 0u; j < layer.supersample; j++) {
             for (var i = 0u; i < layer.supersample; i++) {
                 let offset = vec2<f32>(f32(i) + 0.5, f32(j) + 0.5) / n - vec2<f32>(0.5);
-                rgb += picture_at(in.uv + step_x * offset.x + step_y * offset.y);
+                color += picture_at(in.uv + step_x * offset.x + step_y * offset.y);
             }
         }
-        rgb /= n * n;
+        color /= n * n;
     }
-    return vec4<f32>(rgb * layer.opacity, layer.opacity);
+    return color * layer.opacity;
 }

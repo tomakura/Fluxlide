@@ -453,5 +453,6 @@ fn logo(renderer: &Renderer) -> MediaTexture {
             pixels.extend_from_slice(&[rgb[0], rgb[1], rgb[2], (alpha * 255.0).round() as u8]);
         }
     }
+    fluxlide_engine::media::premultiply_rgba(&mut pixels);
     MediaTexture::from_rgba(renderer, w, h, &pixels)
 }
