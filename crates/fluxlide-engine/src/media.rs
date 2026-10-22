@@ -440,7 +440,7 @@ mod tests {
             }
         });
         // A TIFF header and one IFD entry: Orientation (0x0112), SHORT, 1.
-        let mut tiff = b"II*         ".to_vec();
+        let mut tiff = b"II*\x00\x08\x00\x00\x00\x01\x00\x12\x01\x03\x00\x01\x00\x00\x00".to_vec();
         tiff.extend_from_slice(&exif.to_le_bytes());
         tiff.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
         let mut out = std::fs::File::create(path).unwrap();
