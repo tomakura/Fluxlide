@@ -295,21 +295,53 @@ fn decode_with_size(
 /// `image` with its color multiplied by its alpha, if it has one. A PNG
 /// keeps some color under its transparent parts (often black or white),
 /// which must not show, nor run into the edges when the picture is shrunk
-/// or filtered. Textures are drawn as premultiplied (`layer.wgsl`). The
-/// multiplication is on the sRGB values, which differs from linear light
-/// only at partly transparent edges.
+/// or filtered. Textures are drawn as premultiplied (`layer.wgsl`).
 fn premultiplied(image: DynamicImage) -> DynamicImage {
     if !image.color().has_alpha() {
         return image;
     }
     let mut rgba = image.into_rgba8();
-    for pixel in rgba.pixels_mut() {
-        let alpha = u16::from(pixel[3]);
-        for channel in &mut pixel.0[..3] {
-            *channel = ((u16::from(*channel) * alpha + 127) / 255) as u8;
+    premultiply_rgba(&mut rgba);
+    DynamicImage::ImageRgba8(rgba)
+}
+
+/// Multiplies the color of sRGB RGBA8 pixels by their alpha, as
+/// [`MediaTexture::from_rgba`] expects. The multiplication is in linear
+/// light, then encoded back to sRGB, so that what the GPU decodes from the
+/// texture is exactly the linear color times alpha: a half transparent
+/// white over black is the middle grey of light (188), not 128.
+pub fn premultiply_rgba(pixels: &mut [u8]) {
+    static DECODE: std::sync::OnceLock<[f32; 256]> = std::sync::OnceLock::new();
+    let decode = DECODE.get_or_init(|| {
+        std::array::from_fn(|value| {
+            let c = value as f32 / 255.0;
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        })
+    });
+    let encode = |linear: f32| {
+        let c = if linear <= 0.003_130_8 {
+            linear * 12.92
+        } else {
+            1.055 * linear.powf(1.0 / 2.4) - 0.055
+        };
+        (c * 255.0).round().clamp(0.0, 255.0) as u8
+    };
+    for pixel in pixels.as_chunks_mut::<4>().0 {
+        match pixel[3] {
+            255 => {}
+            0 => pixel[..3].fill(0),
+            alpha => {
+                let alpha = f32::from(alpha) / 255.0;
+                for channel in &mut pixel[..3] {
+                    *channel = encode(decode[usize::from(*channel)] * alpha);
+                }
+            }
         }
     }
-    DynamicImage::ImageRgba8(rgba)
 }
 
 /// Decodes a JPEG with `jpeg-decoder`, which can leave out detail while
