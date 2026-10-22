@@ -222,38 +222,42 @@ pub async fn start_export(
                 let mut last_report = started;
                 let mut slideshow =
                     Slideshow::new(renderer.clone(), show, media_dir, settings.size);
-                let result = export_slideshow(
-                    &renderer,
-                    &ffmpeg,
-                    &mut slideshow,
-                    &settings,
-                    &path,
-                    &cancel,
-                    |progress| {
-                        // A few times a second is enough for a progress bar.
-                        if last_report.elapsed() < Duration::from_millis(100) {
-                            return;
-                        }
-                        last_report = Instant::now();
-                        let _ = app.emit(
-                            PROGRESS,
-                            ExportProgressEvent {
-                                frames: progress.frames,
-                                total_frames,
-                                elapsed_secs: started.elapsed().as_secs_f64(),
-                            },
-                        );
-                    },
-                );
-                let cancelled = cancel.load(Ordering::Relaxed);
+                // A panic must still end with FINISHED, or the window would
+                // wait for this export forever.
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    export_slideshow(
+                        &renderer,
+                        &ffmpeg,
+                        &mut slideshow,
+                        &settings,
+                        &path,
+                        &cancel,
+                        |progress| {
+                            // A few times a second is enough for a progress bar.
+                            if last_report.elapsed() < Duration::from_millis(100) {
+                                return;
+                            }
+                            last_report = Instant::now();
+                            let _ = app.emit(
+                                PROGRESS,
+                                ExportProgressEvent {
+                                    frames: progress.frames,
+                                    total_frames,
+                                    elapsed_secs: started.elapsed().as_secs_f64(),
+                                },
+                            );
+                        },
+                    )
+                    .map_err(|err| err.to_string())
+                }))
+                .unwrap_or_else(|_| Err("書き出しの途中で止まりました。".into()));
+                // A cancel that comes after the file is written changes nothing.
+                let cancelled = result.is_err() && cancel.load(Ordering::Relaxed);
                 let _ = app.emit(
                     FINISHED,
                     ExportFinishedEvent {
                         path: path.display().to_string(),
-                        error: match result {
-                            Err(err) if !cancelled => Some(err.to_string()),
-                            _ => None,
-                        },
+                        error: result.err().filter(|_| !cancelled),
                         cancelled,
                     },
                 );

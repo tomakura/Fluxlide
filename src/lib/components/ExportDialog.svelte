@@ -13,7 +13,13 @@
   import { modal } from "$lib/modal";
   import { open } from "$lib/show.svelte";
 
-  let { onclose }: { onclose: () => void } = $props();
+  let { onclose: close }: { onclose: () => void } = $props();
+
+  // The result of the last export is shown until the dialog closes.
+  function onclose() {
+    if (!exporting.running) exporting.finished = null;
+    close();
+  }
 
   const PURPOSES: [Purpose, string, string][] = [
     ["tv", "テレビ・プロジェクター", "1920×1080 · MP4"],
@@ -27,6 +33,7 @@
   let videoKbps = $state<number | null>(null);
   let estimate = $state<ExportEstimate | null>(null);
   let error = $state<string | null>(null);
+  let estimateError = $state<string | null>(null);
 
   const choice = $derived<ExportChoice>({ purpose, fps, videoKbps });
 
@@ -38,8 +45,12 @@
     let current = true;
     api
       .exportEstimate(asked)
-      .then((result) => current && (estimate = result))
-      .catch((err) => current && (error = String(err)));
+      .then((result) => {
+        if (!current) return;
+        estimate = result;
+        estimateError = null;
+      })
+      .catch((err) => current && (estimateError = String(err)));
     return () => (current = false);
   });
 
@@ -168,6 +179,7 @@
         </div>
       </details>
 
+      {#if estimateError}<p class="error">{estimateError}</p>{/if}
       {#if error}<p class="error">{error}</p>{/if}
 
       <div class="buttons">
