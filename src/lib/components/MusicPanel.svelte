@@ -31,7 +31,7 @@
     // The test sound ends with this tab.
     return () => {
       ended.then((stop) => stop());
-      if (testing) api.stopPresentation();
+      if (testing) api.stopTestSound();
     };
   });
 
@@ -72,7 +72,7 @@
   async function toggleTest() {
     testError = null;
     if (testing) {
-      await api.stopPresentation();
+      await api.stopTestSound();
       testing = false;
     } else if (testScreen !== null) {
       try {

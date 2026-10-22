@@ -45,9 +45,10 @@ export const startPresentation = (monitorIndex: number) =>
   invoke<PresentationStatus>("start_presentation", { monitorIndex });
 export const stopPresentation = () => invoke<PresentationStatus>("stop_presentation");
 /// Flashes and beeps on a screen for setting the sound delay by ear. Ended
-/// by `stopPresentation`.
+/// by `stopTestSound`, which leaves a show started since alone.
 export const startTestSound = (monitorIndex: number) =>
   invoke<PresentationStatus>("start_test_sound", { monitorIndex });
+export const stopTestSound = () => invoke<PresentationStatus>("stop_test_sound");
 export const presentationStatus = () => invoke<PresentationStatus>("presentation_status");
 export const controlPresentation = (control: Control) =>
   invoke<void>("control_presentation", { control });

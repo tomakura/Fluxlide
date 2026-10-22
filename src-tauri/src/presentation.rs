@@ -360,6 +360,8 @@ struct Active {
     monitor_name: String,
     /// Whether Esc in the presentation window asks the management window first.
     confirms_end: bool,
+    /// Whether the window plays the test sound rather than a show.
+    test_sound: bool,
     stop: Arc<AtomicBool>,
     controls: mpsc::Sender<Control>,
     stats: Arc<Mutex<FrameStats>>,
@@ -543,13 +545,15 @@ async fn open_window(
         .map_err(|err| err.to_string())?;
     // Any failure after this point must close the window and release the
     // keys, otherwise the "presenter" label stays taken until the app restarts.
-    let confirms_end = monitors.len() > 1 && matches!(content, Content::Show(_));
+    let test_sound = matches!(content, Content::TestSound { .. });
+    let confirms_end = monitors.len() > 1 && !test_sound;
     match run_presentation(&app, &window, renderer, position, size, content).await {
         Ok((stop, controls, stats, thread)) => {
             *state.active.lock().unwrap() = Some(Active {
                 window,
                 monitor_name: name,
                 confirms_end,
+                test_sound,
                 stop,
                 controls,
                 stats,
@@ -691,6 +695,25 @@ pub async fn stop_presentation(
     state: State<'_, PresentationState>,
 ) -> Result<PresentationStatus, String> {
     if let Some(active) = state.take_active() {
+        shut_down(active).await;
+    }
+    Ok(state.status())
+}
+
+/// Ends the test sound, but not a show that has taken its window since.
+#[tauri::command]
+pub async fn stop_test_sound(
+    state: State<'_, PresentationState>,
+) -> Result<PresentationStatus, String> {
+    let active = {
+        let mut active = state.active.lock().unwrap();
+        if active.as_ref().is_some_and(|active| active.test_sound) {
+            active.take()
+        } else {
+            None
+        }
+    };
+    if let Some(active) = active {
         shut_down(active).await;
     }
     Ok(state.status())

@@ -128,6 +128,7 @@ pub fn run() {
             presentation::control_presentation,
             presentation::start_presentation,
             presentation::start_test_sound,
+            presentation::stop_test_sound,
             look::load_transition,
             look::music_tracks,
             presentation::stop_presentation,
