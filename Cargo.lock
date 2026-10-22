@@ -1199,7 +1199,7 @@ dependencies = [
 
 [[package]]
 name = "fluxlide"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "fluxlide-engine",
  "image",
@@ -1216,7 +1216,7 @@ dependencies = [
 
 [[package]]
 name = "fluxlide-engine"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "cosmic-text",
  "cpal",
