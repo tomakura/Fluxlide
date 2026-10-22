@@ -19,6 +19,11 @@ class OpenShow {
   /// The last command that failed, for the window to show.
   error = $state<string | null>(null);
   #queue: Promise<void> = Promise.resolve();
+  /// The newest state, which `state` shows once no command is waiting:
+  /// the reply to an earlier keystroke must not put the text being typed
+  /// back as it was.
+  #latest: ShowState | null = null;
+  #pending = 0;
 
   get show(): ShowDefinition | null {
     return this.state?.show ?? null;
@@ -27,24 +32,42 @@ class OpenShow {
   /// Takes a state from the Rust side, unless one already taken from the
   /// same session is newer.
   take(state: ShowState | null) {
-    if (state && this.state && state.session === this.state.session && state.revision < this.state.revision) {
+    const latest = this.#latest;
+    if (state && latest && state.session === latest.session && state.revision < latest.revision) {
       return;
     }
-    this.state = state;
+    this.#latest = state;
+    if (this.#pending === 0 || state?.session !== this.state?.session) this.state = state;
+  }
+
+  /// Runs `task` after the commands before it, keeping `state` as it is
+  /// until none is left.
+  #enqueue(task: () => Promise<void>): Promise<void> {
+    this.#pending++;
+    this.#queue = this.#queue.then(async () => {
+      try {
+        await task();
+      } finally {
+        if (--this.#pending === 0) this.state = this.#latest;
+      }
+    });
+    return this.#queue;
   }
 
   /// Makes `change` on a copy of the definition and sends it. Changes are
   /// sent one at a time, in order. If the definition changed meanwhile
-  /// (an import finished, say), `change` is made again on the new one.
+  /// (an import finished, say), `change` is made again on the new one; if
+  /// another show was opened meanwhile, the change is dropped.
   edit(change: (show: ShowDefinition) => void, group: string | null = null): Promise<void> {
-    this.#queue = this.#queue.then(async () => {
+    const session = this.#latest?.session;
+    return this.#enqueue(async () => {
       for (let attempt = 0; attempt < 5; attempt++) {
-        const current = this.state;
-        if (!current) return;
+        const current = this.#latest;
+        if (!current || current.session !== session) return;
         const next = $state.snapshot(current.show) as ShowDefinition;
         change(next);
         try {
-          const outcome = await api.editShow(next, current.revision, group);
+          const outcome = await api.editShow(next, current.session, current.revision, group);
           this.take(outcome.state);
           if (outcome.applied) return;
         } catch (err) {
@@ -52,20 +75,19 @@ class OpenShow {
           return;
         }
       }
+      this.error = "変更を反映できませんでした。もう一度操作してください。";
     });
-    return this.#queue;
   }
 
   /// Runs a command that returns the new state, after the edits before it.
   run(command: () => Promise<ShowState>): Promise<void> {
-    this.#queue = this.#queue.then(async () => {
+    return this.#enqueue(async () => {
       try {
         this.take(await command());
       } catch (err) {
         this.error = String(err);
       }
     });
-    return this.#queue;
   }
 
   undo = () => this.run(api.undoShow);
