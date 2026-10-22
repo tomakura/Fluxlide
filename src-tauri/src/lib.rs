@@ -138,6 +138,7 @@ pub fn run() {
             export::start_export,
             export::cancel_export,
             import::import_files,
+            import::import_sample,
             import::replace_asset_file,
             identify::identify_monitors,
             presentation::list_monitors,

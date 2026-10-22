@@ -39,6 +39,8 @@ export const redoShow = () => invoke<ShowState>("redo_show");
 
 export const importFiles = (files: string[], addSlides = true) =>
   invoke<ImportResult>("import_files", { files, addSlides });
+/// Adds the sample slideshow's pictures and captions to the open show.
+export const importSample = () => invoke<ImportResult>("import_sample");
 export const replaceAssetFile = (asset: AssetId, file: string) =>
   invoke<ShowState>("replace_asset_file", { asset, file });
 

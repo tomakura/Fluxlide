@@ -42,6 +42,12 @@
       if (files.length) await open.import(files);
     });
 
+  const openSample = () =>
+    begin(async () => {
+      open.take(await api.createProject("Fluxlide のサンプル"));
+      await open.run(async () => (await api.importSample()).state);
+    });
+
   const openDir = (dir: string) => begin(async () => open.take(await api.openProject(dir)));
 
   async function openElsewhere() {
@@ -66,7 +72,10 @@
       写真や動画をここにドロップすると、新しいスライドショーを作ります
     </DropZone>
     {#if error}<p class="error">{error}</p>{/if}
-    <button class="quiet about" onclick={() => (about = true)}>このアプリについて</button>
+    <div class="more">
+      <button class="quiet" disabled={busy} onclick={openSample}>使い方のサンプルを開く</button>
+      <button class="quiet" onclick={() => (about = true)}>このアプリについて</button>
+    </div>
   </section>
 
   <section class="recent">
@@ -137,8 +146,9 @@
     font-size: 17px;
   }
 
-  .about {
-    align-self: flex-start;
+  .more {
+    display: flex;
+    gap: 8px;
   }
 
   .new {
