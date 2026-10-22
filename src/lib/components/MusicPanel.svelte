@@ -35,16 +35,22 @@
     };
   });
 
-  // The songs the source holds now.
+  // The songs the source holds now. Every edit brings a new definition, so
+  // the source is compared by its contents: moving the volume must not read
+  // the folder again.
+  const sourceKey = $derived(JSON.stringify(music?.source ?? null));
   $effect(() => {
-    const source = music?.source;
+    const source = JSON.parse(sourceKey) as Music["source"];
+    let current = true;
     tracks = null;
     tracksError = null;
-    if (!source) return;
-    api
-      .musicTracks($state.snapshot(source))
-      .then((list) => (tracks = list))
-      .catch((err) => (tracksError = String(err)));
+    if (source) {
+      api
+        .musicTracks(source)
+        .then((list) => current && (tracks = list))
+        .catch((err) => current && (tracksError = String(err)));
+    }
+    return () => (current = false);
   });
 
   function setMusic(change: (music: Music) => void, group: string | null = null) {

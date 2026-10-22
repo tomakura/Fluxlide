@@ -32,9 +32,17 @@
 
   const DEFAULT_WATERMARK: Omit<WatermarkSpec, "content"> = { corner: "topRight", opacity: 0.6, size: 0.045 };
 
-  function setWatermarkKind(kind: "none" | "text" | "image") {
+  function setWatermarkKind(kind: "none" | "text" | "image", select: HTMLSelectElement) {
     if (kind === "image") {
-      chooseLogo();
+      // Without a logo chosen nothing changes, so the menu is put back.
+      chooseLogo()
+        .catch((err) => {
+          open.error = String(err);
+          return false;
+        })
+        .then((chosen) => {
+          if (!chosen) select.value = watermark?.content.kind ?? "none";
+        });
       return;
     }
     open.edit((show) => {
@@ -47,11 +55,12 @@
     });
   }
 
-  async function chooseLogo() {
+  /// Resolves to whether a logo was chosen.
+  async function chooseLogo(): Promise<boolean> {
     const file = await pickFile({ multiple: false, filters: [{ name: "画像", extensions: PHOTO_EXTENSIONS }] });
-    if (typeof file !== "string") return;
+    if (typeof file !== "string") return false;
     const [asset] = await open.import([file], false);
-    if (asset === undefined) return;
+    if (asset === undefined) return false;
     open.edit((show) => {
       const old = show.look.watermark?.content;
       show.look.watermark = {
@@ -62,6 +71,7 @@
       };
       if (old?.kind === "image" && old.asset !== asset) dropUnusedAsset(show, old.asset);
     });
+    return true;
   }
 
   function setWatermark(change: (spec: WatermarkSpec) => void, group: string | null = null) {
@@ -117,7 +127,7 @@
       <legend>ウォーターマーク</legend>
       <select
         value={watermark?.content.kind ?? "none"}
-        onchange={(e) => setWatermarkKind(e.currentTarget.value as "none" | "text" | "image")}
+        onchange={(e) => setWatermarkKind(e.currentTarget.value as "none" | "text" | "image", e.currentTarget)}
       >
         <option value="none">なし</option>
         <option value="text">文字</option>

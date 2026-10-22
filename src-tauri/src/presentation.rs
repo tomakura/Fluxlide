@@ -392,6 +392,16 @@ impl PresentationState {
         self.active.lock().unwrap().take()
     }
 
+    /// Takes the active presentation if it is the one `which` picks.
+    fn take_active_if(&self, which: impl FnOnce(&Active) -> bool) -> Option<Active> {
+        let mut active = self.active.lock().unwrap();
+        if active.as_ref().is_some_and(which) {
+            active.take()
+        } else {
+            None
+        }
+    }
+
     fn send(&self, control: Control) {
         if let Some(active) = self.active.lock().unwrap().as_ref() {
             let _ = active.controls.send(control);
@@ -549,7 +559,7 @@ async fn open_window(
     let confirms_end = monitors.len() > 1 && !test_sound;
     match run_presentation(&app, &window, renderer, position, size, content).await {
         Ok((stop, controls, stats, thread)) => {
-            *state.active.lock().unwrap() = Some(Active {
+            let active = Active {
                 window,
                 monitor_name: name,
                 confirms_end,
@@ -558,7 +568,13 @@ async fn open_window(
                 controls,
                 stats,
                 thread: Some(thread),
-            });
+            };
+            // Closed from outside while it was being set up.
+            if active.stop.load(Ordering::Relaxed) {
+                shut_down(active).await;
+                return Err("上映の画面が閉じられました。".into());
+            }
+            *state.active.lock().unwrap() = Some(active);
             Ok(state.status())
         }
         Err(err) => {
@@ -650,8 +666,23 @@ async fn run_presentation(
                 *pending_size.lock().unwrap() = Some((new_inner_size.width, new_inner_size.height));
             }
             WindowEvent::Destroyed => {
-                set_presenter_keys_enabled(&app, false);
                 stop.store(true, Ordering::Relaxed);
+                // Closed from outside (Alt+F4, a screen unplugged) rather
+                // than by `shut_down`, which takes it first and releases the
+                // keys itself: the management window goes back to the editor.
+                // The keys are left alone here, as they may already be a
+                // newer window's.
+                let app = app.clone();
+                let stop = stop.clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = app.state::<PresentationState>();
+                    if let Some(active) =
+                        state.take_active_if(|active| Arc::ptr_eq(&active.stop, &stop))
+                    {
+                        shut_down(active).await;
+                        let _ = app.emit(ENDED, ());
+                    }
+                });
             }
             _ => {}
         });
@@ -705,15 +736,7 @@ pub async fn stop_presentation(
 pub async fn stop_test_sound(
     state: State<'_, PresentationState>,
 ) -> Result<PresentationStatus, String> {
-    let active = {
-        let mut active = state.active.lock().unwrap();
-        if active.as_ref().is_some_and(|active| active.test_sound) {
-            active.take()
-        } else {
-            None
-        }
-    };
-    if let Some(active) = active {
+    if let Some(active) = state.take_active_if(|active| active.test_sound) {
         shut_down(active).await;
     }
     Ok(state.status())
