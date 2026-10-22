@@ -1,8 +1,11 @@
 <script lang="ts">
   // B. 編集: the slides on the left, the preview in the middle and the
   // settings of the chosen tab on the right (docs/ui-draft.md).
+  import { untrack } from "svelte";
   import type { SlideId } from "$lib/bindings/SlideId";
+  import { exporting } from "$lib/exporting.svelte";
   import { open } from "$lib/show.svelte";
+  import ExportDialog from "./ExportDialog.svelte";
   import LookPanel from "./LookPanel.svelte";
   import MusicPanel from "./MusicPanel.svelte";
   import Preview from "./Preview.svelte";
@@ -26,6 +29,15 @@
   ];
 
   let tab = $state<Tab>("slides");
+  let exportOpen = $state(false);
+  // An export that ends while its dialog is closed says so there (once:
+  // not again when the editor is opened later).
+  let seenFinish = untrack(() => exporting.finished);
+  $effect(() => {
+    const finished = exporting.finished;
+    if (finished && finished !== seenFinish && !finished.cancelled) exportOpen = true;
+    seenFinish = finished;
+  });
   let selected = $state<SlideId | null>(open.show?.slides[0]?.id ?? null);
   let playing = $state(false);
   let playingSlide = $state<SlideId | null>(null);
@@ -107,11 +119,18 @@
           <button class="tab" class:current={tab === key} aria-pressed={tab === key} onclick={() => (tab = key)}>{name}</button>
         {/each}
       </nav>
+      <button class="quiet" disabled={show.slides.length === 0 && !exporting.running} onclick={() => (exportOpen = true)}>
+        {exporting.running ? `書き出し中 ${Math.round(exporting.fraction * 100)}%` : "動画に書き出す"}
+      </button>
       <div class="present">
         <button class="live" disabled={show.slides.length === 0} onclick={() => onpresent(false)}>▶ 上映する</button>
         <button class="live more" disabled={show.slides.length === 0} onclick={() => onpresent(true)} title="出力先の画面を選ぶ">▾</button>
       </div>
     </header>
+
+    {#if exportOpen}
+      <ExportDialog onclose={() => (exportOpen = false)} />
+    {/if}
 
     {#if open.error}
       <p class="banner error">

@@ -27,10 +27,13 @@
 | 作品 | `list_projects`、`create_project`、`open_project`、`close_project`、`show_state` | [保存と取り込み](project-storage.md)の5章 |
 | 編集 | `edit_show`、`undo_show`、`redo_show` | 同上 |
 | 取り込み | `import_files`、`replace_asset_file` | 同上 |
-| 上映 | `list_monitors`、`start_presentation`、`stop_presentation`、`presentation_status` | 上映ウィンドウ |
+| 上映 | `list_monitors`、`start_presentation`、`stop_presentation`、`presentation_status`、`control_presentation` | 上映ウィンドウ。開いている作品の定義を読む |
+| テスト音 | `start_test_sound`、`stop_test_sound` | 音ズレ補正のための光と音 |
+| 見た目と音楽 | `load_transition`、`music_tracks` | カスタムトランジションの確認、BGM の曲の一覧 |
+| 書き出し | `export_estimate`、`start_export`、`cancel_export` | 用途（`ExportChoice`）から設定を決め、開いている作品の写しを別のスレッドで書き出す |
 | プレビュー | `start_preview`、`stop_preview`、`preview_frame` | 画面外に描いた1枚を返す（[プレビューの技術検証](spike-preview.md)） |
 | 状態 | `engine_status`、`video_decoder_status` | GPU と FFmpeg が見つかったか |
 | イベント | `show-changed` | 頼まれていない定義の変更。`ShowState` |
 | イベント | `import-progress` | 取り込みの進み具合。`ImportProgress` |
-
-上映とプレビューは今のところ、画面から定義を受け取っている。段階3で開いている作品の定義を読む形に変える。
+| イベント | `presentation-end-requested`、`presentation-ended` | 上映ウィンドウで Esc が押された、上映が終わった |
+| イベント | `export-progress`、`export-finished` | 書き出しの進み具合（`ExportProgressEvent`）と終わり（`ExportFinishedEvent`） |

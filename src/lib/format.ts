@@ -53,6 +53,22 @@ export function seconds(ms: number): string {
   return rest ? `${minutes}分${rest}秒` : `${minutes}分`;
 }
 
+/// "820 KB", "12 MB", "1.4 GB".
+export function fileSize(bytes: number): string {
+  if (bytes < 1e6) return `${Math.max(1, Math.round(bytes / 1e3))} KB`;
+  if (bytes < 1e9) return `${Math.round(bytes / 1e6)} MB`;
+  return `${(bytes / 1e9).toFixed(1)} GB`;
+}
+
+/// "1分未満", "約3分", "約1時間20分" for a rough length of time.
+export function roughly(secs: number): string {
+  const minutes = Math.round(secs / 60);
+  if (minutes < 1) return "1分未満";
+  if (minutes < 60) return `約${minutes}分`;
+  const rest = minutes % 60;
+  return `約${Math.floor(minutes / 60)}時間${rest ? `${rest}分` : ""}`;
+}
+
 /// "0:05", "12:34", "1:02:03" for a running time.
 export function clock(totalSecs: number): string {
   const secs = Math.floor(totalSecs);
