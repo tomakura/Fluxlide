@@ -88,6 +88,35 @@ impl Ffmpeg {
             .ok_or_else(|| EngineError::Media(format!("{} has no video stream", path.display())))
     }
 
+    /// Writes the picture in `path` (a HEIC photo, say, which the image
+    /// decoder cannot read) to `out` as a JPEG, turned the way it is shown.
+    pub fn picture_to_jpeg(&self, path: &Path, out: &Path) -> Result<(), EngineError> {
+        let output = command(&self.ffmpeg)
+            .args(["-v", "error", "-y", "-i"])
+            .arg(path)
+            .args([
+                "-frames:v",
+                "1",
+                "-f",
+                "image2",
+                "-c:v",
+                "mjpeg",
+                "-q:v",
+                "2",
+            ])
+            .arg(out)
+            .output()
+            .map_err(|err| EngineError::Media(format!("could not run ffmpeg: {err}")))?;
+        if !output.status.success() || !out.is_file() {
+            return Err(EngineError::Media(format!(
+                "ffmpeg could not read the picture {}: {}",
+                path.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(())
+    }
+
     /// Writes the picture `at_secs` into the video at `path` to `out` as a
     /// PNG, turned the way the video is shown.
     pub fn extract_frame(&self, path: &Path, at_secs: f64, out: &Path) -> Result<(), EngineError> {

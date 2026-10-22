@@ -10,7 +10,7 @@ import type { ShowDefinition } from "./bindings/ShowDefinition";
 import type { Slide } from "./bindings/Slide";
 import type { TransitionChoice } from "./bindings/TransitionChoice";
 
-export const PHOTO_EXTENSIONS = ["jpg", "jpeg", "png"];
+export const PHOTO_EXTENSIONS = ["jpg", "jpeg", "png", "heic", "heif"];
 export const VIDEO_EXTENSIONS = ["mp4", "m4v", "mov"];
 export const MEDIA_FILTER = {
   name: "写真と動画",

@@ -210,12 +210,29 @@ fn copy_and_check(
     std::fs::create_dir_all(thumbnail.parent().unwrap()).map_err(copy_failed)?;
     match asset.kind {
         AssetKind::Photo => {
-            let (width, height) =
-                fluxlide_engine::media::write_thumbnail(partial, &thumbnail, THUMBNAIL_SIZE)
-                    .map_err(|_| {
-                        "写真として読み込めませんでした。壊れているか、対応していない形式です。"
-                            .to_string()
-                    })?;
+            let thumbnail_of = |path: &Path| {
+                fluxlide_engine::media::write_thumbnail(path, &thumbnail, THUMBNAIL_SIZE)
+            };
+            let unreadable =
+                "写真として読み込めませんでした。壊れているか、対応していない形式です。";
+            let (width, height) = match thumbnail_of(partial) {
+                Ok(size) => size,
+                // HEIC: some are JPEGs by another name, which read above; the
+                // others are made JPEG by FFmpeg, in place of the copy.
+                Err(_) if is_heif(source) => {
+                    let ffmpeg =
+                        ffmpeg.ok_or("HEIC の写真を読むための FFmpeg が見つかりません。")?;
+                    let converted = partial.with_extension("converted.jpg");
+                    let result = ffmpeg
+                        .picture_to_jpeg(partial, &converted)
+                        .map_err(|_| unreadable.to_string())
+                        .and_then(|()| std::fs::rename(&converted, partial).map_err(copy_failed))
+                        .and_then(|()| thumbnail_of(partial).map_err(|_| unreadable.to_string()));
+                    let _ = std::fs::remove_file(&converted);
+                    result?
+                }
+                Err(_) => return Err(unreadable.into()),
+            };
             Ok(Some(FileFacts {
                 size: [width, height],
                 duration_ms: None,
@@ -247,6 +264,11 @@ fn copy_and_check(
     }
 }
 
+fn is_heif(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("heic") || ext.eq_ignore_ascii_case("heif"))
+}
+
 /// Where the thumbnail of the media file `file` is kept.
 pub fn thumbnail_path(media_dir: &Path, file: &str) -> PathBuf {
     media_dir.join("thumbs").join(format!("{file}.jpg"))
@@ -263,14 +285,21 @@ fn new_asset(id: AssetId, source: &Path) -> Asset {
         .extension()
         .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
+    // A HEIC photo is kept as the JPEG it is made into.
+    let extension = if is_heif(source) {
+        "jpg".into()
+    } else {
+        extension
+    };
     let (kind, state) = match MediaKind::from_path(source) {
         Some(MediaKind::Image) => (AssetKind::Photo, AssetState::Importing),
         Some(MediaKind::Video) => (AssetKind::Video, AssetState::Importing),
         None => (
             AssetKind::Photo,
             AssetState::Failed {
-                reason: "対応していない種類のファイルです（写真は jpg・png、動画は mp4・mov）。"
-                    .into(),
+                reason:
+                    "対応していない種類のファイルです（写真は jpg・png・heic、動画は mp4・mov）。"
+                        .into(),
             },
         ),
     };
@@ -512,5 +541,91 @@ mod tests {
         );
         assert!(thumbnail_path(&media, "5.mp4").is_file());
         assert_eq!(leftovers(&media), ["5.mp4", "thumbs"]);
+    }
+
+    #[test]
+    fn a_heic_photo_is_kept_as_a_jpeg() {
+        let root = TempDir::new("import-heic");
+        let media = root.0.join("media");
+        std::fs::create_dir(&media).unwrap();
+
+        // Some ".HEIC" files are JPEGs (photos exported by some services).
+        let named = root.0.join("IMG_0001.HEIC");
+        image::RgbImage::from_pixel(320, 240, image::Rgb([30, 90, 200]))
+            .save_with_format(&named, image::ImageFormat::Jpeg)
+            .unwrap();
+        let asset = new_asset(AssetId(8), &named);
+        assert_eq!(
+            (asset.kind, asset.file.as_str()),
+            (AssetKind::Photo, "8.jpg")
+        );
+        let facts = import(&named, &media, &asset).unwrap().unwrap();
+        assert_eq!(facts.size, [320, 240]);
+
+        // The others are made JPEG by FFmpeg. A one-frame video stands in for
+        // a real HEIC here: neither can be read by the image decoder.
+        let Ok(ffmpeg) = Ffmpeg::locate() else {
+            eprintln!("skipping HEIC conversion test: ffmpeg not found");
+            return;
+        };
+        let packed = root.0.join("IMG_0002.heic");
+        let status = std::process::Command::new(ffmpeg.ffmpeg_path())
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
+            .arg("testsrc2=size=160x90:rate=1:duration=1")
+            .args(["-frames:v", "1", "-c:v", "mpeg4", "-f", "mp4"])
+            .arg(&packed)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let asset = new_asset(AssetId(9), &packed);
+        let facts = import(&packed, &media, &asset).unwrap().unwrap();
+        assert_eq!(facts.size, [160, 90]);
+        let kept = std::fs::read(media.join("9.jpg")).unwrap();
+        assert_eq!(&kept[..2], [0xFF, 0xD8], "a JPEG");
+
+        // Neither: a clear failure, and nothing left behind.
+        let broken = root.0.join("IMG_0003.heic");
+        std::fs::write(&broken, b"not a picture").unwrap();
+        let err = import(&broken, &media, &new_asset(AssetId(10), &broken)).unwrap_err();
+        assert!(err.contains("写真として読み込めませんでした"), "{err}");
+        assert_eq!(leftovers(&media), ["8.jpg", "9.jpg", "thumbs"]);
+    }
+
+    #[test]
+    fn a_video_shot_upright_has_its_upright_size() {
+        let Ok(ffmpeg) = Ffmpeg::locate() else {
+            eprintln!("skipping upright video test: ffmpeg not found");
+            return;
+        };
+        let root = TempDir::new("import-upright");
+        let flat = root.0.join("flat.mp4");
+        let upright = root.0.join("upright.mp4");
+        let made = std::process::Command::new(ffmpeg.ffmpeg_path())
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
+            .arg("testsrc2=size=160x90:rate=30:duration=1")
+            .args(["-pix_fmt", "yuv420p", "-c:v", "mpeg4"])
+            .arg(&flat)
+            .status()
+            .unwrap()
+            .success()
+            // A phone held upright records landscape frames and a rotation.
+            && std::process::Command::new(ffmpeg.ffmpeg_path())
+                .args(["-v", "error", "-y", "-display_rotation", "90", "-i"])
+                .arg(&flat)
+                .args(["-c", "copy"])
+                .arg(&upright)
+                .status()
+                .unwrap()
+                .success();
+        if !made {
+            eprintln!("skipping upright video test: this ffmpeg cannot set a rotation");
+            return;
+        }
+        let media = root.0.join("media");
+        std::fs::create_dir(&media).unwrap();
+        let facts = import(&upright, &media, &new_asset(AssetId(11), &upright))
+            .unwrap()
+            .unwrap();
+        assert_eq!(facts.size, [90, 160]);
     }
 }

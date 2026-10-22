@@ -22,7 +22,8 @@ impl MediaKind {
     pub fn from_path(path: &Path) -> Option<Self> {
         let ext = path.extension()?.to_str()?.to_ascii_lowercase();
         match ext.as_str() {
-            "jpg" | "jpeg" | "png" => Some(Self::Image),
+            // HEIC and HEIF are made JPEG when imported (`Ffmpeg::picture_to_jpeg`).
+            "jpg" | "jpeg" | "png" | "heic" | "heif" => Some(Self::Image),
             "mp4" | "m4v" | "mov" => Some(Self::Video),
             _ => None,
         }
@@ -294,6 +295,10 @@ mod tests {
         assert_eq!(
             MediaKind::from_path(Path::new("clip.mp4")),
             Some(MediaKind::Video)
+        );
+        assert_eq!(
+            MediaKind::from_path(Path::new("IMG_0001.HEIC")),
+            Some(MediaKind::Image)
         );
         assert_eq!(MediaKind::from_path(Path::new("notes.txt")), None);
         assert_eq!(MediaKind::from_path(Path::new("noext")), None);
