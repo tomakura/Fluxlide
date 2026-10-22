@@ -60,6 +60,9 @@ jobs:
       - name: Check frontend
         run: npm run check
 
+      - name: Test frontend
+        run: npm test
+
       # tauri::generate_context! requires the built frontend to exist.
       - name: Build frontend
         run: npm run build

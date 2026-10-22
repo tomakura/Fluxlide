@@ -113,7 +113,10 @@ pub struct Renderer {
 impl Renderer {
     /// Opens the default high-performance GPU without a window surface.
     pub async fn new() -> Result<Self, EngineError> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        // `WGPU_BACKEND` (vulkan, dx12, metal, gl) chooses the graphics API, for
+        // telling a driver problem apart from ours.
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -125,6 +128,11 @@ impl Renderer {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("fluxlide-device"),
+                // Small memory blocks: a slideshow makes and drops a texture
+                // or two per slide, and with the default large blocks the
+                // process grew by hundreds of megabytes over hours of
+                // looping (docs/quality.md). Drawing is far from the limit.
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
                 ..Default::default()
             })
             .await

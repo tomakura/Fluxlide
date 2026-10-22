@@ -45,7 +45,7 @@ use std::ops::RangeInclusive;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
@@ -135,6 +135,8 @@ struct SharedStats {
     resyncs: AtomicU64,
     underruns: AtomicU64,
     last_error: Mutex<Option<String>>,
+    /// The output device in use; it changes when the output moves to another.
+    device: Mutex<String>,
 }
 
 /// An `f64` stored in an atomic, for numbers written by the audio thread.
@@ -340,7 +342,6 @@ impl Timeline<'_> {
 #[derive(Clone)]
 pub struct AudioMixer {
     format: AudioFormat,
-    device: Arc<str>,
     voices: Sender<Voice>,
     sources: Sender<SourceSlot>,
     stats: Arc<SharedStats>,
@@ -413,7 +414,7 @@ impl AudioMixer {
 
     pub fn stats(&self) -> AudioStats {
         AudioStats {
-            device: self.device.to_string(),
+            device: self.stats.device.lock().unwrap().clone(),
             sample_rate: self.format.sample_rate,
             output_latency_ms: self.stats.output_latency_ms.load(),
             sync_offset_ms: self.sync.offset_ms.load(),
@@ -472,6 +473,7 @@ fn build_mixer(
     let (voices, incoming) = mpsc::channel();
     let (sources, incoming_sources) = mpsc::channel();
     let stats = Arc::new(SharedStats::default());
+    *stats.device.lock().unwrap() = device.to_string();
     let sync = Arc::new(SyncControl {
         mode,
         offset_ms: AtomicF64::new(sync_offset_ms),
@@ -493,7 +495,6 @@ fn build_mixer(
     };
     let mixer = AudioMixer {
         format: AudioFormat { sample_rate },
-        device: device.into(),
         voices,
         sources,
         stats,
@@ -734,11 +735,24 @@ impl OfflineMixer {
     }
 }
 
+/// How often the default output device is looked at, to follow the sound
+/// when it moves (a Bluetooth speaker connected, headphones plugged in).
+const DEVICE_CHECK: Duration = Duration::from_secs(1);
+
 /// The open output device. Keep it alive for as long as sound should play;
-/// it stays on the thread that opened it.
+/// it stays on the thread that opened it. Call [`AudioOutput::follow_device`]
+/// regularly on that thread: when the device is lost or another becomes the
+/// system's default, the output moves there with the same mixer, so sounds
+/// already playing go on.
 pub struct AudioOutput {
-    _stream: cpal::Stream,
+    stream: Option<cpal::Stream>,
+    core: Arc<Mutex<MixerCore>>,
     mixer: AudioMixer,
+    epoch: Instant,
+    /// Set when the stream fails or the default device changes.
+    lost: Arc<AtomicBool>,
+    stop_watching: Arc<AtomicBool>,
+    last_attempt: Option<Instant>,
 }
 
 impl AudioOutput {
@@ -752,15 +766,7 @@ impl AudioOutput {
     /// `sync_offset_ms` instead of moving to it gradually.
     pub fn open_with_sync_offset(epoch: Instant, sync_offset_ms: f64) -> Result<Self, EngineError> {
         check_sync_offset(AudioMode::Live, sync_offset_ms)?;
-        let fail =
-            |what: &str, err: &dyn std::fmt::Display| EngineError::Audio(format!("{what}: {err}"));
-        let device = cpal::default_host()
-            .default_output_device()
-            .ok_or_else(|| EngineError::Audio("no audio output device".into()))?;
-        let name = device
-            .description()
-            .map(|description| description.name().to_string())
-            .unwrap_or_else(|_| "unknown".into());
+        let (device, name) = default_device()?;
         let supported = device
             .default_output_config()
             .map_err(|err| fail("no usable output format", &err))?;
@@ -772,47 +778,194 @@ impl AudioOutput {
             AudioMode::Live,
             sync_offset_ms,
         );
-        let stream = match supported.sample_format() {
-            SampleFormat::F32 => build_stream::<f32>(&device, &config, core, epoch),
-            SampleFormat::I16 => build_stream::<i16>(&device, &config, core, epoch),
-            SampleFormat::U16 => build_stream::<u16>(&device, &config, core, epoch),
-            SampleFormat::I32 => build_stream::<i32>(&device, &config, core, epoch),
-            other => {
-                return Err(EngineError::Audio(format!(
-                    "unsupported sample format {other}"
-                )));
-            }
-        }
-        .map_err(|err| fail("could not open the audio output", &err))?;
-        stream
-            .play()
-            .map_err(|err| fail("could not start the audio output", &err))?;
+        let core = Arc::new(Mutex::new(core));
+        let lost = Arc::new(AtomicBool::new(false));
+        let stream = open_stream(
+            &device,
+            &config,
+            supported.sample_format(),
+            &core,
+            epoch,
+            &lost,
+            &Arc::new(AtomicBool::new(true)),
+        )?;
+        let stop_watching = Arc::new(AtomicBool::new(false));
+        watch_default_device(mixer.stats.clone(), lost.clone(), stop_watching.clone());
         Ok(Self {
-            _stream: stream,
+            stream: Some(stream),
+            core,
             mixer,
+            epoch,
+            lost,
+            stop_watching,
+            last_attempt: None,
         })
     }
 
     pub fn mixer(&self) -> AudioMixer {
         self.mixer.clone()
     }
+
+    /// Moves the output to the default device if the one in use was lost or
+    /// is no longer the default. Cheap when nothing changed; tries again at
+    /// most once per [`DEVICE_CHECK`] while no device can be opened.
+    /// Returns true when the output moved.
+    pub fn follow_device(&mut self) -> bool {
+        if !self.lost.load(Ordering::Relaxed)
+            || self
+                .last_attempt
+                .is_some_and(|at| at.elapsed() < DEVICE_CHECK)
+        {
+            return false;
+        }
+        self.last_attempt = Some(Instant::now());
+        match self.reopen() {
+            Ok(()) => {
+                self.lost.store(false, Ordering::Relaxed);
+                *self.mixer.stats.last_error.lock().unwrap() = None;
+                true
+            }
+            // The old stream, if it still plays, goes on until a new one opens.
+            Err(err) => {
+                *self.mixer.stats.last_error.lock().unwrap() = Some(err.to_string());
+                false
+            }
+        }
+    }
+
+    fn reopen(&mut self) -> Result<(), EngineError> {
+        let (device, name) = default_device()?;
+        let supported = device
+            .default_output_config()
+            .map_err(|err| fail("no usable output format", &err))?;
+        // Sounds are decoded at the mixer's rate, so the new device is asked
+        // for that rate; the system converts if the device runs at another.
+        let mut config = supported.config();
+        config.sample_rate = self.mixer.format.sample_rate;
+        // Opened silent: only one stream may take sound from the mixer.
+        let enabled = Arc::new(AtomicBool::new(false));
+        let stream = open_stream(
+            &device,
+            &config,
+            supported.sample_format(),
+            &self.core,
+            self.epoch,
+            &self.lost,
+            &enabled,
+        )
+        .map_err(|err| {
+            EngineError::Audio(format!(
+                "{name}: {err} (at {} Hz)",
+                self.mixer.format.sample_rate
+            ))
+        })?;
+        self.stream = None;
+        self.core.lock().unwrap().out_channels = usize::from(config.channels).max(1);
+        enabled.store(true, Ordering::Relaxed);
+        self.stream = Some(stream);
+        *self.mixer.stats.device.lock().unwrap() = name;
+        Ok(())
+    }
+}
+
+impl Drop for AudioOutput {
+    fn drop(&mut self) {
+        self.stop_watching.store(true, Ordering::Relaxed);
+    }
+}
+
+fn fail(what: &str, err: &dyn std::fmt::Display) -> EngineError {
+    EngineError::Audio(format!("{what}: {err}"))
+}
+
+/// The system's default output device and its name.
+fn default_device() -> Result<(cpal::Device, String), EngineError> {
+    let device = cpal::default_host()
+        .default_output_device()
+        .ok_or_else(|| EngineError::Audio("no audio output device".into()))?;
+    let name = device_name(&device);
+    Ok((device, name))
+}
+
+fn device_name(device: &cpal::Device) -> String {
+    device
+        .description()
+        .map(|description| description.name().to_string())
+        .unwrap_or_else(|_| "unknown".into())
+}
+
+/// Looks at the default output device once per [`DEVICE_CHECK`] and sets
+/// `lost` when it is not the one in use, until `stop` is set.
+fn watch_default_device(stats: Arc<SharedStats>, lost: Arc<AtomicBool>, stop: Arc<AtomicBool>) {
+    let _ = std::thread::Builder::new()
+        .name("fluxlide-audio-device".into())
+        .spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                std::thread::sleep(DEVICE_CHECK);
+                let Some(device) = cpal::default_host().default_output_device() else {
+                    continue;
+                };
+                if device_name(&device) != *stats.device.lock().unwrap() {
+                    lost.store(true, Ordering::Relaxed);
+                }
+            }
+        });
+}
+
+fn open_stream(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    format: SampleFormat,
+    core: &Arc<Mutex<MixerCore>>,
+    epoch: Instant,
+    lost: &Arc<AtomicBool>,
+    enabled: &Arc<AtomicBool>,
+) -> Result<cpal::Stream, EngineError> {
+    let shared = (core.clone(), lost.clone(), enabled.clone());
+    let stream = match format {
+        SampleFormat::F32 => build_stream::<f32>(device, config, shared, epoch),
+        SampleFormat::I16 => build_stream::<i16>(device, config, shared, epoch),
+        SampleFormat::U16 => build_stream::<u16>(device, config, shared, epoch),
+        SampleFormat::I32 => build_stream::<i32>(device, config, shared, epoch),
+        other => {
+            return Err(EngineError::Audio(format!(
+                "unsupported sample format {other}"
+            )));
+        }
+    }
+    .map_err(|err| fail("could not open the audio output", &err))?;
+    stream
+        .play()
+        .map_err(|err| fail("could not start the audio output", &err))?;
+    Ok(stream)
 }
 
 fn build_stream<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    mut core: MixerCore,
+    (core, lost, enabled): (Arc<Mutex<MixerCore>>, Arc<AtomicBool>, Arc<AtomicBool>),
     epoch: Instant,
 ) -> Result<cpal::Stream, cpal::Error>
 where
     T: SizedSample + FromSample<f32>,
 {
-    let stats = core.stats.clone();
-    let errors = core.stats.clone();
+    let stats = core.lock().unwrap().stats.clone();
+    let errors = stats.clone();
     let mut mixed = Vec::new();
     device.build_output_stream::<T, _, _>(
         *config,
         move |out: &mut [T], info: &cpal::OutputCallbackInfo| {
+            // A stream opened to replace another is silent until that one
+            // has stopped. The lock is taken elsewhere only then, briefly:
+            // silence rather than wait.
+            let core = enabled
+                .load(Ordering::Relaxed)
+                .then(|| core.try_lock().ok())
+                .flatten();
+            let Some(mut core) = core else {
+                out.fill(T::from_sample(0.0));
+                return;
+            };
             let timestamp = info.timestamp();
             let latency = timestamp
                 .playback
@@ -830,6 +983,16 @@ where
         },
         move |err| {
             *errors.last_error.lock().unwrap() = Some(err.to_string());
+            // Some errors are recovered from by the backend (an underrun on
+            // ALSA, say); only these need a new stream.
+            if matches!(
+                err.kind(),
+                cpal::ErrorKind::DeviceNotAvailable
+                    | cpal::ErrorKind::StreamInvalidated
+                    | cpal::ErrorKind::HostUnavailable
+            ) {
+                lost.store(true, Ordering::Relaxed);
+            }
         },
         None,
     )

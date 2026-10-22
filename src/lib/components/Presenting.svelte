@@ -100,6 +100,12 @@
     <button class="end" onclick={() => (confirming = true)}>■ 上映を終了</button>
   </header>
 
+  {#if status?.screenLost}
+    <p class="lost" role="alert">
+      出力先の画面（{status.monitorName}）が見つからないので、一時停止しました。つなぎ直すと、その画面に戻ります。続けるには「再開」を押してください。
+    </p>
+  {/if}
+
   <main>
     <section class="now">
       <h2>
@@ -215,6 +221,13 @@
 {/if}
 
 <style>
+  .lost {
+    margin: 0;
+    padding: 10px 16px;
+    background: var(--err-soft);
+    color: var(--err);
+  }
+
   .presenting {
     height: 100vh;
     display: flex;
