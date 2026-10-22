@@ -1,13 +1,14 @@
 # Third-party licenses
 
 This file lists the third-party software that Fluxlide releases include or
-use. It is a draft; the Rust and npm dependencies are still to be added
-(see docs/roadmap.md, stage 7).
+use. The license notices of the Rust crates and npm packages built into the
+application are in `licenses/THIRD_PARTY_NOTICES.txt` next to it, written
+for each release by `scripts/third-party-notices.mjs`.
 
 ## FFmpeg
 
-Fluxlide uses FFmpeg to decode videos and audio and, in a
-later version, to write video files. The release packages contain two
+Fluxlide uses FFmpeg to decode videos, audio and HEIC photos and to write
+video files. The release packages contain two
 unmodified FFmpeg command-line programs, `fluxlide-ffmpeg` and
 `fluxlide-ffprobe` (FFmpeg's `ffmpeg` and `ffprobe`). Fluxlide starts them as
 separate processes; it does not link FFmpeg's libraries into its own
@@ -38,7 +39,9 @@ Fluxlide. The FFmpeg developers are listed at
 originator of the FFmpeg project.
 
 Video and audio formats such as H.264, HEVC and AAC may be covered by patents
-in some countries. This license file does not grant any patent license.
+in some countries. Neither Fluxlide nor this license file grants any patent
+license; anyone using Fluxlide in a business should check which licenses
+they need.
 
 ## Noto Sans JP
 
@@ -52,3 +55,9 @@ embedded in the application's executable. The font file is unmodified.
 - License: SIL Open Font License, Version 1.1. The license text is in
   `licenses/noto-sans-jp/OFL.txt` next to the application (from
   `assets/fonts/OFL.txt` in the Fluxlide repository).
+
+## Jost
+
+The Fluxlide logotype is set in Jost (SIL Open Font License 1.1). The logo
+files have the letters converted to outlines, and the font itself is not
+included in the application.

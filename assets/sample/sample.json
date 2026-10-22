@@ -1,0 +1,41 @@
+{
+  "title": "Fluxlide のサンプル",
+  "slides": [
+    {
+      "file": "01.jpg",
+      "title": "Fluxlide へようこそ",
+      "author": "Fluxlide",
+      "description": "写真と動画を並べて、別の画面に全画面で映したり、動画に書き出したりできます。このサンプルは自由に変えて試してください。"
+    },
+    {
+      "file": "02.jpg",
+      "title": "写真や動画を足す",
+      "author": "Fluxlide",
+      "description": "左の欄に写真や動画をドロップするか、「＋ 追加」を押します。番号の部分をつかむと並べ替えられます。"
+    },
+    {
+      "file": "03.jpg",
+      "title": "キャプションを書く",
+      "author": "Fluxlide",
+      "description": "右の「写真・動画」タブで、タイトル・作者・説明を入れると、このように映ります。表示時間やトランジションも変えられます。"
+    },
+    {
+      "file": "04.jpg",
+      "title": "見た目と音楽",
+      "author": "Fluxlide",
+      "description": "「見た目」タブでキャプションのデザインやウォーターマークを、「音楽」タブで BGM を選べます。"
+    },
+    {
+      "file": "05.jpg",
+      "title": "上映する",
+      "author": "Fluxlide",
+      "description": "右上の「▶ 上映する」で、選んだ画面に映します。← → で進み、Space で一時停止、Esc で終わります。"
+    },
+    {
+      "file": "06.jpg",
+      "title": "動画に書き出す",
+      "author": "Fluxlide",
+      "description": "「動画に書き出す」で、テレビ用・スマホ用などの用途を選ぶと、MP4 の動画になります。"
+    }
+  ]
+}

@@ -4,6 +4,7 @@
   import * as api from "$lib/api";
   import type { ProjectSummary } from "$lib/bindings/ProjectSummary";
   import { open } from "$lib/show.svelte";
+  import AboutDialog from "./AboutDialog.svelte";
   import DropZone from "./DropZone.svelte";
   import Mark from "./Mark.svelte";
 
@@ -12,6 +13,7 @@
   let projects = $state<ProjectSummary[] | null>(null);
   let busy = $state(false);
   let error = $state<string | null>(null);
+  let about = $state(false);
 
   $effect(() => {
     api
@@ -40,6 +42,13 @@
       if (files.length) await open.import(files);
     });
 
+  const openSample = () =>
+    begin(async () => {
+      open.take(await api.createProject("Fluxlide のサンプル"));
+      const result = await api.importSample();
+      open.take(result.state);
+    });
+
   const openDir = (dir: string) => begin(async () => open.take(await api.openProject(dir)));
 
   async function openElsewhere() {
@@ -64,6 +73,10 @@
       写真や動画をここにドロップすると、新しいスライドショーを作ります
     </DropZone>
     {#if error}<p class="error">{error}</p>{/if}
+    <div class="more">
+      <button class="quiet" disabled={busy} onclick={openSample}>使い方のサンプルを開く</button>
+      <button class="quiet" onclick={() => (about = true)}>このアプリについて</button>
+    </div>
   </section>
 
   <section class="recent">
@@ -98,6 +111,10 @@
   </section>
 </main>
 
+{#if about}
+  <AboutDialog onclose={() => (about = false)} />
+{/if}
+
 <style>
   main {
     height: 100vh;
@@ -128,6 +145,11 @@
   h2 {
     margin: 0;
     font-size: 17px;
+  }
+
+  .more {
+    display: flex;
+    gap: 8px;
   }
 
   .new {

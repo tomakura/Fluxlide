@@ -18,8 +18,8 @@ use std::time::{Duration, Instant};
 use fluxlide_engine::MediaKind;
 use fluxlide_engine::media::video::Ffmpeg;
 use fluxlide_engine::show::{Asset, AssetId, AssetKind, AssetMeta, AssetState, Slide};
-use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager, State};
 use ts_rs::TS;
 
 use crate::editor::{self, EditorState, ShowState};
@@ -339,13 +339,76 @@ pub fn import_files(
     files: Vec<PathBuf>,
     add_slides: bool,
 ) -> Result<ImportResult, String> {
+    add_files(
+        &editor,
+        &importer,
+        files.into_iter().map(|file| (file, None)).collect(),
+        add_slides,
+    )
+}
+
+/// The sample slideshow (`assets/sample/sample.json`), which says how to
+/// use Fluxlide on its slides.
+#[derive(Deserialize)]
+struct Sample {
+    slides: Vec<SampleSlide>,
+}
+
+#[derive(Deserialize)]
+struct SampleSlide {
+    file: String,
+    title: String,
+    author: String,
+    description: String,
+}
+
+/// Adds the sample's pictures, with their captions, to the open show.
+#[tauri::command]
+pub fn import_sample(
+    app: AppHandle,
+    editor: State<'_, EditorState>,
+    importer: State<'_, Importer>,
+) -> Result<ImportResult, String> {
+    let dir = app
+        .path()
+        .resolve("sample", tauri::path::BaseDirectory::Resource)
+        .map_err(|err| err.to_string())?;
+    let read = std::fs::read_to_string(dir.join("sample.json"))
+        .map_err(|err| format!("サンプルが見つかりません: {err}"))?;
+    let sample: Sample = serde_json::from_str(&read).map_err(|err| err.to_string())?;
+    let items = sample
+        .slides
+        .into_iter()
+        .map(|slide| {
+            let meta = AssetMeta {
+                title: slide.title,
+                author: slide.author,
+                description: slide.description,
+            };
+            (dir.join(slide.file), Some(meta))
+        })
+        .collect();
+    add_files(&editor, &importer, items, true)
+}
+
+/// Adds the files as assets (with slides, if `add_slides`) and queues their
+/// import. A file's title is its name unless `meta` is given.
+fn add_files(
+    editor: &EditorState,
+    importer: &Importer,
+    files: Vec<(PathBuf, Option<AssetMeta>)>,
+    add_slides: bool,
+) -> Result<ImportResult, String> {
     let session = editor.session();
     let mut guard = session.lock().unwrap();
     let session = guard.as_mut().ok_or("スライドショーが開かれていません。")?;
     let mut next = session.show().clone();
     let mut added = Vec::new();
-    for source in files {
-        let asset = new_asset(session.next_asset_id(), &source);
+    for (source, meta) in files {
+        let mut asset = new_asset(session.next_asset_id(), &source);
+        if let Some(meta) = meta {
+            asset.meta = meta;
+        }
         if add_slides {
             next.slides
                 .push(Slide::new(session.next_slide_id(), asset.id));
@@ -541,6 +604,31 @@ mod tests {
         );
         assert!(thumbnail_path(&media, "5.mp4").is_file());
         assert_eq!(leftovers(&media), ["5.mp4", "thumbs"]);
+    }
+
+    #[test]
+    fn the_sample_lists_pictures_that_are_there() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/sample");
+        let sample: Sample =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("sample.json")).unwrap())
+                .unwrap();
+        assert!(!sample.slides.is_empty());
+        for slide in &sample.slides {
+            let path = dir.join(&slide.file);
+            assert_eq!(
+                MediaKind::from_path(&path),
+                Some(MediaKind::Image),
+                "{}",
+                slide.file
+            );
+            fluxlide_engine::media::write_thumbnail(
+                &path,
+                &std::env::temp_dir().join(format!("fluxlide-sample-{}.jpg", std::process::id())),
+                (64, 64),
+            )
+            .unwrap();
+            assert!(!slide.title.is_empty() && !slide.description.is_empty());
+        }
     }
 
     #[test]

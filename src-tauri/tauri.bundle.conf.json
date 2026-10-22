@@ -8,6 +8,7 @@
     "resources": {
       "binaries/ffmpeg-licenses/": "licenses/ffmpeg/",
       "../THIRD_PARTY_LICENSES.md": "licenses/THIRD_PARTY_LICENSES.md",
+      "../target/notices/THIRD_PARTY_NOTICES.txt": "licenses/THIRD_PARTY_NOTICES.txt",
       "../assets/fonts/OFL.txt": "licenses/noto-sans-jp/OFL.txt"
     }
   }

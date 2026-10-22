@@ -1,6 +1,6 @@
 {
   "name": "fluxlide",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Slideshow creation and playback software",
   "private": true,
   "license": "MIT",
@@ -19,7 +19,8 @@
     "test": "vitest run",
     "tauri": "tauri",
     "ffmpeg:build": "bash scripts/build-ffmpeg.sh",
-    "tauri:release": "tauri build --config src-tauri/tauri.bundle.conf.json"
+    "licenses": "node scripts/third-party-notices.mjs",
+    "tauri:release": "npm run licenses && tauri build --config src-tauri/tauri.bundle.conf.json"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

@@ -39,6 +39,8 @@ export const redoShow = () => invoke<ShowState>("redo_show");
 
 export const importFiles = (files: string[], addSlides = true) =>
   invoke<ImportResult>("import_files", { files, addSlides });
+/// Adds the sample slideshow's pictures and captions to the open show.
+export const importSample = () => invoke<ImportResult>("import_sample");
 export const replaceAssetFile = (asset: AssetId, file: string) =>
   invoke<ShowState>("replace_asset_file", { asset, file });
 
@@ -75,6 +77,9 @@ export const exportEstimate = (choice: ExportChoice) => invoke<ExportEstimate>("
 /// Starts writing the open show to `path`; see `onExportProgress` and `onExportFinished`.
 export const startExport = (choice: ExportChoice, path: string) => invoke<void>("start_export", { choice, path });
 export const cancelExport = () => invoke<void>("cancel_export");
+
+/// The folder of license texts, in an installed app.
+export const licensesDir = () => invoke<string | null>("licenses_dir");
 
 export const getSettings = () => invoke<Settings>("get_settings");
 export const setSyncOffset = (offsetMs: number) => invoke<Settings>("set_sync_offset", { offsetMs });
