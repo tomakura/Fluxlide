@@ -625,9 +625,14 @@ fn watch_screen(
                 if stop.load(Ordering::Relaxed) {
                     return;
                 }
+                // An empty list comes while the system wakes up or changes a
+                // resolution; that is not the screen going away.
                 let Ok(monitors) = app.available_monitors() else {
                     continue;
                 };
+                if monitors.is_empty() {
+                    continue;
+                }
                 let screen = monitors
                     .iter()
                     .enumerate()
@@ -1012,8 +1017,8 @@ fn apply(control: Control, show: &mut Slideshow, sound: &Sound) {
         Control::Start => show.start(),
         Control::Next => show.next(),
         Control::Previous => show.previous(),
-        // Space on the title card starts the show, as → does.
         Control::Pause => show.pause(),
+        // Space on the title card starts the show, as → does.
         Control::TogglePause if show.position(0).before_start => show.start(),
         Control::TogglePause if show.is_paused() => show.resume(),
         Control::TogglePause => show.pause(),

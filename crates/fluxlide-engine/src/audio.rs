@@ -787,6 +787,7 @@ impl AudioOutput {
             &core,
             epoch,
             &lost,
+            &Arc::new(AtomicBool::new(true)),
         )?;
         let stop_watching = Arc::new(AtomicBool::new(false));
         watch_default_device(mixer.stats.clone(), lost.clone(), stop_watching.clone());
@@ -818,15 +819,13 @@ impl AudioOutput {
             return false;
         }
         self.last_attempt = Some(Instant::now());
-        // The old stream stops before the mixer moves to the new one.
-        self.stream = None;
         match self.reopen() {
-            Ok(stream) => {
-                self.stream = Some(stream);
+            Ok(()) => {
                 self.lost.store(false, Ordering::Relaxed);
                 *self.mixer.stats.last_error.lock().unwrap() = None;
                 true
             }
+            // The old stream, if it still plays, goes on until a new one opens.
             Err(err) => {
                 *self.mixer.stats.last_error.lock().unwrap() = Some(err.to_string());
                 false
@@ -834,7 +833,7 @@ impl AudioOutput {
         }
     }
 
-    fn reopen(&self) -> Result<cpal::Stream, EngineError> {
+    fn reopen(&mut self) -> Result<(), EngineError> {
         let (device, name) = default_device()?;
         let supported = device
             .default_output_config()
@@ -843,7 +842,8 @@ impl AudioOutput {
         // for that rate; the system converts if the device runs at another.
         let mut config = supported.config();
         config.sample_rate = self.mixer.format.sample_rate;
-        self.core.lock().unwrap().out_channels = usize::from(config.channels).max(1);
+        // Opened silent: only one stream may take sound from the mixer.
+        let enabled = Arc::new(AtomicBool::new(false));
         let stream = open_stream(
             &device,
             &config,
@@ -851,9 +851,20 @@ impl AudioOutput {
             &self.core,
             self.epoch,
             &self.lost,
-        )?;
+            &enabled,
+        )
+        .map_err(|err| {
+            EngineError::Audio(format!(
+                "{name}: {err} (at {} Hz)",
+                self.mixer.format.sample_rate
+            ))
+        })?;
+        self.stream = None;
+        self.core.lock().unwrap().out_channels = usize::from(config.channels).max(1);
+        enabled.store(true, Ordering::Relaxed);
+        self.stream = Some(stream);
         *self.mixer.stats.device.lock().unwrap() = name;
-        Ok(stream)
+        Ok(())
     }
 }
 
@@ -908,13 +919,14 @@ fn open_stream(
     core: &Arc<Mutex<MixerCore>>,
     epoch: Instant,
     lost: &Arc<AtomicBool>,
+    enabled: &Arc<AtomicBool>,
 ) -> Result<cpal::Stream, EngineError> {
-    let (core, lost) = (core.clone(), lost.clone());
+    let shared = (core.clone(), lost.clone(), enabled.clone());
     let stream = match format {
-        SampleFormat::F32 => build_stream::<f32>(device, config, core, epoch, lost),
-        SampleFormat::I16 => build_stream::<i16>(device, config, core, epoch, lost),
-        SampleFormat::U16 => build_stream::<u16>(device, config, core, epoch, lost),
-        SampleFormat::I32 => build_stream::<i32>(device, config, core, epoch, lost),
+        SampleFormat::F32 => build_stream::<f32>(device, config, shared, epoch),
+        SampleFormat::I16 => build_stream::<i16>(device, config, shared, epoch),
+        SampleFormat::U16 => build_stream::<u16>(device, config, shared, epoch),
+        SampleFormat::I32 => build_stream::<i32>(device, config, shared, epoch),
         other => {
             return Err(EngineError::Audio(format!(
                 "unsupported sample format {other}"
@@ -931,9 +943,8 @@ fn open_stream(
 fn build_stream<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    core: Arc<Mutex<MixerCore>>,
+    (core, lost, enabled): (Arc<Mutex<MixerCore>>, Arc<AtomicBool>, Arc<AtomicBool>),
     epoch: Instant,
-    lost: Arc<AtomicBool>,
 ) -> Result<cpal::Stream, cpal::Error>
 where
     T: SizedSample + FromSample<f32>,
@@ -944,9 +955,14 @@ where
     device.build_output_stream::<T, _, _>(
         *config,
         move |out: &mut [T], info: &cpal::OutputCallbackInfo| {
-            // Taken elsewhere only while the output moves to another device,
-            // when this stream is already stopped: silence rather than wait.
-            let Ok(mut core) = core.try_lock() else {
+            // A stream opened to replace another is silent until that one
+            // has stopped. The lock is taken elsewhere only then, briefly:
+            // silence rather than wait.
+            let core = enabled
+                .load(Ordering::Relaxed)
+                .then(|| core.try_lock().ok())
+                .flatten();
+            let Some(mut core) = core else {
                 out.fill(T::from_sample(0.0));
                 return;
             };
@@ -967,7 +983,16 @@ where
         },
         move |err| {
             *errors.last_error.lock().unwrap() = Some(err.to_string());
-            lost.store(true, Ordering::Relaxed);
+            // Some errors are recovered from by the backend (an underrun on
+            // ALSA, say); only these need a new stream.
+            if matches!(
+                err.kind(),
+                cpal::ErrorKind::DeviceNotAvailable
+                    | cpal::ErrorKind::StreamInvalidated
+                    | cpal::ErrorKind::HostUnavailable
+            ) {
+                lost.store(true, Ordering::Relaxed);
+            }
         },
         None,
     )
