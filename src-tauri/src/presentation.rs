@@ -770,19 +770,10 @@ fn apply(control: Control, show: &mut Slideshow, sound: &Sound) {
         Control::Start => show.start(),
         Control::Next => show.next(),
         Control::Previous => show.previous(),
-        // The music pauses with the show: a pause is usually for talking.
-        Control::TogglePause if show.is_paused() => {
-            show.resume();
-            if let Some(bgm) = &sound.bgm {
-                bgm.resume();
-            }
-        }
-        Control::TogglePause => {
-            show.pause();
-            if let Some(bgm) = &sound.bgm {
-                bgm.pause();
-            }
-        }
+        // Space on the title card starts the show, as → does.
+        Control::TogglePause if show.position(0).before_start => show.start(),
+        Control::TogglePause if show.is_paused() => show.resume(),
+        Control::TogglePause => show.pause(),
         Control::ToggleBlackout => {
             let blackout = !show.position(0).blackout;
             show.set_blackout(blackout);
@@ -801,6 +792,15 @@ fn apply(control: Control, show: &mut Slideshow, sound: &Sound) {
             if let Some(output) = &sound.output {
                 let _ = output.mixer().set_sync_offset_ms(ms);
             }
+        }
+    }
+    // The music pauses with the show: a pause is usually for talking. Next
+    // and previous also end a pause.
+    if let Some(bgm) = &sound.bgm {
+        if show.is_paused() {
+            bgm.pause();
+        } else {
+            bgm.resume();
         }
     }
 }
