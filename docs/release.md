@@ -55,8 +55,16 @@
 | 特許 | H.264、HEVC、AAC のデコーダを含む FFmpeg をそのまま配布する。リリースの説明、README、THIRD_PARTY_LICENSES.md、アプリの「このアプリについて」に、特許の許諾を含まず、事業で使うときは各自で確かめるよう書く |
 | 依存のライセンス | アプリが使う Rust のクレートと、画面に入る npm のパッケージのライセンスファイルを、リリースのたびに集めて同梱する |
 
-## 4. まだ確かめていないこと
+## 4. 確かめたこと
 
+2026-10-22 に「Run workflow」で v1.0.0 を作った。4つのビルドが通り、下書きに9つのインストーラーが付いた（Windows の `.msi`・`-setup.exe`、macOS の `.dmg`・`.app.tar.gz` を Apple Silicon と Intel で、Linux の `.AppImage`・`.deb`・`.rpm`。大きさは 28〜37 MiB、AppImage だけ 105 MiB）。
+
+- `.deb` には `usr/bin/` に `fluxlide`、`fluxlide-ffmpeg`、`fluxlide-ffprobe` が並び、`usr/lib/Fluxlide/` に `licenses/` と `sample/` が入っていた
+- macOS の `.app` には `Contents/MacOS/` に同じ3つ、`Contents/Resources/` に `licenses/` と `sample/` が入っていた
+- アプリは FFmpeg を自分の実行ファイルと同じフォルダで探すので、どちらでも見つかる
+
+## 5. まだ確かめていないこと
+
+- インストールしたアプリの起動と動作（[手動の確認項目](manual-checks.md)）
+- Windows のインストーラーと AppImage の中での FFmpeg の置き場所
 - 署名した macOS 版（hardened runtime での FFmpeg、公証）と、署名した Windows 版
-- 各 OS のインストーラーの中での FFmpeg の置き場所（特に AppImage）と、インストールしたアプリでの起動
-- macOS Intel 版のクロスビルド（`nasm` が要る）
