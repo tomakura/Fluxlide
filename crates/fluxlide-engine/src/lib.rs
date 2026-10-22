@@ -128,6 +128,11 @@ impl Renderer {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("fluxlide-device"),
+                // Small memory blocks: a slideshow makes and drops a texture
+                // or two per slide, and with the default large blocks the
+                // process grew by hundreds of megabytes over hours of
+                // looping (docs/quality.md). Drawing is far from the limit.
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
                 ..Default::default()
             })
             .await
