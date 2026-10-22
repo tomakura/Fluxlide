@@ -290,6 +290,10 @@ fn render_pass(
             if !show.is_waiting() {
                 break;
             }
+            if cancel.load(Ordering::Relaxed) {
+                encoder_process.abort();
+                return Err(EngineError::Export("the export was cancelled".into()));
+            }
             if waited > WAIT_TIMEOUT {
                 encoder_process.abort();
                 return Err(EngineError::Export(format!(
@@ -321,6 +325,10 @@ fn render_pass(
         let frames = (end - samples_written) as usize;
         let mut audio_waited = Duration::ZERO;
         while !mixer.has_samples_for(frames) {
+            if cancel.load(Ordering::Relaxed) {
+                encoder_process.abort();
+                return Err(EngineError::Export("the export was cancelled".into()));
+            }
             if audio_waited > WAIT_TIMEOUT {
                 encoder_process.abort();
                 return Err(EngineError::Export(format!(
