@@ -487,7 +487,7 @@ pub fn control_presentation(state: State<'_, PresentationState>, control: Contro
 }
 
 /// Opens the presentation of the open slideshow on monitor `monitor_index`.
-/// It waits on the title card until [`Control::Start`].
+/// The first slide starts as soon as it is ready.
 #[tauri::command]
 pub async fn start_presentation(
     app: AppHandle,
@@ -902,7 +902,6 @@ fn render_loop(
         playing.media_dir,
         presenter.size(),
     );
-    show.hold_start();
     let set_card = |show: &mut Slideshow, size| match Overlay::title_card(&renderer, &title, size) {
         Ok(card) => show.set_title_card(card),
         Err(err) => stats.lock().unwrap().last_error = Some(err.to_string()),
