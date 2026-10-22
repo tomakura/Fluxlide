@@ -16,8 +16,4 @@ worstFrameMs: number,
 /**
  * Frames that took more than 1.5 times the average interval.
  */
-slowFrames: number, skipped: number, width: number, height: number, lastError: string | null, 
-/**
- * Present while playing files rather than the test pattern.
- */
-playback: PlaybackStats | null, };
+slowFrames: number, skipped: number, width: number, height: number, lastError: string | null, playback: PlaybackStats | null, };
