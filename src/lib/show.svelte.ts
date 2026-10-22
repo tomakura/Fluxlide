@@ -24,9 +24,10 @@ class OpenShow {
     return this.state?.show ?? null;
   }
 
-  /// Takes a state from the Rust side, unless one already taken is newer.
+  /// Takes a state from the Rust side, unless one already taken from the
+  /// same session is newer.
   take(state: ShowState | null) {
-    if (state && this.state && state.dir === this.state.dir && state.revision < this.state.revision) {
+    if (state && this.state && state.session === this.state.session && state.revision < this.state.revision) {
       return;
     }
     this.state = state;

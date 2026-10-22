@@ -9,4 +9,9 @@ export type ShowState = {
  * Sent back with an edit, so that one made from an older state is
  * refused (see [`edit_show`]).
  */
-revision: number, dir: string, mediaDir: string, show: ShowDefinition, canUndo: boolean, canRedo: boolean, saveError: string | null, };
+revision: number, 
+/**
+ * Different for every time a project is opened; revisions count from
+ * the start in each.
+ */
+session: number, dir: string, mediaDir: string, show: ShowDefinition, canUndo: boolean, canRedo: boolean, saveError: string | null, };

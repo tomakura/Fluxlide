@@ -38,6 +38,9 @@ pub struct ShowState {
     /// Sent back with an edit, so that one made from an older state is
     /// refused (see [`edit_show`]).
     revision: u64,
+    /// Different for every time a project is opened; revisions count from
+    /// the start in each.
+    session: u64,
     dir: PathBuf,
     media_dir: PathBuf,
     show: ShowDefinition,
@@ -50,6 +53,7 @@ impl ShowState {
     pub fn of(session: &Session) -> Self {
         Self {
             revision: session.revision(),
+            session: session.epoch(),
             dir: session.dir().to_path_buf(),
             media_dir: session.media_dir(),
             show: session.show().clone(),
