@@ -1,12 +1,21 @@
-# Fluxlide release pipeline
-# This workflow intentionally runs only after a version tag (vX.Y.Z) is pushed.
-# The workflow has not yet been tested with a real tag.
+# Fluxlide release pipeline. Builds the installers for every OS and puts
+# them on a draft GitHub release, which is published by hand after the
+# builds have been checked (docs/release.md).
+#
+# Runs when a version tag (vX.Y.Z) is pushed, or by hand ("Run workflow")
+# with the version to build. Signing is used only when its secrets are set:
+# without them the installers are unsigned.
 name: Release
 
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, without the v (e.g. 1.0.0). It must match the app version.'
+        required: true
 
 permissions:
   contents: write
@@ -36,9 +45,38 @@ jobs:
             ffmpeg_target: x86_64-apple-darwin
             args: '--target x86_64-apple-darwin'
 
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
+      # Whether the signing secrets are there (secrets cannot be read in `if`).
+      SIGN_MACOS: ${{ secrets.APPLE_CERTIFICATE != '' }}
+      SIGN_WINDOWS: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
+      RELEASE_BODY: |
+        Fluxlide のインストーラーです。変更点と使い方は README と docs/release.md を見てください。
+
+        - Windows: `.msi` か `-setup.exe`
+        - macOS: Apple Silicon は `aarch64`、Intel は `x64` の `.dmg`
+        - Linux: `.AppImage`、`.deb`、`.rpm`
+
+        署名していない版は、初めて開くときに OS の警告が出ます（docs/release.md の「署名」）。
+
+        **同梱の FFmpeg**: FFmpeg 9.0.2 を LGPL v2.1 以降の構成でビルドした `fluxlide-ffmpeg` と `fluxlide-ffprobe` を、改変せずに同梱しています。ソースは https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz （SHA-256 `8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e`）、ビルドの手順はリポジトリの `scripts/build-ffmpeg.sh` です。ライセンスの全文はアプリの `licenses` フォルダにあります。
+
+        **特許**: H.264、HEVC、AAC などの形式は、国によって特許の対象になります。Fluxlide とその配布物は、特許の許諾を含みません。事業で使うときは、必要な許諾を各自で確かめてください。
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check the version
+        shell: bash
+        run: |
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::The tag $TAG does not match the app version $version (src-tauri/tauri.conf.json)."
+            exit 1
+          fi
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -70,16 +108,60 @@ jobs:
         with:
           target: ${{ matrix.ffmpeg_target }}
 
+      - name: Write the license notices
+        run: npm run licenses
+
+      # Windows: the certificate (a .pfx, base64) is imported and named to
+      # the bundler by its thumbprint in one more config file.
+      - name: Import the Windows signing certificate
+        if: runner.os == 'Windows' && env.SIGN_WINDOWS == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          Remove-Item $pfx
+          @{ bundle = @{ windows = @{
+            certificateThumbprint = $cert.Thumbprint
+            digestAlgorithm = 'sha256'
+            timestampUrl = 'http://timestamp.digicert.com'
+          } } } | ConvertTo-Json -Depth 4 | Set-Content src-tauri/tauri.windows-sign.conf.json
+          "SIGN_ARGS=--config src-tauri/tauri.windows-sign.conf.json" >> $env:GITHUB_ENV
+
+      # macOS: the bundler signs and notarizes when these are set; it tries
+      # even when they are empty, so the step without them is separate.
+      - name: Build and publish (macOS, signed)
+        if: runner.os == 'macOS' && env.SIGN_MACOS == 'true'
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: ${{ env.TAG }}
+          releaseName: 'Fluxlide ${{ env.TAG }}'
+          releaseBody: ${{ env.RELEASE_BODY }}
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }} --config src-tauri/tauri.bundle.conf.json
+
       - name: Build and publish
+        if: runner.os != 'macOS' || env.SIGN_MACOS != 'true'
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Fluxlide ${{ github.ref_name }}'
-          releaseBody: 'Cross-platform Fluxlide release. See the attached platform installers.'
-          # A draft until the FFmpeg source offer and the license notices in the
-          # app are settled (docs/spike-ffmpeg-bundling.md, 5.4).
+          tagName: ${{ env.TAG }}
+          releaseName: 'Fluxlide ${{ env.TAG }}'
+          releaseBody: ${{ env.RELEASE_BODY }}
           releaseDraft: true
           prerelease: false
-          args: ${{ matrix.args }} --config src-tauri/tauri.bundle.conf.json
+          args: ${{ matrix.args }} --config src-tauri/tauri.bundle.conf.json ${{ env.SIGN_ARGS }}
