@@ -13,6 +13,7 @@
   let { syncOffsetMs, onend }: { syncOffsetMs: number; onend: () => void } = $props();
 
   let status = $state<PresentationStatus | null>(null);
+  let saveError = $state<string | null>(null);
   let confirming = $state(false);
   let offset = $state(untrack(() => syncOffsetMs));
   let volume = $state<number | null>(null);
@@ -53,7 +54,7 @@
   function setOffset(ms: number) {
     offset = Math.max(-500, Math.min(1000, Math.round(ms)));
     send({ kind: "syncOffset", ms: offset });
-    api.setSyncOffset(offset);
+    api.setSyncOffset(offset).catch((err) => (saveError = `音ズレ補正を保存できません: ${err}`));
   }
 
   function onkeydown(event: KeyboardEvent) {
@@ -198,6 +199,7 @@
     <p class="keys hint">
       ← → 前へ・次へ　Space 一時停止　B 暗転　Esc 上映を終了
       {#if playback?.lastError}<span class="error">　{playback.lastError}</span>{/if}
+      {#if saveError}<span class="error">　{saveError}</span>{/if}
     </p>
   </footer>
 </div>
