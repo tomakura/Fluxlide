@@ -390,9 +390,8 @@ fn fade_out_tail(mut file: std::fs::File, frames: u64) -> std::io::Result<()> {
     file.read_exact(&mut tail)?;
     for (index, frame) in tail.chunks_exact_mut(frame_bytes as usize).enumerate() {
         let gain = 1.0 - (index + 1) as f32 / fade as f32;
-        for sample in frame.chunks_exact_mut(4) {
-            let value = f32::from_le_bytes(sample.try_into().expect("4 bytes")) * gain;
-            sample.copy_from_slice(&value.to_le_bytes());
+        for sample in frame.as_chunks_mut::<4>().0 {
+            *sample = (f32::from_le_bytes(*sample) * gain).to_le_bytes();
         }
     }
     file.seek(SeekFrom::Start(start))?;
@@ -764,8 +763,10 @@ mod tests {
             .unwrap();
         let samples: Vec<f32> = decoded
             .stdout
-            .chunks_exact(4)
-            .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|bytes| f32::from_le_bytes(*bytes))
             .collect();
         let loudness = |range: std::ops::Range<usize>| {
             let part = &samples[range];
