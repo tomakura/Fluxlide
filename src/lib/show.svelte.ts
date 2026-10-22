@@ -64,7 +64,10 @@ class OpenShow {
       for (let attempt = 0; attempt < 5; attempt++) {
         const current = this.#latest;
         if (!current || current.session !== session) return;
-        const next = $state.snapshot(current.show) as ShowDefinition;
+        // `#latest` is a plain object, not reactive state, which
+        // `$state.snapshot` would hand back as it is: the change must be
+        // made on a copy, not on the definition last received.
+        const next = structuredClone(current.show);
         change(next);
         try {
           const outcome = await api.editShow(next, current.session, current.revision, group);

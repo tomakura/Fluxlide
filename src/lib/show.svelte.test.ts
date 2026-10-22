@@ -59,11 +59,12 @@ describe("open.edit", () => {
   it("does not show an older reply while edits are still waiting", async () => {
     open.take(state(1, 0, ""));
     const rust = applying(state(1, 0, ""));
+    const apply = editShow.getMockImplementation()!;
     let release!: () => void;
     const held = new Promise<void>((resolve) => (release = resolve));
-    editShow.mockImplementationOnce(async (show) => {
+    editShow.mockImplementationOnce(async (...args) => {
       await held;
-      return { state: { ...rust(), revision: 1, show }, applied: true };
+      return apply(...args);
     });
     const first = open.edit((show) => (show.title = "a"));
     const second = open.edit((show) => (show.title = "ab"));
@@ -71,7 +72,19 @@ describe("open.edit", () => {
     expect(open.show?.title).toBe("");
     release();
     await Promise.all([first, second]);
+    expect(open.error).toBeNull();
+    expect(rust().show.title).toBe("ab");
     expect(open.show?.title).toBe("ab");
+  });
+
+  it("makes each change on a copy, not on the definition received", async () => {
+    const received = state(1, 0, "kept");
+    open.take(received);
+    applying(state(1, 0, "kept"));
+    await open.edit((show) => (show.title = "changed"));
+    expect(received.show.title).toBe("kept");
+    const [sent] = editShow.mock.calls[0];
+    expect(sent).not.toBe(received.show);
   });
 
   it("makes the change again when the definition changed meanwhile", async () => {
