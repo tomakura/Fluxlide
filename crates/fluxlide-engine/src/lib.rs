@@ -113,7 +113,10 @@ pub struct Renderer {
 impl Renderer {
     /// Opens the default high-performance GPU without a window surface.
     pub async fn new() -> Result<Self, EngineError> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        // `WGPU_BACKEND` (vulkan, dx12, metal, gl) chooses the graphics API, for
+        // telling a driver problem apart from ours.
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
