@@ -35,9 +35,14 @@
   function setWatermarkKind(kind: "none" | "text" | "image", select: HTMLSelectElement) {
     if (kind === "image") {
       // Without a logo chosen nothing changes, so the menu is put back.
-      chooseLogo().then((chosen) => {
-        if (!chosen) select.value = watermark?.content.kind ?? "none";
-      });
+      chooseLogo()
+        .catch((err) => {
+          open.error = String(err);
+          return false;
+        })
+        .then((chosen) => {
+          if (!chosen) select.value = watermark?.content.kind ?? "none";
+        });
       return;
     }
     open.edit((show) => {
