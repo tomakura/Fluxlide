@@ -3,4 +3,4 @@
 /**
  * What the operator can do during a presentation.
  */
-export type Control = { "kind": "start" } | { "kind": "next" } | { "kind": "previous" } | { "kind": "togglePause" } | { "kind": "toggleBlackout" } | { "kind": "nextTrack" } | { "kind": "musicVolume", volume: number, } | { "kind": "syncOffset", ms: number, };
+export type Control = { "kind": "start" } | { "kind": "pause" } | { "kind": "next" } | { "kind": "previous" } | { "kind": "togglePause" } | { "kind": "toggleBlackout" } | { "kind": "nextTrack" } | { "kind": "musicVolume", volume: number, } | { "kind": "syncOffset", ms: number, };

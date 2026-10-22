@@ -51,6 +51,8 @@ const UPCOMING: usize = 8;
 pub enum Control {
     /// Leaves the title card for the first slide.
     Start,
+    /// Pauses (does nothing when paused already).
+    Pause,
     Next,
     Previous,
     TogglePause,
@@ -352,6 +354,9 @@ impl PlaybackStats {
 pub struct PresentationStatus {
     running: bool,
     monitor_name: Option<String>,
+    /// The screen presented on is no longer connected; the show is paused
+    /// until it comes back.
+    screen_lost: bool,
     stats: FrameStats,
 }
 
@@ -362,6 +367,7 @@ struct Active {
     confirms_end: bool,
     /// Whether the window plays the test sound rather than a show.
     test_sound: bool,
+    screen_lost: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     controls: mpsc::Sender<Control>,
     stats: Arc<Mutex<FrameStats>>,
@@ -422,11 +428,13 @@ impl PresentationState {
             Some(active) => PresentationStatus {
                 running: !active.stop.load(Ordering::Relaxed),
                 monitor_name: Some(active.monitor_name.clone()),
+                screen_lost: active.screen_lost.load(Ordering::Relaxed),
                 stats: active.stats.lock().unwrap().clone(),
             },
             None => PresentationStatus {
                 running: false,
                 monitor_name: None,
+                screen_lost: false,
                 stats: FrameStats::default(),
             },
         }
@@ -559,11 +567,20 @@ async fn open_window(
     let confirms_end = monitors.len() > 1 && !test_sound;
     match run_presentation(&app, &window, renderer, position, size, content).await {
         Ok((stop, controls, stats, thread)) => {
+            let screen_lost = Arc::new(AtomicBool::new(false));
+            watch_screen(
+                app.clone(),
+                window.clone(),
+                name.clone(),
+                stop.clone(),
+                screen_lost.clone(),
+            );
             let active = Active {
                 window,
                 monitor_name: name,
                 confirms_end,
                 test_sound,
+                screen_lost,
                 stop,
                 controls,
                 stats,
@@ -583,6 +600,61 @@ async fn open_window(
             Err(err)
         }
     }
+}
+
+/// How often the screen presented on is looked for.
+const SCREEN_CHECK: Duration = Duration::from_secs(2);
+
+/// Watches for the screen named `name` to be disconnected (a cable pulled,
+/// a projector switched off), until `stop` is set. The OS then moves the
+/// window onto another screen, often the operator's: the show pauses, and
+/// `lost` tells the management window. When the screen comes back, the
+/// window goes back onto it; the operator resumes the show.
+fn watch_screen(
+    app: AppHandle,
+    window: tauri::Window,
+    name: String,
+    stop: Arc<AtomicBool>,
+    lost: Arc<AtomicBool>,
+) {
+    let _ = std::thread::Builder::new()
+        .name("fluxlide-screen".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(SCREEN_CHECK);
+                if stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                let Ok(monitors) = app.available_monitors() else {
+                    continue;
+                };
+                let screen = monitors
+                    .iter()
+                    .enumerate()
+                    .find(|(index, monitor)| monitor_name(monitor, *index) == name)
+                    .map(|(_, monitor)| monitor.clone());
+                match (screen, lost.load(Ordering::Relaxed)) {
+                    (None, false) => {
+                        lost.store(true, Ordering::Relaxed);
+                        app.state::<PresentationState>().send(Control::Pause);
+                    }
+                    (Some(screen), true) => {
+                        lost.store(false, Ordering::Relaxed);
+                        let _ = window.set_fullscreen(false);
+                        let position = *screen.position();
+                        #[cfg(target_os = "macos")]
+                        let _ = window.set_position(tauri::LogicalPosition::new(
+                            f64::from(position.x) / screen.scale_factor(),
+                            f64::from(position.y) / screen.scale_factor(),
+                        ));
+                        #[cfg(not(target_os = "macos"))]
+                        let _ = window.set_position(position);
+                        let _ = window.set_fullscreen(true);
+                    }
+                    _ => {}
+                }
+            }
+        });
 }
 
 /// What the presentation window shows.
@@ -789,7 +861,7 @@ fn render_loop(
     };
     set_card(&mut show, presenter.size());
     // The output stays on this thread and shares the playback clock (`start`).
-    let sound = open_sound(&mut show, start, &music, playing.sync_offset_ms);
+    let mut sound = open_sound(&mut show, start, &music, playing.sync_offset_ms);
     let mut last_frame: Option<Instant> = None;
     let mut window_start = start;
     let mut window_frames = 0u32;
@@ -797,6 +869,10 @@ fn render_loop(
     let mut average_interval: Option<Duration> = None;
 
     while !stop.load(Ordering::Relaxed) {
+        // The sound follows the system's output (a speaker connected or lost).
+        if let Some(output) = &mut sound.output {
+            output.follow_device();
+        }
         if let Some((width, height)) = pending_size.lock().unwrap().take() {
             presenter.resize(&renderer, width, height);
             if let Err(err) = show.set_output_size(presenter.size()) {
@@ -869,7 +945,7 @@ fn test_sound_loop(
     let start = Instant::now();
     let white = MediaTexture::from_rgba(&renderer, 1, 1, &[255; 4]);
     let schedule = BeepSchedule::new(1.0, 1.0).expect("a valid schedule");
-    let output = AudioOutput::open_with_sync_offset(start, sync_offset_ms);
+    let mut output = AudioOutput::open_with_sync_offset(start, sync_offset_ms);
     let _beeps = match &output {
         Ok(output) => Some(start_beeps(&output.mixer(), schedule, 0.5)),
         Err(err) => {
@@ -880,6 +956,9 @@ fn test_sound_loop(
     let card = |size| Overlay::title_card(&renderer, TEST_SOUND_TEXT, size).ok();
     let mut text = card(presenter.size());
     while !stop.load(Ordering::Relaxed) {
+        if let Ok(output) = &mut output {
+            output.follow_device();
+        }
         if let Some((width, height)) = pending_size.lock().unwrap().take() {
             presenter.resize(&renderer, width, height);
             text = card(presenter.size());
@@ -934,6 +1013,7 @@ fn apply(control: Control, show: &mut Slideshow, sound: &Sound) {
         Control::Next => show.next(),
         Control::Previous => show.previous(),
         // Space on the title card starts the show, as → does.
+        Control::Pause => show.pause(),
         Control::TogglePause if show.position(0).before_start => show.start(),
         Control::TogglePause if show.is_paused() => show.resume(),
         Control::TogglePause => show.pause(),
