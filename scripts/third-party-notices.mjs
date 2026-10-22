@@ -52,10 +52,12 @@ function npmPackages() {
   // build puts into the page.
   const seen = new Map();
   const visit = (name, from) => {
+    // As Node finds it: node_modules/<name> in this folder or the nearest
+    // one above (a scoped package's folder is two levels down).
     let dir = join(from, "node_modules", name);
     while (!existsSync(dir)) {
-      const parent = dirname(dirname(from));
-      if (parent === from) return;
+      const parent = dirname(from);
+      if (parent === from) throw new Error(`${name} (needed by ${from}) is not installed`);
       from = parent;
       dir = join(from, "node_modules", name);
     }
