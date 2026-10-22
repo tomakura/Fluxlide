@@ -432,6 +432,66 @@ fn layer_opacity_shows_what_is_behind_the_picture() {
 }
 
 #[test]
+fn transparent_parts_of_a_picture_show_what_is_behind_it() {
+    let Some(renderer) = test_renderer() else {
+        return;
+    };
+    // Premultiplied, as `load_image` uploads it: the left half transparent,
+    // the right half opaque red. A PNG may keep white under the transparent
+    // part; premultiplied, that is (0, 0, 0, 0).
+    let mut pixels = Vec::new();
+    for _row in 0..4 {
+        for x in 0..4 {
+            pixels.extend_from_slice(if x < 2 {
+                &[0, 0, 0, 0]
+            } else {
+                &[255, 0, 0, 255]
+            });
+        }
+    }
+    let picture = MediaTexture::from_rgba(&renderer, 4, 4, &pixels);
+    let pixels = render(
+        &renderer,
+        (16, 9),
+        Frame {
+            to: Some(cover(&picture)),
+            ..Default::default()
+        },
+    );
+    assert_close(
+        pixel(&pixels, 16, 3, 4),
+        [0, 0, 0],
+        0,
+        "transparent half on black",
+    );
+    assert_close(pixel(&pixels, 16, 12, 4), [255, 0, 0], 0, "opaque half");
+}
+
+#[test]
+fn a_png_keeps_no_color_under_its_transparent_parts() {
+    let dir = std::env::temp_dir().join(format!("fluxlide-png-alpha-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("cutout.png");
+    // White but fully transparent on the left, red and half transparent on
+    // the right.
+    image::RgbaImage::from_fn(4, 2, |x, _| {
+        if x < 2 {
+            image::Rgba([255, 255, 255, 0])
+        } else {
+            image::Rgba([255, 0, 0, 128])
+        }
+    })
+    .save(&path)
+    .unwrap();
+    let image = crate::media::decode_image(&path, (100, 100))
+        .unwrap()
+        .into_rgba8();
+    assert_eq!(image.get_pixel(0, 0).0, [0, 0, 0, 0]);
+    assert_eq!(image.get_pixel(3, 0).0, [128, 0, 0, 128]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn yuv_pictures_are_converted_with_limited_range() {
     let Some(renderer) = test_renderer() else {
         return;

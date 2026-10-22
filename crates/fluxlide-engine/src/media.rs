@@ -51,7 +51,8 @@ pub struct MediaTexture {
 }
 
 impl MediaTexture {
-    /// Creates an sRGB texture from tightly packed RGBA8 pixels.
+    /// Creates an sRGB texture from tightly packed RGBA8 pixels, their color
+    /// already multiplied by their alpha (as `load_image` makes them).
     pub fn from_rgba(renderer: &Renderer, width: u32, height: u32, pixels: &[u8]) -> Self {
         let texture = create_plane(
             renderer,
@@ -262,7 +263,7 @@ pub(crate) fn fit_limit(renderer: &Renderer, max_size: (u32, u32)) -> (u32, u32)
     (max_size.0.clamp(1, limit), max_size.1.clamp(1, limit))
 }
 
-fn decode_image(path: &Path, max_size: (u32, u32)) -> Result<DynamicImage, EngineError> {
+pub(crate) fn decode_image(path: &Path, max_size: (u32, u32)) -> Result<DynamicImage, EngineError> {
     decode_with_size(path, max_size).map(|(image, _)| image)
 }
 
@@ -275,7 +276,7 @@ fn decode_with_size(
     // A JPEG is decoded at a fraction of its size when that is enough: a
     // phone's 12-megapixel photo for a 1080p screen takes a quarter of the
     // memory and time. Anything it cannot read goes the usual way.
-    let (mut image, size) = match decode_jpeg_scaled(path, max_size) {
+    let (image, size) = match decode_jpeg_scaled(path, max_size) {
         Some(decoded) => decoded,
         None => {
             let image = decode_full(path)?;
@@ -283,11 +284,32 @@ fn decode_with_size(
             (image, size)
         }
     };
+    let mut image = premultiplied(image);
     if image.width() > max_size.0 || image.height() > max_size.1 {
         // `resize` keeps the aspect ratio and fits inside the bounds.
         image = image.resize(max_size.0, max_size.1, FilterType::Triangle);
     }
     Ok((image, size))
+}
+
+/// `image` with its color multiplied by its alpha, if it has one. A PNG
+/// keeps some color under its transparent parts (often black or white),
+/// which must not show, nor run into the edges when the picture is shrunk
+/// or filtered. Textures are drawn as premultiplied (`layer.wgsl`). The
+/// multiplication is on the sRGB values, which differs from linear light
+/// only at partly transparent edges.
+fn premultiplied(image: DynamicImage) -> DynamicImage {
+    if !image.color().has_alpha() {
+        return image;
+    }
+    let mut rgba = image.into_rgba8();
+    for pixel in rgba.pixels_mut() {
+        let alpha = u16::from(pixel[3]);
+        for channel in &mut pixel.0[..3] {
+            *channel = ((u16::from(*channel) * alpha + 127) / 255) as u8;
+        }
+    }
+    DynamicImage::ImageRgba8(rgba)
 }
 
 /// Decodes a JPEG with `jpeg-decoder`, which can leave out detail while
