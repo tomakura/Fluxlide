@@ -327,6 +327,9 @@ pub struct Look {
     pub caption: CaptionLook,
     pub watermark: Option<WatermarkSpec>,
     pub custom_transitions: Vec<CustomTransition>,
+    /// Slow zoom for every photo whose slide has none of its own. A slide
+    /// that should stay still while this is set has a motion of 1 to 1.
+    pub motion: Option<Motion>,
 }
 
 impl Default for Look {
@@ -339,6 +342,7 @@ impl Default for Look {
             caption: CaptionLook::default(),
             watermark: None,
             custom_transitions: Vec::new(),
+            motion: None,
         }
     }
 }

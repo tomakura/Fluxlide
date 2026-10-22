@@ -2,8 +2,10 @@
 
 import { fileUrl } from "./api";
 import type { Asset } from "./bindings/Asset";
+import type { Corner } from "./bindings/Corner";
 import type { Direction } from "./bindings/Direction";
 import type { Fit } from "./bindings/Fit";
+import type { Motion } from "./bindings/Motion";
 import type { ShowDefinition } from "./bindings/ShowDefinition";
 import type { Slide } from "./bindings/Slide";
 import type { TransitionChoice } from "./bindings/TransitionChoice";
@@ -14,6 +16,32 @@ export const MEDIA_FILTER = {
   name: "写真と動画",
   extensions: [...PHOTO_EXTENSIONS, ...VIDEO_EXTENSIONS],
 };
+
+export const MUSIC_FILTER = {
+  name: "音楽",
+  extensions: ["mp3", "m4a", "aac", "wav", "flac", "ogg", "oga", "opus", "aif", "aiff", "wma"],
+};
+
+export const CORNERS: Record<Corner, string> = {
+  topLeft: "左上",
+  topRight: "右上",
+  bottomLeft: "左下",
+  bottomRight: "右下",
+};
+
+/// The slow zooms offered, by name. "still" is a slide that stays still
+/// even when the look zooms every photo.
+export const ZOOMS: Record<"in" | "out" | "still", Motion> = {
+  in: { fromScale: 1, toScale: 1.15, fromOffset: [0, 0], toOffset: [0, 0] },
+  out: { fromScale: 1.15, toScale: 1, fromOffset: [0, 0], toOffset: [0, 0] },
+  still: { fromScale: 1, toScale: 1, fromOffset: [0, 0], toOffset: [0, 0] },
+};
+
+export function zoomOf(motion: Motion | null): "in" | "out" | "still" | "none" {
+  if (!motion) return "none";
+  if (motion.toScale === motion.fromScale) return "still";
+  return motion.toScale > motion.fromScale ? "in" : "out";
+}
 
 /// "10秒", "1.5秒", "1分20秒".
 export function seconds(ms: number): string {

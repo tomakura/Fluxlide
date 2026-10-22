@@ -9,7 +9,9 @@ import type { Control } from "./bindings/Control";
 import type { EditOutcome } from "./bindings/EditOutcome";
 import type { ImportProgress } from "./bindings/ImportProgress";
 import type { ImportResult } from "./bindings/ImportResult";
+import type { LoadedTransition } from "./bindings/LoadedTransition";
 import type { MonitorInfo } from "./bindings/MonitorInfo";
+import type { MusicSource } from "./bindings/MusicSource";
 import type { PresentationStatus } from "./bindings/PresentationStatus";
 import type { ProjectSummary } from "./bindings/ProjectSummary";
 import type { Settings } from "./bindings/Settings";
@@ -42,6 +44,11 @@ export const identifyMonitors = () => invoke<void>("identify_monitors");
 export const startPresentation = (monitorIndex: number) =>
   invoke<PresentationStatus>("start_presentation", { monitorIndex });
 export const stopPresentation = () => invoke<PresentationStatus>("stop_presentation");
+/// Flashes and beeps on a screen for setting the sound delay by ear. Ended
+/// by `stopTestSound`, which leaves a show started since alone.
+export const startTestSound = (monitorIndex: number) =>
+  invoke<PresentationStatus>("start_test_sound", { monitorIndex });
+export const stopTestSound = () => invoke<PresentationStatus>("stop_test_sound");
 export const presentationStatus = () => invoke<PresentationStatus>("presentation_status");
 export const controlPresentation = (control: Control) =>
   invoke<void>("control_presentation", { control });
@@ -53,6 +60,11 @@ export const stopPreview = () => invoke<void>("stop_preview");
 /// RGBA pixels followed by the width, the height and the slide on screen
 /// (0 for none) as little-endian u32.
 export const previewFrame = () => invoke<ArrayBuffer>("preview_frame");
+
+/// Reads a WGSL transition and checks that it compiles.
+export const loadTransition = (path: string) => invoke<LoadedTransition>("load_transition", { path });
+/// The names of the music files `source` plays.
+export const musicTracks = (source: MusicSource) => invoke<string[]>("music_tracks", { source });
 
 export const getSettings = () => invoke<Settings>("get_settings");
 export const setSyncOffset = (offsetMs: number) => invoke<Settings>("set_sync_offset", { offsetMs });

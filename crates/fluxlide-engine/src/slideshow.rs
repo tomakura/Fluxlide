@@ -43,8 +43,8 @@ use crate::media::audio::AudioTrack;
 use crate::media::video::{Ffmpeg, PlayRange, VideoPlayer};
 use crate::media::{MediaTexture, load_image};
 use crate::show::{
-    Advance, AssetKind, AtEnd, Order, ShowDefinition, Slide, SlideId, Timeline, TimelineEntry,
-    TransitionChoice, TransitionId, WatermarkSource, WatermarkSpec,
+    Advance, AssetKind, AtEnd, Look, Order, ShowDefinition, Slide, SlideId, Timeline,
+    TimelineEntry, TransitionChoice, TransitionId, WatermarkSource, WatermarkSpec,
 };
 use crate::{
     Caption, CaptionStyle, EngineError, Frame, Layer, Overlay, OverlayRef, Renderer, Transform,
@@ -134,14 +134,19 @@ impl Showing {
         ((now - self.anchor) / ms_to_secs(u64::from(self.entry.enter_ms))).clamp(0.0, 1.0) as f32
     }
 
-    /// The picture at `now`, placed by its framing and slow zoom.
-    fn layer(&self, now: f64, look_fit: crate::Fit) -> Layer<'_> {
+    /// The picture at `now`, placed by its framing and slow zoom. A photo
+    /// without a slow zoom of its own takes the look's.
+    fn layer(&self, now: f64, look: &Look) -> Layer<'_> {
         let framing = self.slide.framing;
         let mut transform = Transform {
             scale: framing.scale,
             offset: framing.offset,
         };
-        if let Some(motion) = self.slide.motion {
+        let motion = match self.media {
+            Prepared::Image(_) => self.slide.motion.or(look.motion),
+            Prepared::Video { .. } => self.slide.motion,
+        };
+        if let Some(motion) = motion {
             let span = ms_to_secs(self.entry.end_ms - self.entry.start_ms);
             let t = if span > 0.0 {
                 ((now - self.anchor) / span).clamp(0.0, 1.0) as f32
@@ -155,7 +160,7 @@ impl Showing {
             }
         }
         let mut layer = Layer::new(self.media.texture());
-        layer.fit = framing.fit.unwrap_or(look_fit);
+        layer.fit = framing.fit.unwrap_or(look.fit);
         layer.transform = transform;
         layer
     }
@@ -832,7 +837,6 @@ impl Slideshow {
             return self.ending_frame(start, card);
         }
         let progress = self.transition_progress();
-        let fit = self.show.look.fit;
         let in_transition = progress < 1.0;
         let mut overlays = Vec::with_capacity(3);
         // While pictures change, the old caption fades out in the first
@@ -874,8 +878,11 @@ impl Slideshow {
             self.current.as_ref().map(|showing| &showing.transition)
         };
         Frame {
-            from: outgoing.map(|s| s.layer(self.now, fit)),
-            to: self.current.as_ref().map(|s| s.layer(self.now, fit)),
+            from: outgoing.map(|s| s.layer(self.now, &self.show.look)),
+            to: self
+                .current
+                .as_ref()
+                .map(|s| s.layer(self.now, &self.show.look)),
             transition: transition
                 .filter(|_| in_transition)
                 .map(|transition| TransitionRun {
@@ -916,7 +923,7 @@ impl Slideshow {
         }
         overlays.extend(card((2.0 * progress - 1.0).max(0.0)));
         Frame {
-            from: current.map(|showing| showing.layer(self.now, self.show.look.fit)),
+            from: current.map(|showing| showing.layer(self.now, &self.show.look)),
             to: None,
             transition: current.map(|_| TransitionRun {
                 transition: &FADE_TO_BLACK,
@@ -1759,6 +1766,39 @@ mod tests {
         assert_eq!(current(&show), Some(SlideId(3)));
 
         update_until(&mut show, 1.5, |show| show.loading.is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn photos_without_a_slow_zoom_of_their_own_take_the_looks() {
+        let Some(renderer) = crate::test_renderer() else {
+            return;
+        };
+        let (dir, mut definition) = three_photos("look-motion", Playback::default());
+        definition.look.motion = Some(Motion {
+            from_scale: 1.0,
+            to_scale: 1.2,
+            from_offset: [0.0, 0.0],
+            to_offset: [0.0, 0.0],
+        });
+        // The second photo stays still.
+        definition.slides[1].motion = Some(Motion {
+            from_scale: 1.0,
+            to_scale: 1.0,
+            from_offset: [0.0, 0.0],
+            to_offset: [0.0, 0.0],
+        });
+        let mut show = Slideshow::new(renderer, definition, dir.clone(), (32, 32));
+        let scale = |show: &Slideshow| show.frame().to.as_ref().unwrap().transform.scale;
+        update_exactly(&mut show, 0.0);
+        // The first photo is on screen from 0 to 2.0: halfway at 1.0.
+        update_until(&mut show, 1.0, |show| show.ready.is_some());
+        assert!((scale(&show) - 1.1).abs() < 1e-6, "{}", scale(&show));
+        update_exactly(&mut show, 2.5);
+        assert_eq!(current(&show), Some(SlideId(2)));
+        assert_eq!(scale(&show), 1.0);
+
+        update_until(&mut show, 2.5, |show| show.loading.is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

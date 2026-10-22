@@ -16,10 +16,12 @@ use std::time::{Duration, Instant};
 
 use fluxlide_engine::audio::{AudioOutput, AudioStats};
 use fluxlide_engine::bgm::{Bgm, BgmConfig, BgmSource, BgmState, BgmStats, BgmTuning};
+use fluxlide_engine::calibration::{BeepSchedule, start_beeps};
 use fluxlide_engine::media::video::Ffmpeg;
 use fluxlide_engine::show::{MusicSource, ShowDefinition, SlideId};
 use fluxlide_engine::{
-    FrameOutcome, Overlay, Position, Presenter, Renderer, Scene, Slideshow, SlideshowStats,
+    Fit, Frame, FrameOutcome, Layer, MediaTexture, Overlay, OverlayRef, Position, Presenter,
+    Renderer, Scene, Slideshow, SlideshowStats,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
@@ -358,6 +360,8 @@ struct Active {
     monitor_name: String,
     /// Whether Esc in the presentation window asks the management window first.
     confirms_end: bool,
+    /// Whether the window plays the test sound rather than a show.
+    test_sound: bool,
     stop: Arc<AtomicBool>,
     controls: mpsc::Sender<Control>,
     stats: Arc<Mutex<FrameStats>>,
@@ -480,7 +484,36 @@ pub async fn start_presentation(
         let session = guard.as_ref().ok_or("スライドショーが開かれていません。")?;
         (session.show().clone(), session.media_dir())
     };
-    let sync_offset_ms = settings.get(&app).sync_offset_ms;
+    let content = Content::Show(Box::new(Playing {
+        show,
+        media_dir,
+        sync_offset_ms: settings.get(&app).sync_offset_ms,
+    }));
+    open_window(app, &state, monitor_index, content).await
+}
+
+/// Opens the test sound on monitor `monitor_index`: the screen flashes white
+/// with a beep once a second, so that the sound delay can be set by ear
+/// ([`Control::SyncOffset`]) until the two come together.
+#[tauri::command]
+pub async fn start_test_sound(
+    app: AppHandle,
+    state: State<'_, PresentationState>,
+    settings: State<'_, SettingsState>,
+    monitor_index: usize,
+) -> Result<PresentationStatus, String> {
+    let content = Content::TestSound {
+        sync_offset_ms: settings.get(&app).sync_offset_ms,
+    };
+    open_window(app, &state, monitor_index, content).await
+}
+
+async fn open_window(
+    app: AppHandle,
+    state: &PresentationState,
+    monitor_index: usize,
+    content: Content,
+) -> Result<PresentationStatus, String> {
     if let Some(active) = state.take_active() {
         shut_down(active).await;
     }
@@ -512,17 +545,15 @@ pub async fn start_presentation(
         .map_err(|err| err.to_string())?;
     // Any failure after this point must close the window and release the
     // keys, otherwise the "presenter" label stays taken until the app restarts.
-    let playing = Playing {
-        show,
-        media_dir,
-        sync_offset_ms,
-    };
-    match run_presentation(&app, &window, renderer, position, size, playing).await {
+    let test_sound = matches!(content, Content::TestSound { .. });
+    let confirms_end = monitors.len() > 1 && !test_sound;
+    match run_presentation(&app, &window, renderer, position, size, content).await {
         Ok((stop, controls, stats, thread)) => {
             *state.active.lock().unwrap() = Some(Active {
                 window,
                 monitor_name: name,
-                confirms_end: monitors.len() > 1,
+                confirms_end,
+                test_sound,
                 stop,
                 controls,
                 stats,
@@ -536,6 +567,13 @@ pub async fn start_presentation(
             Err(err)
         }
     }
+}
+
+/// What the presentation window shows.
+enum Content {
+    // Boxed: a definition is large next to the test sound's one number.
+    Show(Box<Playing>),
+    TestSound { sync_offset_ms: f64 },
 }
 
 /// What the presentation plays.
@@ -559,7 +597,7 @@ async fn run_presentation(
     renderer: Arc<Renderer>,
     position: tauri::PhysicalPosition<i32>,
     size: tauri::PhysicalSize<u32>,
-    playing: Playing,
+    content: Content,
 ) -> Result<RunningPresentation, String> {
     // Not `set_fullscreen_on_monitor`: it matches monitors by physical position,
     // and on macOS with mixed scale factors the physical ranges of displays
@@ -627,16 +665,25 @@ async fn run_presentation(
         let stats = stats.clone();
         std::thread::Builder::new()
             .name("fluxlide-presenter".into())
-            .spawn(move || {
-                render_loop(
+            .spawn(move || match content {
+                Content::Show(playing) => render_loop(
                     renderer,
                     presenter,
-                    playing,
+                    *playing,
                     control_rx,
                     stop,
                     stats,
                     pending_size,
-                )
+                ),
+                Content::TestSound { sync_offset_ms } => test_sound_loop(
+                    renderer,
+                    presenter,
+                    sync_offset_ms,
+                    control_rx,
+                    stop,
+                    stats,
+                    pending_size,
+                ),
             })
             .map_err(|err| err.to_string())?
     };
@@ -648,6 +695,25 @@ pub async fn stop_presentation(
     state: State<'_, PresentationState>,
 ) -> Result<PresentationStatus, String> {
     if let Some(active) = state.take_active() {
+        shut_down(active).await;
+    }
+    Ok(state.status())
+}
+
+/// Ends the test sound, but not a show that has taken its window since.
+#[tauri::command]
+pub async fn stop_test_sound(
+    state: State<'_, PresentationState>,
+) -> Result<PresentationStatus, String> {
+    let active = {
+        let mut active = state.active.lock().unwrap();
+        if active.as_ref().is_some_and(|active| active.test_sound) {
+            active.take()
+        } else {
+            None
+        }
+    };
+    if let Some(active) = active {
         shut_down(active).await;
     }
     Ok(state.status())
@@ -759,6 +825,80 @@ fn render_loop(
             Err(err) => {
                 stats.lock().unwrap().last_error = Some(err.to_string());
                 last_frame = None;
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+}
+
+/// Shown between the flashes of the test sound.
+const TEST_SOUND_TEXT: &str = "光と音が同時になるように、音ズレ補正を合わせてください";
+
+fn test_sound_loop(
+    renderer: Arc<Renderer>,
+    mut presenter: Presenter,
+    sync_offset_ms: f64,
+    controls: mpsc::Receiver<Control>,
+    stop: Arc<AtomicBool>,
+    stats: Arc<Mutex<FrameStats>>,
+    pending_size: Arc<Mutex<Option<(u32, u32)>>>,
+) {
+    let start = Instant::now();
+    let white = MediaTexture::from_rgba(&renderer, 1, 1, &[255; 4]);
+    let schedule = BeepSchedule::new(1.0, 1.0).expect("a valid schedule");
+    let output = AudioOutput::open_with_sync_offset(start, sync_offset_ms);
+    let _beeps = match &output {
+        Ok(output) => Some(start_beeps(&output.mixer(), schedule, 0.5)),
+        Err(err) => {
+            stats.lock().unwrap().last_error = Some(err.to_string());
+            None
+        }
+    };
+    let card = |size| Overlay::title_card(&renderer, TEST_SOUND_TEXT, size).ok();
+    let mut text = card(presenter.size());
+    while !stop.load(Ordering::Relaxed) {
+        if let Some((width, height)) = pending_size.lock().unwrap().take() {
+            presenter.resize(&renderer, width, height);
+            text = card(presenter.size());
+        }
+        for control in controls.try_iter() {
+            if let (Control::SyncOffset { ms }, Ok(output)) = (control, &output) {
+                let _ = output.mixer().set_sync_offset_ms(ms);
+            }
+        }
+        let time = start.elapsed().as_secs_f64();
+        let frame = if schedule.flash_at(time) {
+            let mut layer = Layer::new(&white);
+            layer.fit = Fit::Cover;
+            Frame {
+                from: None,
+                to: Some(layer),
+                transition: None,
+                overlays: Vec::new(),
+            }
+        } else {
+            Frame {
+                from: None,
+                to: None,
+                transition: None,
+                overlays: text
+                    .iter()
+                    .map(|overlay| OverlayRef {
+                        overlay,
+                        opacity: 1.0,
+                    })
+                    .collect(),
+            }
+        };
+        match presenter.render(&renderer, &Scene::Frame(frame)) {
+            Ok(FrameOutcome::Presented) => {
+                let mut stats = stats.lock().unwrap();
+                stats.frames += 1;
+                (stats.width, stats.height) = presenter.size();
+            }
+            Ok(FrameOutcome::Skipped) => std::thread::sleep(Duration::from_millis(16)),
+            Err(err) => {
+                stats.lock().unwrap().last_error = Some(err.to_string());
                 std::thread::sleep(Duration::from_millis(100));
             }
         }
