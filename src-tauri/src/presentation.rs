@@ -571,7 +571,7 @@ async fn open_window(
             watch_screen(
                 app.clone(),
                 window.clone(),
-                name.clone(),
+                ScreenId::of(monitor, &monitors),
                 stop.clone(),
                 screen_lost.clone(),
             );
@@ -605,7 +605,55 @@ async fn open_window(
 /// How often the screen presented on is looked for.
 const SCREEN_CHECK: Duration = Duration::from_secs(2);
 
-/// Watches for the screen named `name` to be disconnected (a cable pulled,
+/// How the screen presented on is found again. Screens of the same model
+/// share a name, and a screen without one is known only by where it is.
+enum ScreenId {
+    /// The name, and how many screens had it when the show started: one of
+    /// them gone means it may be ours. Where ours was, to go back there.
+    Named {
+        name: String,
+        count: usize,
+        position: tauri::PhysicalPosition<i32>,
+    },
+    Unnamed {
+        position: tauri::PhysicalPosition<i32>,
+    },
+}
+
+impl ScreenId {
+    fn of(monitor: &tauri::Monitor, monitors: &[tauri::Monitor]) -> Self {
+        let position = *monitor.position();
+        match monitor.name() {
+            Some(name) => Self::Named {
+                name: name.clone(),
+                count: monitors.iter().filter(|m| m.name() == Some(name)).count(),
+                position,
+            },
+            None => Self::Unnamed { position },
+        }
+    }
+
+    /// The screen among `monitors`, if all the screens it could be are there.
+    fn find(&self, monitors: &[tauri::Monitor]) -> Option<tauri::Monitor> {
+        match self {
+            Self::Named {
+                name,
+                count,
+                position,
+            } => {
+                let same: Vec<_> = monitors.iter().filter(|m| m.name() == Some(name)).collect();
+                let ours = same.iter().find(|m| m.position() == position);
+                (same.len() >= *count).then(|| (*ours.unwrap_or(&same[0])).clone())
+            }
+            Self::Unnamed { position } => monitors
+                .iter()
+                .find(|m| m.name().is_none() && m.position() == position)
+                .cloned(),
+        }
+    }
+}
+
+/// Watches for the screen `id` to be disconnected (a cable pulled,
 /// a projector switched off), until `stop` is set. The OS then moves the
 /// window onto another screen, often the operator's: the show pauses, and
 /// `lost` tells the management window. When the screen comes back, the
@@ -613,7 +661,7 @@ const SCREEN_CHECK: Duration = Duration::from_secs(2);
 fn watch_screen(
     app: AppHandle,
     window: tauri::Window,
-    name: String,
+    id: ScreenId,
     stop: Arc<AtomicBool>,
     lost: Arc<AtomicBool>,
 ) {
@@ -633,12 +681,7 @@ fn watch_screen(
                 if monitors.is_empty() {
                     continue;
                 }
-                let screen = monitors
-                    .iter()
-                    .enumerate()
-                    .find(|(index, monitor)| monitor_name(monitor, *index) == name)
-                    .map(|(_, monitor)| monitor.clone());
-                match (screen, lost.load(Ordering::Relaxed)) {
+                match (id.find(&monitors), lost.load(Ordering::Relaxed)) {
                     (None, false) => {
                         lost.store(true, Ordering::Relaxed);
                         app.state::<PresentationState>().send(Control::Pause);

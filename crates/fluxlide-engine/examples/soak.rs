@@ -62,6 +62,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let dir: PathBuf = args.next().ok_or("usage: soak <work dir> [hours]")?.into();
     let hours: f64 = args.next().map(|h| h.parse()).transpose()?.unwrap_or(2.0);
+    if !(hours.is_finite() && hours > 0.0) {
+        return Err(format!("the hours to play must be above 0, not {hours}").into());
+    }
     std::fs::create_dir_all(&dir)?;
     let renderer = Arc::new(Renderer::new_blocking()?);
     let ffmpeg = Ffmpeg::locate()?;
@@ -86,6 +89,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let report_every: f64 = std::env::var("SOAK_REPORT_SECS")
         .ok()
         .and_then(|secs| secs.parse().ok())
+        .filter(|secs: &f64| secs.is_finite() && *secs >= 1.0)
         .unwrap_or(600.0);
     let mut next_report = 0.0;
     for frame in 0..total_frames {
@@ -103,26 +107,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         mixer.render(samples_per_frame, time);
         if time >= next_report {
-            let stats = show.stats();
-            println!(
-                "{:6.1} min played in {:6.1} min: memory {}, Rust heap {} MB (peak {} MB), transitions {}, failed {}, late {}",
-                time / 60.0,
-                started.elapsed().as_secs_f64() / 60.0,
-                memory().map_or("?".into(), |(used, committed)| format!(
-                    "{} MB (committed {} MB)",
-                    used / 1_000_000,
-                    committed / 1_000_000
-                )),
-                LIVE.load(Ordering::Relaxed) / 1_000_000,
-                PEAK.swap(0, Ordering::Relaxed) / 1_000_000,
-                stats.transitions,
-                stats.failed_items,
-                stats.late_transitions,
-            );
+            report(&show, time, started);
             next_report += report_every;
         }
     }
+    // The end too, for what happened after the last report.
+    report(&show, total_frames as f64 / f64::from(FPS), started);
     Ok(())
+}
+
+fn report(show: &Slideshow, time: f64, started: Instant) {
+    let stats = show.stats();
+    println!(
+        "{:6.1} min played in {:6.1} min: memory {}, Rust heap {} MB (peak {} MB), transitions {}, failed {}, late {}",
+        time / 60.0,
+        started.elapsed().as_secs_f64() / 60.0,
+        memory().map_or("?".into(), |memory| memory.to_string()),
+        LIVE.load(Ordering::Relaxed) / 1_000_000,
+        PEAK.swap(0, Ordering::Relaxed) / 1_000_000,
+        stats.transitions,
+        stats.failed_items,
+        stats.late_transitions,
+    );
 }
 
 /// A photo, a video with sound and another photo, looping, with captions
@@ -215,15 +221,15 @@ fn make_show(ffmpeg: &Ffmpeg, dir: &Path) -> Result<ShowDefinition, Box<dyn std:
     Ok(show)
 }
 
-/// The memory of this process in use and committed: the working set and
-/// private bytes (Windows), or the resident set twice (Linux).
-fn memory() -> Option<(u64, u64)> {
+/// The memory of this process: the working set and private bytes on Windows,
+/// the resident set on Linux.
+fn memory() -> Option<String> {
     #[cfg(target_os = "linux")]
     {
         let status = std::fs::read_to_string("/proc/self/status").ok()?;
         let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;
         let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
-        Some((kb * 1000, kb * 1000))
+        Some(format!("{} MB", kb / 1000))
     }
     #[cfg(target_os = "windows")]
     {
@@ -236,8 +242,13 @@ fn memory() -> Option<(u64, u64)> {
             .output()
             .ok()?;
         let text = String::from_utf8_lossy(&output.stdout);
-        let mut numbers = text.split_whitespace().map(|n| n.parse().ok());
-        Some((numbers.next()??, numbers.next()??))
+        let mut numbers = text.split_whitespace().map(|n| n.parse::<u64>().ok());
+        let (used, committed) = (numbers.next()??, numbers.next()??);
+        Some(format!(
+            "{} MB (committed {} MB)",
+            used / 1_000_000,
+            committed / 1_000_000
+        ))
     }
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
