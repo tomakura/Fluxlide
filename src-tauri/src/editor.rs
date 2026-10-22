@@ -13,6 +13,7 @@ use ts_rs::TS;
 use crate::import;
 use crate::project::{self, Project};
 use crate::session::Session;
+use crate::settings::SettingsState;
 
 /// Sent with the current [`EditorState`] whenever the definition changes
 /// other than in answer to a command (an import finishing, for example).
@@ -37,6 +38,9 @@ pub struct ShowState {
     /// Sent back with an edit, so that one made from an older state is
     /// refused (see [`edit_show`]).
     revision: u64,
+    /// Different for every time a project is opened; revisions count from
+    /// the start in each.
+    session: u64,
     dir: PathBuf,
     media_dir: PathBuf,
     show: ShowDefinition,
@@ -49,6 +53,7 @@ impl ShowState {
     pub fn of(session: &Session) -> Self {
         Self {
             revision: session.revision(),
+            session: session.epoch(),
             dir: session.dir().to_path_buf(),
             media_dir: session.media_dir(),
             show: session.show().clone(),
@@ -99,12 +104,30 @@ pub fn projects_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|err| err.to_string())
 }
 
+/// The projects in the app's folder and those opened from elsewhere, most
+/// recently changed first.
 #[tauri::command]
-pub async fn list_projects(app: AppHandle) -> Result<Vec<ProjectSummary>, String> {
+pub async fn list_projects(
+    app: AppHandle,
+    settings: State<'_, SettingsState>,
+) -> Result<Vec<ProjectSummary>, String> {
     let root = projects_dir(&app)?;
-    let summaries = tauri::async_runtime::spawn_blocking(move || project::list(&root))
-        .await
-        .map_err(|err| err.to_string())?;
+    let elsewhere = settings.get(&app).recent_dirs;
+    let summaries = tauri::async_runtime::spawn_blocking(move || {
+        let mut found = project::list(&root);
+        // A folder that was moved or deleted since is left out.
+        found.extend(
+            elsewhere
+                .iter()
+                .filter(|dir| !dir.starts_with(&root))
+                .filter_map(|dir| project::summary(dir).ok()),
+        );
+        found.sort_by_key(|summary| std::cmp::Reverse(summary.updated_at));
+        found.dedup_by(|a, b| a.dir == b.dir);
+        found
+    })
+    .await
+    .map_err(|err| err.to_string())?;
     let scope = app.asset_protocol_scope();
     Ok(summaries
         .into_iter()
@@ -138,22 +161,36 @@ pub async fn create_project(
     .map_err(|err| err.to_string())?
 }
 
+/// Opens the project in `dir`. One outside the app's folder ("ほかの場所から
+/// 開く") is remembered for the home screen.
 #[tauri::command]
 pub async fn open_project(
     app: AppHandle,
     state: State<'_, EditorState>,
+    settings: State<'_, SettingsState>,
     dir: PathBuf,
 ) -> Result<ShowState, String> {
+    let elsewhere = !dir.starts_with(projects_dir(&app)?);
     let session = state.session();
-    tauri::async_runtime::spawn_blocking(move || {
-        // Imports of the session being closed stop before the media folder
-        // is cleaned, even when it is the same project opened again.
-        close(&session);
-        let (project, show) = Project::open(&dir).map_err(|err| err.to_string())?;
-        Ok(replace(&app, &session, Session::new(project, show)))
-    })
-    .await
-    .map_err(|err| err.to_string())?
+    let opened = {
+        let app = app.clone();
+        let dir = dir.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            // Imports of the session being closed stop before the media folder
+            // is cleaned, even when it is the same project opened again.
+            close(&session);
+            let (project, show) = Project::open(&dir).map_err(|err| err.to_string())?;
+            Ok(replace(&app, &session, Session::new(project, show)))
+        })
+        .await
+        .map_err(|err| err.to_string())?
+    };
+    // Only a project that opened is remembered, and the project is open
+    // even if the settings cannot be written.
+    if opened.is_ok() && elsewhere {
+        let _ = settings.update(&app, |settings| settings.remember_dir(&dir));
+    }
+    opened
 }
 
 fn close(slot: &Mutex<Option<Session>>) {
@@ -198,12 +235,13 @@ pub fn edit_show(
     state: State<'_, EditorState>,
     show: ShowDefinition,
     group: Option<String>,
+    session: u64,
     revision: u64,
 ) -> Result<EditOutcome, String> {
     let mut applied = false;
-    let state = with_session(&state, |session| {
-        if session.revision() == revision {
-            session.edit(show, group.as_deref());
+    let state = with_session(&state, |open| {
+        if open.epoch() == session && open.revision() == revision {
+            open.edit(show, group.as_deref());
             applied = true;
         }
     })?;

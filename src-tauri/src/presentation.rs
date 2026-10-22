@@ -1,63 +1,128 @@
-//! Prototype of the presentation window: a native window without a webview,
-//! placed fullscreen on the chosen display and rendered by wgpu on its own
-//! thread while the management window stays usable. It plays the show sent
-//! by the management window with transitions and captions, or a test
-//! pattern when the show has no slides. Video sound goes to the default audio
-//! output, with music from a folder as BGM that fades out while videos with
-//! sound play.
+//! The presentation window: a native window without a webview, placed
+//! fullscreen on the chosen display and rendered by wgpu on its own thread
+//! while the management window stays usable. It plays the open slideshow,
+//! starting on its title card until the operator starts it. Video sound
+//! goes to the default audio output, with the show's music as BGM that
+//! fades out while videos with sound play.
+//!
+//! The operator controls it from the management window (`control_presentation`)
+//! or with keys pressed while the presentation window is in front.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use fluxlide_engine::audio::{AudioOutput, AudioStats};
-use fluxlide_engine::bgm::{Bgm, BgmConfig, BgmSource, BgmState, BgmStats};
+use fluxlide_engine::bgm::{Bgm, BgmConfig, BgmSource, BgmState, BgmStats, BgmTuning};
 use fluxlide_engine::media::video::Ffmpeg;
-use fluxlide_engine::show::{Asset, AssetId, AssetKind, AssetMeta, AssetState, ShowDefinition};
+use fluxlide_engine::show::{MusicSource, ShowDefinition, SlideId};
 use fluxlide_engine::{
-    FrameOutcome, MediaKind, Presenter, Renderer, Scene, Slideshow, SlideshowStats,
+    FrameOutcome, Overlay, Position, Presenter, Renderer, Scene, Slideshow, SlideshowStats,
 };
-use serde::Serialize;
-use tauri::{AppHandle, Manager, State, WindowEvent};
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tauri_plugin_global_shortcut::{
     Code, GlobalShortcutExt, Shortcut, ShortcutEvent, ShortcutState,
 };
 use ts_rs::TS;
 
+use crate::editor::EditorState;
+use crate::settings::SettingsState;
+
 const WINDOW_LABEL: &str = "presenter";
 
-/// The presentation window has no webview, so it receives no key events.
-/// Esc is registered as a global shortcut while that window is in front:
-/// from the start of a presentation (macOS reports no focus event while the
-/// window moves into its fullscreen space) until it or the main window
-/// reports a focus change.
-fn escape_shortcut() -> Shortcut {
-    Shortcut::new(None, Code::Escape)
+/// Sent when Esc is pressed in the presentation window while the management
+/// window is on another screen: the operator confirms there.
+pub const END_REQUESTED: &str = "presentation-end-requested";
+/// Sent when the presentation has ended other than by `stop_presentation`.
+pub const ENDED: &str = "presentation-ended";
+
+/// Upcoming slides reported to the management window.
+const UPCOMING: usize = 8;
+
+/// What the operator can do during a presentation.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum Control {
+    /// Leaves the title card for the first slide.
+    Start,
+    Next,
+    Previous,
+    TogglePause,
+    ToggleBlackout,
+    NextTrack,
+    MusicVolume {
+        volume: f32,
+    },
+    SyncOffset {
+        ms: f64,
+    },
 }
 
-pub fn set_escape_enabled(app: &AppHandle, enabled: bool) {
+/// The presentation window has no webview, so it receives no key events.
+/// Its keys are registered as global shortcuts while that window is in
+/// front: from the start of a presentation (macOS reports no focus event
+/// while the window moves into its fullscreen space) until it or the main
+/// window reports a focus change.
+fn presenter_keys() -> [(Shortcut, Option<Control>); 7] {
+    let key = |code| Shortcut::new(None, code);
+    [
+        // Ends the presentation (`None`).
+        (key(Code::Escape), None),
+        (key(Code::ArrowRight), Some(Control::Next)),
+        // Presentation remotes send Page Down and Page Up.
+        (key(Code::PageDown), Some(Control::Next)),
+        (key(Code::ArrowLeft), Some(Control::Previous)),
+        (key(Code::PageUp), Some(Control::Previous)),
+        (key(Code::Space), Some(Control::TogglePause)),
+        (key(Code::KeyB), Some(Control::ToggleBlackout)),
+    ]
+}
+
+pub fn set_presenter_keys_enabled(app: &AppHandle, enabled: bool) {
     let shortcuts = app.global_shortcut();
-    let registered = shortcuts.is_registered(escape_shortcut());
-    if enabled && !registered {
-        let _ = shortcuts.register(escape_shortcut());
-    } else if !enabled && registered {
-        let _ = shortcuts.unregister(escape_shortcut());
+    for (shortcut, _) in presenter_keys() {
+        let registered = shortcuts.is_registered(shortcut);
+        if enabled && !registered {
+            let _ = shortcuts.register(shortcut);
+        } else if !enabled && registered {
+            let _ = shortcuts.unregister(shortcut);
+        }
     }
 }
 
-/// Global shortcut handler: Esc in the presentation window ends the presentation.
+/// Global shortcut handler for the keys of the presentation window.
 pub fn handle_shortcut(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEvent) {
-    if event.state() != ShortcutState::Pressed || *shortcut != escape_shortcut() {
+    if event.state() != ShortcutState::Pressed {
         return;
     }
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Some(active) = app.state::<PresentationState>().take_active() {
-            shut_down(active).await;
+    let Some((_, control)) = presenter_keys()
+        .into_iter()
+        .find(|(key, _)| key == shortcut)
+    else {
+        return;
+    };
+    let state = app.state::<PresentationState>();
+    match control {
+        Some(control) => state.send(control),
+        // With the management window on another screen, ending is confirmed
+        // there. With one screen, the operator cannot see that window.
+        None if state.confirms_end() => {
+            let _ = app.emit(END_REQUESTED, ());
         }
-    });
+        None => {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Some(active) = app.state::<PresentationState>().take_active() {
+                    shut_down(active).await;
+                    let _ = app.emit(ENDED, ());
+                }
+            });
+        }
+    }
 }
 
 #[derive(Serialize, TS)]
@@ -91,8 +156,41 @@ pub struct FrameStats {
     width: u32,
     height: u32,
     last_error: Option<String>,
-    /// Present while playing files rather than the test pattern.
     playback: Option<PlaybackStats>,
+}
+
+/// Where the presentation is, for the operator's screen.
+#[derive(Default, Clone, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct PositionInfo {
+    before_start: bool,
+    at_end: bool,
+    current: Option<SlideId>,
+    upcoming: Vec<SlideId>,
+    paused: bool,
+    blackout: bool,
+}
+
+impl From<Position> for PositionInfo {
+    fn from(position: Position) -> Self {
+        let Position {
+            before_start,
+            at_end,
+            current,
+            upcoming,
+            paused,
+            blackout,
+        } = position;
+        Self {
+            before_start,
+            at_end,
+            current,
+            upcoming,
+            paused,
+            blackout,
+        }
+    }
 }
 
 /// Slideshow measurements shown in the management window.
@@ -100,8 +198,9 @@ pub struct FrameStats {
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaybackStats {
-    current_slide: Option<u64>,
-    current_file: Option<String>,
+    position: PositionInfo,
+    /// Time since the presentation window opened.
+    elapsed_secs: f64,
     transitions: u64,
     late_transitions: u64,
     longest_wait_ms: f64,
@@ -129,6 +228,7 @@ pub struct MusicStats {
     state: &'static str,
     title: Option<String>,
     artist: Option<String>,
+    volume: f32,
     tracks_started: u64,
     tracks_failed: u64,
     underruns: u64,
@@ -136,8 +236,9 @@ pub struct MusicStats {
     last_error: Option<String>,
 }
 
-impl From<BgmStats> for MusicStats {
-    fn from(stats: BgmStats) -> Self {
+impl MusicStats {
+    fn of(bgm: &Bgm) -> Self {
+        let stats: BgmStats = bgm.stats();
         Self {
             state: match stats.state {
                 BgmState::Idle => "idle",
@@ -146,6 +247,7 @@ impl From<BgmStats> for MusicStats {
             },
             title: stats.now_playing.as_ref().map(|now| now.title.clone()),
             artist: stats.now_playing.and_then(|now| now.artist),
+            volume: bgm.tuning().volume,
             tracks_started: stats.tracks_started,
             tracks_failed: stats.tracks_failed,
             underruns: stats.underruns,
@@ -153,15 +255,6 @@ impl From<BgmStats> for MusicStats {
             last_error: stats.last_error,
         }
     }
-}
-
-/// Sound settings chosen in the management window.
-pub struct SoundOptions {
-    /// Folder of music played as BGM.
-    pub bgm_dir: Option<PathBuf>,
-    /// How much earlier the sound is delivered, for outputs such as
-    /// Bluetooth speakers that are heard later than they report.
-    pub sync_offset_ms: f64,
 }
 
 /// The sound side of a running presentation, owned by the render thread.
@@ -218,9 +311,9 @@ impl From<AudioStats> for SoundStats {
 }
 
 impl PlaybackStats {
-    fn from_slideshow(show: &Slideshow, sound: &Sound) -> Self {
+    fn from_slideshow(show: &Slideshow, sound: &Sound, elapsed_secs: f64) -> Self {
         let SlideshowStats {
-            current,
+            current: _,
             transitions,
             late_transitions,
             longest_wait_ms,
@@ -232,10 +325,8 @@ impl PlaybackStats {
             last_error,
         } = show.stats().clone();
         Self {
-            current_slide: current.map(|slide| slide.0),
-            current_file: show
-                .current_path()
-                .and_then(|path| Some(path.file_name()?.to_string_lossy().into_owned())),
+            position: show.position(UPCOMING).into(),
+            elapsed_secs,
             transitions,
             late_transitions,
             longest_wait_ms,
@@ -247,7 +338,7 @@ impl PlaybackStats {
             last_error,
             audio: show.audio_stats().map(SoundStats::from),
             audio_error: sound.audio_error.clone(),
-            bgm: sound.bgm.as_ref().map(|bgm| MusicStats::from(bgm.stats())),
+            bgm: sound.bgm.as_ref().map(MusicStats::of),
             bgm_error: sound.bgm_error.clone(),
         }
     }
@@ -265,7 +356,10 @@ pub struct PresentationStatus {
 struct Active {
     window: tauri::Window,
     monitor_name: String,
+    /// Whether Esc in the presentation window asks the management window first.
+    confirms_end: bool,
     stop: Arc<AtomicBool>,
+    controls: mpsc::Sender<Control>,
     stats: Arc<Mutex<FrameStats>>,
     thread: Option<JoinHandle<()>>,
 }
@@ -292,6 +386,20 @@ impl PresentationState {
 
     fn take_active(&self) -> Option<Active> {
         self.active.lock().unwrap().take()
+    }
+
+    fn send(&self, control: Control) {
+        if let Some(active) = self.active.lock().unwrap().as_ref() {
+            let _ = active.controls.send(control);
+        }
+    }
+
+    fn confirms_end(&self) -> bool {
+        self.active
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|active| active.confirms_end)
     }
 
     fn status(&self) -> PresentationStatus {
@@ -352,18 +460,27 @@ pub fn presentation_status(state: State<'_, PresentationState>) -> PresentationS
 }
 
 #[tauri::command]
+pub fn control_presentation(state: State<'_, PresentationState>, control: Control) {
+    state.send(control);
+}
+
+/// Opens the presentation of the open slideshow on monitor `monitor_index`.
+/// It waits on the title card until [`Control::Start`].
+#[tauri::command]
 pub async fn start_presentation(
     app: AppHandle,
     state: State<'_, PresentationState>,
+    editor: State<'_, EditorState>,
+    settings: State<'_, SettingsState>,
     monitor_index: usize,
-    show: ShowDefinition,
-    bgm_dir: Option<PathBuf>,
-    sync_offset_ms: Option<f64>,
 ) -> Result<PresentationStatus, String> {
-    let sound = SoundOptions {
-        bgm_dir,
-        sync_offset_ms: sync_offset_ms.unwrap_or(0.0),
+    let (show, media_dir) = {
+        let session = editor.session();
+        let guard = session.lock().unwrap();
+        let session = guard.as_ref().ok_or("スライドショーが開かれていません。")?;
+        (session.show().clone(), session.media_dir())
     };
+    let sync_offset_ms = settings.get(&app).sync_offset_ms;
     if let Some(active) = state.take_active() {
         shut_down(active).await;
     }
@@ -393,100 +510,47 @@ pub async fn start_presentation(
         )
         .build()
         .map_err(|err| err.to_string())?;
-    // Any failure after this point must close the window and release Esc,
-    // otherwise the "presenter" label stays taken until the app restarts.
-    match run_presentation(&app, &window, renderer, position, size, show, sound).await {
-        Ok((stop, stats, thread)) => {
+    // Any failure after this point must close the window and release the
+    // keys, otherwise the "presenter" label stays taken until the app restarts.
+    let playing = Playing {
+        show,
+        media_dir,
+        sync_offset_ms,
+    };
+    match run_presentation(&app, &window, renderer, position, size, playing).await {
+        Ok((stop, controls, stats, thread)) => {
             *state.active.lock().unwrap() = Some(Active {
                 window,
                 monitor_name: name,
+                confirms_end: monitors.len() > 1,
                 stop,
+                controls,
                 stats,
                 thread: Some(thread),
             });
             Ok(state.status())
         }
         Err(err) => {
-            set_escape_enabled(&app, false);
+            set_presenter_keys_enabled(&app, false);
             let _ = window.destroy();
             Err(err)
         }
     }
 }
 
-/// The slideshow of `show` as the presentation and the preview show it.
-/// Until photos and videos are copied into a managed folder, each asset's
-/// `file` is the absolute path of the original (see [`media_assets`]).
-pub fn build_slideshow(
-    renderer: Arc<Renderer>,
+/// What the presentation plays.
+struct Playing {
     show: ShowDefinition,
-    output_size: (u32, u32),
-) -> Slideshow {
-    Slideshow::new(renderer, show, PathBuf::new(), output_size)
+    media_dir: PathBuf,
+    sync_offset_ms: f64,
 }
 
-/// Describes the photos and videos at `files` as the assets of a show,
-/// numbered from 1 in the given order. Each asset's `file` is the absolute
-/// path and its title the file name, until importing copies files into a
-/// managed folder (stage 2, step 3). Videos are probed for their length.
-#[tauri::command]
-pub async fn media_assets(files: Vec<PathBuf>) -> Result<Vec<Asset>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let ffmpeg = Ffmpeg::locate().map_err(|err| err.to_string());
-        files
-            .iter()
-            .enumerate()
-            .map(|(index, path)| describe_asset(index as u64 + 1, path, &ffmpeg))
-            .collect()
-    })
-    .await
-    .map_err(|err| err.to_string())
-}
-
-fn describe_asset(id: u64, path: &Path, ffmpeg: &Result<Ffmpeg, String>) -> Asset {
-    let name = |part: Option<&std::ffi::OsStr>| {
-        part.map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default()
-    };
-    let mut asset = Asset {
-        id: AssetId(id),
-        kind: AssetKind::Photo,
-        file: path.to_string_lossy().into_owned(),
-        original_name: name(path.file_name()),
-        state: AssetState::Ready,
-        meta: AssetMeta {
-            title: name(path.file_stem()),
-            ..AssetMeta::default()
-        },
-        size: None,
-        duration_ms: None,
-        has_audio: false,
-    };
-    match MediaKind::from_path(path) {
-        Some(MediaKind::Image) => {}
-        Some(MediaKind::Video) => {
-            asset.kind = AssetKind::Video;
-            let probed = ffmpeg
-                .clone()
-                .and_then(|ffmpeg| ffmpeg.probe(path).map_err(|err| err.to_string()));
-            match probed {
-                Ok(info) => {
-                    asset.duration_ms = info.duration.map(|secs| (secs * 1000.0) as u32);
-                    asset.has_audio = info.has_audio;
-                }
-                Err(reason) => asset.state = AssetState::Failed { reason },
-            }
-        }
-        None => {
-            asset.state = AssetState::Failed {
-                reason: "対応していない種類のファイルです。".into(),
-            }
-        }
-    }
-    asset
-}
-
-type RunningPresentation = (Arc<AtomicBool>, Arc<Mutex<FrameStats>>, JoinHandle<()>);
+type RunningPresentation = (
+    Arc<AtomicBool>,
+    mpsc::Sender<Control>,
+    Arc<Mutex<FrameStats>>,
+    JoinHandle<()>,
+);
 
 /// Makes `window` fullscreen, attaches a surface and starts the render thread.
 async fn run_presentation(
@@ -495,8 +559,7 @@ async fn run_presentation(
     renderer: Arc<Renderer>,
     position: tauri::PhysicalPosition<i32>,
     size: tauri::PhysicalSize<u32>,
-    show: ShowDefinition,
-    sound: SoundOptions,
+    playing: Playing,
 ) -> Result<RunningPresentation, String> {
     // Not `set_fullscreen_on_monitor`: it matches monitors by physical position,
     // and on macOS with mixed scale factors the physical ranges of displays
@@ -541,7 +604,7 @@ async fn run_presentation(
         let pending_size = pending_size.clone();
         let app = app.clone();
         window.on_window_event(move |event| match event {
-            WindowEvent::Focused(focused) => set_escape_enabled(&app, *focused),
+            WindowEvent::Focused(focused) => set_presenter_keys_enabled(&app, *focused),
             WindowEvent::Resized(size) => {
                 *pending_size.lock().unwrap() = Some((size.width, size.height));
             }
@@ -549,18 +612,16 @@ async fn run_presentation(
                 *pending_size.lock().unwrap() = Some((new_inner_size.width, new_inner_size.height));
             }
             WindowEvent::Destroyed => {
-                set_escape_enabled(&app, false);
+                set_presenter_keys_enabled(&app, false);
                 stop.store(true, Ordering::Relaxed);
             }
             _ => {}
         });
     }
 
-    set_escape_enabled(app, true);
+    set_presenter_keys_enabled(app, true);
 
-    // Photos and videos are loaded at the display's full resolution.
-    let slideshow = (!show.slides.is_empty())
-        .then(|| build_slideshow(renderer.clone(), show, (size.width, size.height)));
+    let (controls, control_rx) = mpsc::channel();
     let thread = {
         let stop = stop.clone();
         let stats = stats.clone();
@@ -570,8 +631,8 @@ async fn run_presentation(
                 render_loop(
                     renderer,
                     presenter,
-                    slideshow,
-                    sound,
+                    playing,
+                    control_rx,
                     stop,
                     stats,
                     pending_size,
@@ -579,7 +640,7 @@ async fn run_presentation(
             })
             .map_err(|err| err.to_string())?
     };
-    Ok((stop, stats, thread))
+    Ok((stop, controls, stats, thread))
 }
 
 #[tauri::command]
@@ -599,7 +660,7 @@ pub fn stop_blocking(state: &PresentationState) {
         if let Some(thread) = active.thread.take() {
             let _ = thread.join();
         }
-        set_escape_enabled(active.window.app_handle(), false);
+        set_presenter_keys_enabled(active.window.app_handle(), false);
         let _ = active.window.destroy();
     }
 }
@@ -609,25 +670,37 @@ async fn shut_down(mut active: Active) {
     if let Some(thread) = active.thread.take() {
         let _ = tauri::async_runtime::spawn_blocking(move || thread.join()).await;
     }
-    set_escape_enabled(active.window.app_handle(), false);
+    set_presenter_keys_enabled(active.window.app_handle(), false);
     let _ = active.window.destroy();
 }
 
 fn render_loop(
     renderer: Arc<Renderer>,
     mut presenter: Presenter,
-    mut slideshow: Option<Slideshow>,
-    options: SoundOptions,
+    playing: Playing,
+    controls: mpsc::Receiver<Control>,
     stop: Arc<AtomicBool>,
     stats: Arc<Mutex<FrameStats>>,
     pending_size: Arc<Mutex<Option<(u32, u32)>>>,
 ) {
     let start = Instant::now();
-    // The output stays on this thread and shares the playback clock (`start`).
-    let sound = match slideshow.as_mut() {
-        Some(show) => open_sound(show, start, &options),
-        None => Sound::default(),
+    let title = playing.show.title.clone();
+    let music = playing.show.music.clone();
+    // Photos and videos are loaded at the display's full resolution.
+    let mut show = Slideshow::new(
+        renderer.clone(),
+        playing.show,
+        playing.media_dir,
+        presenter.size(),
+    );
+    show.hold_start();
+    let set_card = |show: &mut Slideshow, size| match Overlay::title_card(&renderer, &title, size) {
+        Ok(card) => show.set_title_card(card),
+        Err(err) => stats.lock().unwrap().last_error = Some(err.to_string()),
     };
+    set_card(&mut show, presenter.size());
+    // The output stays on this thread and shares the playback clock (`start`).
+    let sound = open_sound(&mut show, start, &music, playing.sync_offset_ms);
     let mut last_frame: Option<Instant> = None;
     let mut window_start = start;
     let mut window_frames = 0u32;
@@ -637,30 +710,19 @@ fn render_loop(
     while !stop.load(Ordering::Relaxed) {
         if let Some((width, height)) = pending_size.lock().unwrap().take() {
             presenter.resize(&renderer, width, height);
-            if let Some(Err(err)) = slideshow
-                .as_mut()
-                .map(|show| show.set_output_size(presenter.size()))
-            {
+            if let Err(err) = show.set_output_size(presenter.size()) {
                 stats.lock().unwrap().last_error = Some(err.to_string());
             }
+            set_card(&mut show, presenter.size());
+        }
+        for control in controls.try_iter() {
+            apply(control, &mut show, &sound);
         }
 
         let time = start.elapsed().as_secs_f64();
-        let outcome = match slideshow.as_mut() {
-            Some(show) => {
-                show.update(time);
-                presenter.render(&renderer, &Scene::Frame(show.frame()))
-            }
-            None => presenter.render(
-                &renderer,
-                &Scene::TestPattern {
-                    time_secs: time as f32,
-                },
-            ),
-        };
-        if let Some(show) = &slideshow {
-            stats.lock().unwrap().playback = Some(PlaybackStats::from_slideshow(show, &sound));
-        }
+        show.update(time);
+        let outcome = presenter.render(&renderer, &Scene::Frame(show.frame()));
+        stats.lock().unwrap().playback = Some(PlaybackStats::from_slideshow(&show, &sound, time));
 
         match outcome {
             Ok(FrameOutcome::Presented) => {
@@ -703,9 +765,78 @@ fn render_loop(
     }
 }
 
-/// Opens the audio output for `show` and starts the BGM on it.
-fn open_sound(show: &mut Slideshow, start: Instant, options: &SoundOptions) -> Sound {
-    let output = match AudioOutput::open_with_sync_offset(start, options.sync_offset_ms) {
+fn apply(control: Control, show: &mut Slideshow, sound: &Sound) {
+    match control {
+        Control::Start => show.start(),
+        Control::Next => show.next(),
+        Control::Previous => show.previous(),
+        // Space on the title card starts the show, as → does.
+        Control::TogglePause if show.position(0).before_start => show.start(),
+        Control::TogglePause if show.is_paused() => show.resume(),
+        Control::TogglePause => show.pause(),
+        Control::ToggleBlackout => {
+            let blackout = !show.position(0).blackout;
+            show.set_blackout(blackout);
+        }
+        Control::NextTrack => {
+            if let Some(bgm) = &sound.bgm {
+                bgm.next();
+            }
+        }
+        Control::MusicVolume { volume } => {
+            if let Some(bgm) = &sound.bgm {
+                let _ = bgm.set_volume(volume.clamp(0.0, 1.0));
+            }
+        }
+        Control::SyncOffset { ms } => {
+            if let Some(output) = &sound.output {
+                let _ = output.mixer().set_sync_offset_ms(ms);
+            }
+        }
+    }
+    // The music pauses with the show: a pause is usually for talking. Next
+    // and previous also end a pause.
+    if let Some(bgm) = &sound.bgm {
+        if show.is_paused() {
+            bgm.pause();
+        } else {
+            bgm.resume();
+        }
+    }
+}
+
+/// The BGM settings of the show's music.
+pub fn bgm_config(music: &fluxlide_engine::show::Music) -> BgmConfig {
+    let secs = |ms: u32| f64::from(ms) / 1000.0;
+    BgmConfig {
+        shuffle: music.shuffle,
+        seed: None,
+        tuning: BgmTuning {
+            volume: music.volume.clamp(0.0, 1.0),
+            fade_secs: secs(music.fade_ms),
+            gap_secs: secs(music.gap_ms),
+            duck_fade_out_secs: secs(music.duck_fade_out_ms),
+            duck_fade_in_secs: secs(music.duck_fade_in_ms),
+            ..BgmTuning::default()
+        },
+    }
+}
+
+pub fn bgm_source(source: &MusicSource) -> BgmSource {
+    match source {
+        MusicSource::Folder { path } => BgmSource::Folder(PathBuf::from(path)),
+        MusicSource::Files { paths } => BgmSource::Files(paths.iter().map(PathBuf::from).collect()),
+    }
+}
+
+/// Opens the audio output for `show` and starts the show's music on it.
+fn open_sound(
+    show: &mut Slideshow,
+    start: Instant,
+    music: &fluxlide_engine::show::Music,
+    sync_offset_ms: f64,
+) -> Sound {
+    let output = match AudioOutput::open_with_sync_offset(start, sync_offset_ms) {
         Ok(output) => output,
         Err(err) => {
             return Sound {
@@ -716,21 +847,20 @@ fn open_sound(show: &mut Slideshow, start: Instant, options: &SoundOptions) -> S
     };
     show.set_audio(output.mixer());
     let mut sound = Sound::default();
-    if let Some(dir) = &options.bgm_dir {
+    if let Some(source) = &music.source {
         let bgm = Ffmpeg::locate().and_then(|ffmpeg| {
             Bgm::start(
                 ffmpeg,
                 &output.mixer(),
-                &BgmSource::Folder(dir.clone()),
-                BgmConfig {
-                    shuffle: true,
-                    ..BgmConfig::default()
-                },
+                &bgm_source(source),
+                bgm_config(music),
             )
         });
         match bgm {
             Ok(bgm) => {
-                show.set_ducker(bgm.ducker());
+                if music.duck_for_videos {
+                    show.set_ducker(bgm.ducker());
+                }
                 sound.bgm = Some(bgm);
             }
             Err(err) => sound.bgm_error = Some(err.to_string()),

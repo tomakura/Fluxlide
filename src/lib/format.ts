@@ -1,0 +1,92 @@
+// How the definition is put into words and numbers on screen.
+
+import { fileUrl } from "./api";
+import type { Asset } from "./bindings/Asset";
+import type { Direction } from "./bindings/Direction";
+import type { Fit } from "./bindings/Fit";
+import type { ShowDefinition } from "./bindings/ShowDefinition";
+import type { Slide } from "./bindings/Slide";
+import type { TransitionChoice } from "./bindings/TransitionChoice";
+
+export const PHOTO_EXTENSIONS = ["jpg", "jpeg", "png"];
+export const VIDEO_EXTENSIONS = ["mp4", "m4v", "mov"];
+export const MEDIA_FILTER = {
+  name: "写真と動画",
+  extensions: [...PHOTO_EXTENSIONS, ...VIDEO_EXTENSIONS],
+};
+
+/// "10秒", "1.5秒", "1分20秒".
+export function seconds(ms: number): string {
+  const secs = Math.round(ms / 100) / 10;
+  if (secs < 60) return `${secs}秒`;
+  const whole = Math.round(secs);
+  const minutes = Math.floor(whole / 60);
+  const rest = whole - minutes * 60;
+  return rest ? `${minutes}分${rest}秒` : `${minutes}分`;
+}
+
+/// "0:05", "12:34", "1:02:03" for a running time.
+export function clock(totalSecs: number): string {
+  const secs = Math.floor(totalSecs);
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = String(secs % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${s}` : `${m}:${s}`;
+}
+
+export const DIRECTIONS: Record<Direction, string> = {
+  left: "左へ",
+  right: "右へ",
+  up: "上へ",
+  down: "下へ",
+};
+
+export function transitionName(choice: TransitionChoice, show: ShowDefinition): string {
+  switch (choice.kind) {
+    case "cut":
+      return "カット";
+    case "fade":
+      return "フェード";
+    case "slide":
+      return `スライド（${DIRECTIONS[choice.direction]}）`;
+    case "wipe":
+      return `ワイプ（${DIRECTIONS[choice.direction]}）`;
+    case "zoom":
+      return "ズーム";
+    case "custom":
+      return show.look.customTransitions.find((t) => t.id === choice.id)?.name ?? "カスタム";
+  }
+}
+
+export const FITS: Record<Fit, string> = {
+  blur: "ぼかし背景",
+  contain: "黒帯",
+  cover: "トリミング",
+};
+
+/// What the slide actually uses: its own settings, or the look's.
+export function effective(slide: Slide, show: ShowDefinition) {
+  const transition = slide.transition ?? show.look.transition;
+  return {
+    durationMs: slide.durationMs ?? show.look.photoMs,
+    transition,
+    transitionMs: transition.kind === "cut" ? 0 : (slide.transitionMs ?? show.look.transitionMs),
+    fit: slide.framing.fit ?? show.look.fit,
+  };
+}
+
+/// The thumbnail made when `asset` was imported.
+export function thumbnailUrl(mediaDir: string, asset: Asset): string {
+  const separator = mediaDir.includes("\\") ? "\\" : "/";
+  return fileUrl([mediaDir, "thumbs", `${asset.file}.jpg`].join(separator));
+}
+
+/// How long a slide is on screen, as shown in the list.
+export function slideLength(slide: Slide, asset: Asset | undefined, show: ShowDefinition): string {
+  if (asset?.kind === "video") {
+    if (asset.durationMs === null) return "動画";
+    const end = Math.min(slide.video.endMs ?? asset.durationMs, asset.durationMs);
+    return `動画 ${seconds(Math.max(0, end - slide.video.startMs))}`;
+  }
+  return seconds(effective(slide, show).durationMs);
+}

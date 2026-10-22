@@ -1,844 +1,118 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
-  import { open } from "@tauri-apps/plugin-dialog";
-  import { showOfFiles } from "$lib/show";
+  // The management window: the home screen, the editor, and the operator's
+  // screen while presenting (docs/ui-draft.md, A to D).
+  import * as api from "$lib/api";
+  import type { MonitorInfo } from "$lib/bindings/MonitorInfo";
+  import Editor from "$lib/components/Editor.svelte";
+  import Home from "$lib/components/Home.svelte";
+  import OutputDialog from "$lib/components/OutputDialog.svelte";
+  import Presenting from "$lib/components/Presenting.svelte";
+  import { open } from "$lib/show.svelte";
 
-  type EngineStatus = {
-    gpuName: string;
-    backend: string;
-    deviceType: string;
-  };
-
-  type MonitorInfo = {
-    index: number;
-    name: string;
-    width: number;
-    height: number;
-    x: number;
-    y: number;
-    scaleFactor: number;
-    isPrimary: boolean;
-    hasMainWindow: boolean;
-  };
-
-  type VideoDecoderStatus = {
-    path: string | null;
-    version: string | null;
-    error: string | null;
-  };
-
-  type SoundStats = {
-    device: string;
-    sampleRate: number;
-    outputLatencyMs: number;
-    syncOffsetMs: number;
-    offsetMs: number;
-    maxOffsetMs: number;
-    resyncs: number;
-    underruns: number;
-    lastError: string | null;
-  };
-
-  type MusicStats = {
-    state: "idle" | "playing" | "gap";
-    title: string | null;
-    artist: string | null;
-    tracksStarted: number;
-    tracksFailed: number;
-    underruns: number;
-    starvedTransitions: number;
-    lastError: string | null;
-  };
-
-  type PlaybackStats = {
-    currentSlide: number | null;
-    currentFile: string | null;
-    transitions: number;
-    lateTransitions: number;
-    longestWaitMs: number;
-    lastLoadMs: number;
-    videoLateFrames: number;
-    videoSkippedFrames: number;
-    failedItems: number;
-    skippedSlides: number;
-    lastError: string | null;
-    audio: SoundStats | null;
-    audioError: string | null;
-    bgm: MusicStats | null;
-    bgmError: string | null;
-  };
-
-  type FrameStats = {
-    frames: number;
-    fps: number;
-    worstFrameMs: number;
-    slowFrames: number;
-    skipped: number;
-    width: number;
-    height: number;
-    lastError: string | null;
-    playback: PlaybackStats | null;
-  };
-
-  type PresentationStatus = {
-    running: boolean;
-    monitorName: string | null;
-    stats: FrameStats;
-  };
-
-  let engine = $state<EngineStatus | null>(null);
-  let engineError = $state<string | null>(null);
-  let monitors = $state<MonitorInfo[]>([]);
-  let selected = $state<number | null>(null);
-  let status = $state<PresentationStatus | null>(null);
-  let busy = $state(false);
-  let actionError = $state<string | null>(null);
-  let decoder = $state<VideoDecoderStatus | null>(null);
-
-  const IMAGE_EXTENSIONS = ["jpg", "jpeg", "png"];
-  const VIDEO_EXTENSIONS = ["mp4", "m4v", "mov"];
-  const FILES_KEY = "fluxlide.spike.files";
-  const SOUND_KEY = "fluxlide.spike.sound";
-
-  let files = $state<string[]>(loadSavedFiles());
-  let sound = $state<{ bgmDir: string | null; syncOffsetMs: number }>(loadSavedSound());
-
-  function loadSavedSound() {
-    try {
-      const saved = JSON.parse(localStorage.getItem(SOUND_KEY) ?? "{}");
-      return {
-        bgmDir: typeof saved.bgmDir === "string" ? saved.bgmDir : null,
-        syncOffsetMs: typeof saved.syncOffsetMs === "number" ? saved.syncOffsetMs : 0,
-      };
-    } catch {
-      return { bgmDir: null, syncOffsetMs: 0 };
-    }
-  }
-
-  function saveSound() {
-    try {
-      localStorage.setItem(SOUND_KEY, JSON.stringify(sound));
-    } catch {
-      // Remembering the settings is a convenience only.
-    }
-  }
-
-  async function pickBgmDir() {
-    const picked = await open({ multiple: false, directory: true });
-    if (typeof picked === "string") {
-      sound.bgmDir = picked;
-      saveSound();
-    }
-  }
-
-  const BGM_STATES = { idle: "準備中", playing: "再生中", gap: "曲間" } as const;
-
-  // Preview: frames drawn by the engine offscreen, fetched one at a time.
-  const PREVIEW_CSS_WIDTH = 640;
-  let previewCanvas = $state<HTMLCanvasElement | null>(null);
-  let previewing = $state(false);
-  let previewError = $state<string | null>(null);
-  let previewStats = $state<{ fps: number; frameMs: number; width: number; height: number } | null>(null);
-  // Each start gets a new number; a loop whose number is no longer current
-  // (stopped or restarted meanwhile) ends quietly.
-  let previewGeneration = 0;
-
-  async function startPreview() {
-    if (!previewCanvas) return;
-    previewError = null;
-    const scale = Math.min(window.devicePixelRatio || 1, 2);
-    const width = Math.round((PREVIEW_CSS_WIDTH * scale) / 2) * 2;
-    const height = Math.round((width * 9) / 16 / 2) * 2;
-    try {
-      await invoke("start_preview", { show: await showOfFiles(files), width, height });
-    } catch (err) {
-      previewError = String(err);
-      return;
-    }
-    previewing = true;
-    pumpPreview(previewCanvas, ++previewGeneration);
-  }
-
-  async function stopPreview() {
-    previewing = false;
-    previewGeneration++;
-    await invoke("stop_preview");
-  }
-
-  async function pumpPreview(canvas: HTMLCanvasElement, generation: number) {
-    const context = canvas.getContext("2d");
-    if (!context) return;
-    let windowStart = performance.now();
-    let frames = 0;
-    let busyMs = 0;
-    while (generation === previewGeneration) {
-      const started = performance.now();
-      let buffer: ArrayBuffer;
-      try {
-        buffer = await invoke<ArrayBuffer>("preview_frame");
-      } catch (err) {
-        if (generation === previewGeneration) {
-          previewError = String(err);
-          previewing = false;
-        }
-        return;
-      }
-      if (generation !== previewGeneration) return;
-      // Pixels, then width and height as little-endian u32.
-      const tail = new DataView(buffer, buffer.byteLength - 8);
-      const width = tail.getUint32(0, true);
-      const height = tail.getUint32(4, true);
-      if (canvas.width !== width || canvas.height !== height) {
-        canvas.width = width;
-        canvas.height = height;
-      }
-      const pixels = new Uint8ClampedArray(buffer, 0, width * height * 4);
-      context.putImageData(new ImageData(pixels, width, height), 0, 0);
-      frames += 1;
-      busyMs += performance.now() - started;
-      const elapsed = performance.now() - windowStart;
-      if (elapsed >= 1000) {
-        previewStats = { fps: (frames * 1000) / elapsed, frameMs: busyMs / frames, width, height };
-        windowStart = performance.now();
-        frames = 0;
-        busyMs = 0;
-      }
-      // At most one frame per display refresh.
-      await new Promise((resolve) => requestAnimationFrame(resolve));
-    }
-  }
-
-  function loadSavedFiles(): string[] {
-    try {
-      const saved = JSON.parse(localStorage.getItem(FILES_KEY) ?? "[]");
-      return Array.isArray(saved) ? saved.filter((f) => typeof f === "string") : [];
-    } catch {
-      return [];
-    }
-  }
-
-  function fileName(path: string) {
-    return path.split(/[\\/]/).pop() ?? path;
-  }
-
-  function fileKind(path: string) {
-    const ext = path.split(".").pop()?.toLowerCase() ?? "";
-    if (IMAGE_EXTENSIONS.includes(ext)) return "写真";
-    if (VIDEO_EXTENSIONS.includes(ext)) return "動画";
-    return "不明";
-  }
-
-  function setFiles(next: string[]) {
-    files = next;
-    try {
-      localStorage.setItem(FILES_KEY, JSON.stringify(next));
-    } catch {
-      // Remembering the list is a convenience only.
-    }
-  }
-
-  async function addFiles() {
-    const picked = await open({
-      multiple: true,
-      directory: false,
-      filters: [{ name: "写真と動画", extensions: [...IMAGE_EXTENSIONS, ...VIDEO_EXTENSIONS] }],
-    });
-    if (picked) setFiles([...files, ...picked]);
-  }
-
-  function moveFile(index: number, delta: number) {
-    const target = index + delta;
-    if (target < 0 || target >= files.length) return;
-    const next = [...files];
-    [next[index], next[target]] = [next[target], next[index]];
-    setFiles(next);
-  }
-
-  function removeFile(index: number) {
-    setFiles(files.filter((_, i) => i !== index));
-  }
-
-  async function loadMonitors() {
-    monitors = await invoke<MonitorInfo[]>("list_monitors");
-    if (selected === null || !monitors.some((m) => m.index === selected)) {
-      // Prefer a display other than the one showing this window.
-      selected = (monitors.find((m) => !m.hasMainWindow) ?? monitors[0])?.index ?? null;
-    }
-  }
-
-  async function start() {
-    if (selected === null) return;
-    busy = true;
-    actionError = null;
-    try {
-      status = await invoke<PresentationStatus>("start_presentation", {
-        monitorIndex: selected,
-        show: await showOfFiles(files),
-        bgmDir: sound.bgmDir,
-        syncOffsetMs: sound.syncOffsetMs,
-      });
-    } catch (err) {
-      actionError = String(err);
-    } finally {
-      busy = false;
-    }
-  }
-
-  async function stop() {
-    busy = true;
-    try {
-      status = await invoke<PresentationStatus>("stop_presentation");
-    } finally {
-      busy = false;
-    }
-  }
+  type Screen = "loading" | "home" | "editor" | "presenting";
+  let screen = $state<Screen>("loading");
+  let choosing = $state<MonitorInfo[] | null>(null);
+  let notice = $state<string | null>(null);
+  let error = $state<string | null>(null);
+  let syncOffsetMs = $state(0);
+  // From "▶ 上映する" until the presentation opens, so pressing it again
+  // does not open a second one.
+  let starting = false;
 
   $effect(() => {
-    invoke<EngineStatus>("engine_status")
-      .then((result) => (engine = result))
-      .catch((err) => (engineError = String(err)));
-    loadMonitors().catch((err) => (actionError = String(err)));
-    invoke<VideoDecoderStatus>("video_decoder_status").then((result) => (decoder = result));
-
-    const timer = setInterval(async () => {
-      status = await invoke<PresentationStatus>("presentation_status");
-    }, 500);
-    return () => clearInterval(timer);
+    api.showState().then((state) => {
+      open.take(state);
+      screen = state ? "editor" : "home";
+    });
   });
-</script>
 
-<main>
-  <header>
-    <div class="brand">
-      <img src="/fluxlide-mark.svg" alt="" width="40" height="40" />
-      <h1>Fluxlide</h1>
-    </div>
-    <p class="engine" aria-live="polite">
-      {#if engine}
-        <span class="dot ok"></span>描画エンジン: {engine.gpuName}（{engine.backend}）
-      {:else if engineError}
-        <span class="dot err"></span>描画エンジンを起動できませんでした: {engineError}
-      {:else}
-        <span class="dot"></span>描画エンジンを起動しています…
-      {/if}
-    </p>
-  </header>
-
-  <section>
-    <div class="section-head">
-      <h2>上映ウィンドウの検証</h2>
-      <p>
-        選んだ画面に、素材を上から順にフェードでつないで全画面で映し、最後まで行ったら最初に戻ります。素材がなければテストパターンを映します。上映中もこの画面は操作できます。
-      </p>
-    </div>
-
-    <div class="media">
-      <div class="media-head">
-        <h3>上映する素材</h3>
-        <p>写真（JPEG・PNG）は10秒ずつ（前後の切り替えの1秒は別）、動画（MP4など）は音とともに最後まで流します。写真→動画→写真の順に並べると、切り替えを確かめられます。</p>
-      </div>
-      {#if files.length > 0}
-        <ol class="files">
-          {#each files as file, index (index)}
-            <li class:now={status?.running && status.stats.playback?.currentSlide === index + 1}>
-              <span class="kind">{fileKind(file)}</span>
-              <span class="name" title={file}>{fileName(file)}</span>
-              <span class="tools">
-                <button class="icon" onclick={() => moveFile(index, -1)} disabled={status?.running || index === 0} aria-label="上へ">↑</button>
-                <button class="icon" onclick={() => moveFile(index, 1)} disabled={status?.running || index === files.length - 1} aria-label="下へ">↓</button>
-                <button class="icon" onclick={() => removeFile(index)} disabled={status?.running} aria-label="外す">✕</button>
-              </span>
-            </li>
-          {/each}
-        </ol>
-      {:else}
-        <p class="empty">素材がありません。テストパターンを映します。</p>
-      {/if}
-      <div class="media-actions">
-        <button onclick={addFiles} disabled={status?.running}>素材を追加…</button>
-        {#if files.length > 0}
-          <button class="ghost" onclick={() => setFiles([])} disabled={status?.running}>すべて外す</button>
-        {/if}
-      </div>
-      <p class="decoder">
-        {#if decoder?.version}
-          <span class="dot ok"></span>動画デコーダ: {decoder.version}（{decoder.path}）
-        {:else if decoder?.error}
-          <span class="dot err"></span>動画デコーダが見つかりません。動画を流すには FFmpeg（ffmpeg と ffprobe）が必要です: {decoder.error}
-        {:else}
-          <span class="dot"></span>動画デコーダを確認しています…
-        {/if}
-      </p>
-    </div>
-
-    <div class="media">
-      <div class="media-head">
-        <h3>音</h3>
-        <p>フォルダの中の曲をBGMとしてシャッフルで流し、音のある動画の間は下げます。Bluetoothのスピーカーなどで音が遅れて聞こえる場合は、音を早める量を指定します（負の値で遅らせます）。</p>
-      </div>
-      <div class="media-actions">
-        <button onclick={pickBgmDir} disabled={status?.running}>BGMのフォルダを選ぶ…</button>
-        {#if sound.bgmDir}
-          <span class="name" title={sound.bgmDir}>{fileName(sound.bgmDir)}</span>
-          <button class="ghost" onclick={() => { sound.bgmDir = null; saveSound(); }} disabled={status?.running}>BGMなし</button>
-        {:else}
-          <span class="empty">BGMなし</span>
-        {/if}
-      </div>
-      <label class="offset">
-        音ズレ補正（音を早める量）
-        <input type="number" min="-500" max="1000" step="10" bind:value={sound.syncOffsetMs} onchange={saveSound} disabled={status?.running} />
-        ms
-      </label>
-    </div>
-
-    <div class="media">
-      <div class="media-head">
-        <h3>プレビュー</h3>
-        <p>上映と同じ描画エンジンで画面外に描いた絵を、この画面に映します（音なし）。</p>
-      </div>
-      <canvas class="preview" bind:this={previewCanvas} width="640" height="360"></canvas>
-      <div class="media-actions">
-        {#if previewing}
-          <button onclick={stopPreview}>プレビューを止める</button>
-        {:else}
-          <button onclick={startPreview}>プレビューを始める</button>
-        {/if}
-        {#if previewStats}
-          <span class="empty">{previewStats.width}×{previewStats.height}・{previewStats.fps.toFixed(1)} fps・1フレーム {previewStats.frameMs.toFixed(1)} ms</span>
-        {/if}
-      </div>
-      {#if previewError}
-        <p class="error">プレビューのエラー: {previewError}</p>
-      {/if}
-    </div>
-
-    <div class="monitors" role="radiogroup" aria-label="出力先の画面">
-      {#each monitors as monitor (monitor.index)}
-        <label class="monitor" class:on={selected === monitor.index}>
-          <input
-            type="radio"
-            name="monitor"
-            value={monitor.index}
-            bind:group={selected}
-            disabled={status?.running}
-          />
-          <b>{monitor.name}</b>
-          <small>
-            {monitor.width}×{monitor.height}
-            {#if monitor.hasMainWindow}· 操作用{/if}
-            {#if monitor.isPrimary}· メイン{/if}
-          </small>
-        </label>
-      {/each}
-      <button class="ghost" onclick={loadMonitors} disabled={busy}>画面を再検出</button>
-    </div>
-
-    <div class="actions">
-      {#if status?.running}
-        <button class="stop" onclick={stop} disabled={busy}>■ 上映を終了</button>
-      {:else}
-        <button class="live" onclick={start} disabled={busy || selected === null}>▶ 上映を始める</button>
-      {/if}
-      {#if actionError}
-        <p class="error">{actionError}</p>
-      {/if}
-    </div>
-
-    {#if status && (status.running || status.stats.frames > 0)}
-      <dl class="stats">
-        <div><dt>状態</dt><dd>{status.running ? `上映中（${status.monitorName}）` : "停止"}</dd></div>
-        <div><dt>出力サイズ</dt><dd class="num">{status.stats.width}×{status.stats.height}</dd></div>
-        <div><dt>フレームレート</dt><dd class="num">{status.stats.fps.toFixed(1)} fps</dd></div>
-        <div><dt>直近1秒の最大間隔</dt><dd class="num">{status.stats.worstFrameMs.toFixed(1)} ms</dd></div>
-        <div><dt>遅れたフレーム</dt><dd class="num">{status.stats.slowFrames}</dd></div>
-        <div><dt>描画を省いた回数</dt><dd class="num">{status.stats.skipped}</dd></div>
-        <div><dt>表示したフレーム</dt><dd class="num">{status.stats.frames}</dd></div>
-      </dl>
-      {#if status.stats.lastError}
-        <p class="error">最後のエラー: {status.stats.lastError}</p>
-      {/if}
-      {#if status.stats.playback}
-        {@const playback = status.stats.playback}
-        <dl class="stats">
-          <div><dt>表示中の素材</dt><dd class="file">{playback.currentFile ?? "読み込み中"}</dd></div>
-          <div><dt>切り替え</dt><dd class="num">{playback.transitions}</dd></div>
-          <div><dt>読み込みが間に合わなかった切り替え</dt><dd class="num">{playback.lateTransitions}</dd></div>
-          <div><dt>最長の待ち</dt><dd class="num">{playback.longestWaitMs.toFixed(0)} ms</dd></div>
-          <div><dt>直近の読み込み時間</dt><dd class="num">{playback.lastLoadMs.toFixed(0)} ms</dd></div>
-          <div><dt>動画のデコード遅れ</dt><dd class="num">{playback.videoLateFrames}</dd></div>
-          <div><dt>動画の飛ばしたコマ</dt><dd class="num">{playback.videoSkippedFrames}</dd></div>
-          <div><dt>読み込めなかった素材</dt><dd class="num">{playback.failedItems}</dd></div>
-          <div><dt>飛ばしたスライド</dt><dd class="num">{playback.skippedSlides}</dd></div>
-        </dl>
-        {#if playback.lastError}
-          <p class="error">素材のエラー: {playback.lastError}</p>
-        {/if}
-        {#if playback.audio}
-          {@const audio = playback.audio}
-          <dl class="stats">
-            <div><dt>音声の出力先</dt><dd class="file">{audio.device}（{(audio.sampleRate / 1000).toFixed(1)} kHz）</dd></div>
-            <div><dt>出力の遅延</dt><dd class="num">{audio.outputLatencyMs.toFixed(1)} ms</dd></div>
-            <div><dt>音ズレ補正</dt><dd class="num">{audio.syncOffsetMs.toFixed(0)} ms</dd></div>
-            <div><dt>映像に対する音のずれ</dt><dd class="num">{audio.offsetMs.toFixed(1)} ms</dd></div>
-            <div><dt>最大のずれ</dt><dd class="num">{audio.maxOffsetMs.toFixed(1)} ms</dd></div>
-            <div><dt>ずれの補正</dt><dd class="num">{audio.resyncs}</dd></div>
-            <div><dt>音の途切れ</dt><dd class="num">{audio.underruns}</dd></div>
-          </dl>
-          {#if audio.lastError}
-            <p class="error">音声出力のエラー: {audio.lastError}</p>
-          {/if}
-        {:else if playback.audioError}
-          <p class="error">音声を出力できません: {playback.audioError}</p>
-        {/if}
-        {#if playback.bgm}
-          {@const bgm = playback.bgm}
-          <dl class="stats">
-            <div><dt>BGM</dt><dd class="file">{BGM_STATES[bgm.state]}{bgm.title ? `: ${bgm.title}` : ""}{bgm.artist ? `（${bgm.artist}）` : ""}</dd></div>
-            <div><dt>流した曲</dt><dd class="num">{bgm.tracksStarted}</dd></div>
-            <div><dt>再生できなかった曲</dt><dd class="num">{bgm.tracksFailed}</dd></div>
-            <div><dt>BGMの途切れ</dt><dd class="num">{bgm.underruns}</dd></div>
-            <div><dt>次の曲が間に合わなかった回数</dt><dd class="num">{bgm.starvedTransitions}</dd></div>
-          </dl>
-          {#if bgm.lastError}
-            <p class="error">BGMのエラー: {bgm.lastError}</p>
-          {/if}
-        {:else if playback.bgmError}
-          <p class="error">BGMを流せません: {playback.bgmError}</p>
-        {/if}
-      {/if}
-    {/if}
-  </section>
-</main>
-
-<style>
-  :root {
-    --bg: #f4f6f9;
-    --surface: #ffffff;
-    --line: #d5dbe2;
-    --fg: #17212c;
-    --muted: #5a6779;
-    --accent: #1e5fc4;
-    --accent-soft: #e2ebfa;
-    --live: #d93c25;
-    --on-live: #ffffff;
-    --ok: #21825a;
-    --err: #c2382c;
-    font-family: "BIZ UDPGothic", "Hiragino Sans", "Yu Gothic UI", "Meiryo", sans-serif;
-    color: var(--fg);
-    background: var(--bg);
+  async function home() {
+    await api.closeProject();
+    open.take(null);
+    screen = "home";
   }
 
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #0e1318;
-      --surface: #161c23;
-      --line: #2c3644;
-      --fg: #e3e8ee;
-      --muted: #97a3b3;
-      --accent: #72a3f2;
-      --accent-soft: #1c2a42;
-      --live: #ff6b4f;
-      --on-live: #1c0703;
-      --ok: #4cc08a;
-      --err: #f27769;
+  /// "▶ 上映する": straight to the remembered screen, or after asking.
+  async function present(choose: boolean) {
+    if (starting || notice) return;
+    error = null;
+    try {
+      const [monitors, settings] = await Promise.all([api.listMonitors(), api.getSettings()]);
+      syncOffsetMs = settings.syncOffsetMs;
+      const remembered = monitors.find((m) => m.name === settings.outputScreen);
+      if (!choose && remembered) {
+        await start(remembered, false);
+      } else if (!choose && monitors.length === 1) {
+        // With one screen there is nothing to choose, but the operator must
+        // know how to get back (docs/ui-draft.md, C-3).
+        notice = "この画面に全画面で映します。終了するにはEscキーを押してください。";
+        setTimeout(() => {
+          notice = null;
+          start(monitors[0], false);
+        }, 2500);
+      } else {
+        choosing = monitors;
+      }
+    } catch (err) {
+      error = String(err);
     }
   }
 
-  main {
-    max-width: 880px;
-    margin: 0 auto;
-    padding: 32px 40px 48px;
-    display: flex;
-    flex-direction: column;
-    gap: 32px;
+  async function start(monitor: MonitorInfo, remember: boolean) {
+    choosing = null;
+    if (starting) return;
+    starting = true;
+    try {
+      if (remember) await api.setOutputScreen(monitor.name);
+      await api.startPresentation(monitor.index);
+      screen = "presenting";
+    } catch (err) {
+      error = `上映を始められませんでした: ${err}`;
+    } finally {
+      starting = false;
+    }
   }
+</script>
 
-  header {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px 24px;
-  }
+{#if screen === "home"}
+  <Home onopened={() => (screen = "editor")} />
+{:else if screen === "editor"}
+  <Editor onhome={home} onpresent={present} />
+{:else if screen === "presenting"}
+  <Presenting {syncOffsetMs} onend={() => (screen = "editor")} />
+{/if}
 
-  .brand {
+{#if choosing}
+  <OutputDialog monitors={choosing} onstart={start} oncancel={() => (choosing = null)} />
+{/if}
+
+{#if notice || error}
+  <div class="toast" class:error={!!error} role="status">
+    {notice ?? error}
+    {#if error}<button class="quiet" onclick={() => (error = null)}>閉じる</button>{/if}
+  </div>
+{/if}
+
+<style>
+  .toast {
+    position: fixed;
+    left: 50%;
+    bottom: 32px;
+    transform: translateX(-50%);
+    padding: 14px 20px;
+    border-radius: 12px;
+    background: var(--navy);
+    color: #fff;
+    font-size: 15px;
     display: flex;
-    align-items: center;
     gap: 12px;
-  }
-
-  h1 {
-    margin: 0;
-    font-family: "Jost", "Futura", "Century Gothic", sans-serif;
-    font-weight: 600;
-    font-size: 30px;
-  }
-
-  h2 {
-    margin: 0;
-    font-size: 20px;
-  }
-
-  section {
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
-  }
-
-  .section-head p {
-    margin: 6px 0 0;
-    color: var(--muted);
-    font-size: 14px;
-  }
-
-  .engine {
-    margin: 0;
-    font-size: 13px;
-    color: var(--muted);
-    display: flex;
     align-items: center;
-    gap: 8px;
+    z-index: 30;
+    box-shadow: 0 6px 24px rgb(0 0 0 / 35%);
   }
 
-  .dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--muted);
-  }
-
-  .dot.ok {
-    background: var(--ok);
-  }
-
-  .dot.err {
-    background: var(--err);
-  }
-
-  .monitors {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    align-items: stretch;
-  }
-
-  .monitor {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 180px;
-    padding: 12px 14px;
-    border: 1.5px solid var(--line);
-    border-radius: 10px;
-    background: var(--surface);
-    cursor: pointer;
-  }
-
-  .monitor.on {
-    border-color: var(--accent);
-    background: var(--accent-soft);
-  }
-
-  .monitor input {
-    position: absolute;
-    opacity: 0;
-    pointer-events: none;
-  }
-
-  .monitor:has(input:focus-visible) {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
-
-  .monitor small {
-    color: var(--muted);
-    font-size: 12px;
-  }
-
-  button {
-    font: inherit;
-    font-weight: 700;
-    border-radius: 8px;
-    padding: 10px 18px;
-    border: 1px solid var(--line);
-    background: var(--surface);
-    color: var(--fg);
-    cursor: pointer;
-  }
-
-  button:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-
-  button.ghost {
-    background: transparent;
-    align-self: center;
-  }
-
-  button.live {
-    background: var(--live);
-    border-color: var(--live);
-    color: var(--on-live);
-    font-size: 16px;
-  }
-
-  button.stop {
-    border-color: var(--live);
-    color: var(--live);
-    font-size: 16px;
-  }
-
-  .actions {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 16px;
-  }
-
-  .error {
-    margin: 0;
+  .toast.error {
+    background: var(--err-soft);
     color: var(--err);
-    font-size: 13px;
-  }
-
-  h3 {
-    margin: 0;
-    font-size: 16px;
-  }
-
-  .media {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    padding: 16px;
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    background: var(--surface);
-  }
-
-  .media-head p,
-  .empty,
-  .decoder {
-    margin: 4px 0 0;
-    color: var(--muted);
-    font-size: 13px;
-  }
-
-  .decoder {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    overflow-wrap: anywhere;
-  }
-
-  .preview {
-    display: block;
-    width: 100%;
-    max-width: 640px;
-    aspect-ratio: 16 / 9;
-    background: #000;
-    border-radius: 6px;
-  }
-
-  .offset {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-top: 12px;
-    color: var(--muted);
-  }
-
-  .offset input {
-    width: 6em;
-  }
-
-  .files {
-    margin: 0;
-    padding: 0;
-    list-style: none;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .files li {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 6px 8px 6px 10px;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-  }
-
-  .files li.now {
-    border-color: var(--accent);
-    background: var(--accent-soft);
-  }
-
-  .kind {
-    flex: none;
-    font-size: 12px;
-    font-weight: 700;
-    color: var(--muted);
-  }
-
-  .name {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .tools {
-    display: flex;
-    gap: 4px;
-  }
-
-  button.icon {
-    padding: 4px 10px;
-    font-weight: 400;
-  }
-
-  .media-actions {
-    display: flex;
-    gap: 8px;
-  }
-
-  .stats dd.file {
-    font-size: 14px;
-    overflow-wrap: anywhere;
-  }
-
-  .stats {
-    margin: 0;
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    background: var(--surface);
-    overflow: hidden;
-  }
-
-  .stats div {
-    padding: 10px 14px;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .stats dt {
-    font-size: 12px;
-    color: var(--muted);
-  }
-
-  .stats dd {
-    margin: 0;
-    font-size: 16px;
-    font-weight: 700;
-  }
-
-  .num {
-    font-variant-numeric: tabular-nums;
   }
 </style>

@@ -1,0 +1,159 @@
+/* Colors and type shared by every screen (docs/ui-draft.md, 5 and 6). The
+   management window follows the OS's light or dark setting; the preview and
+   the presentation are always on black. */
+
+:root {
+  --bg: #f4f6f9;
+  --surface: #ffffff;
+  --surface-2: #eef1f5;
+  --line: #d5dbe2;
+  --fg: #17212c;
+  --muted: #5a6779;
+  --accent: #1e5fc4;
+  --on-accent: #ffffff;
+  --accent-soft: #e2ebfa;
+  --live: #d93c25;
+  --on-live: #ffffff;
+  --live-soft: #fbe5e1;
+  --ok: #21825a;
+  --err: #c2382c;
+  --err-soft: #fbe7e5;
+  --navy: #13213b;
+  --coral: #e8553a;
+  --radius: 10px;
+  font-family: "BIZ UDPGothic", "Hiragino Sans", "Yu Gothic UI", "Meiryo", sans-serif;
+  font-size: 14px;
+  color: var(--fg);
+  background: var(--bg);
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e1318;
+    --surface: #161c23;
+    --surface-2: #1d252e;
+    --line: #2c3644;
+    --fg: #e3e8ee;
+    --muted: #97a3b3;
+    --accent: #72a3f2;
+    --on-accent: #0b1424;
+    --accent-soft: #1c2a42;
+    --live: #ff6b4f;
+    --on-live: #1c0703;
+    --live-soft: #3a1a14;
+    --ok: #4cc08a;
+    --err: #f27769;
+    --err-soft: #3a1b18;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  padding: 7px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+button.live {
+  background: var(--live);
+  border-color: var(--live);
+  color: var(--on-live);
+  font-weight: 600;
+}
+
+button.quiet {
+  border-color: transparent;
+  background: transparent;
+}
+
+button.quiet:hover:not(:disabled) {
+  background: var(--surface-2);
+  border-color: transparent;
+}
+
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 10px;
+  width: 100%;
+}
+
+input:focus,
+textarea:focus,
+select:focus,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+input[type="checkbox"],
+input[type="radio"],
+input[type="range"] {
+  width: auto;
+  accent-color: var(--accent);
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+label.inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg);
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.error {
+  color: var(--err);
+}
+
+.brandname {
+  font-family: "Jost", "Futura", "Century Gothic", sans-serif;
+  font-weight: 600;
+}

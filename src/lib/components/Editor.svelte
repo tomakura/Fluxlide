@@ -1,0 +1,305 @@
+<script lang="ts">
+  // B. 編集: the slides on the left, the preview in the middle and the
+  // settings of the chosen tab on the right (docs/ui-draft.md).
+  import type { SlideId } from "$lib/bindings/SlideId";
+  import { open } from "$lib/show.svelte";
+  import LookPanel from "./LookPanel.svelte";
+  import MusicPanel from "./MusicPanel.svelte";
+  import Preview from "./Preview.svelte";
+  import SlideList from "./SlideList.svelte";
+  import SlidePanel from "./SlidePanel.svelte";
+
+  let {
+    onhome,
+    onpresent,
+  }: {
+    onhome: () => void;
+    /// `choose`: show the output screen choice even when one is remembered.
+    onpresent: (choose: boolean) => void;
+  } = $props();
+
+  type Tab = "slides" | "look" | "music";
+  const TABS: [Tab, string][] = [
+    ["slides", "写真・動画"],
+    ["look", "見た目"],
+    ["music", "音楽"],
+  ];
+
+  let tab = $state<Tab>("slides");
+  let selected = $state<SlideId | null>(open.show?.slides[0]?.id ?? null);
+  let playing = $state(false);
+  let playingSlide = $state<SlideId | null>(null);
+
+  const show = $derived(open.show);
+  const saveError = $derived(open.state?.saveError ?? null);
+
+  // A selection whose slide was removed (by undo, say) moves to the first.
+  $effect(() => {
+    if (show && (selected === null || !show.slides.some((slide) => slide.id === selected))) {
+      selected = show.slides[0]?.id ?? null;
+    }
+  });
+
+  const HINT_KEY = "fluxlide.hint.closed";
+  let hintClosed = $state(readHintClosed());
+  function readHintClosed() {
+    try {
+      return localStorage.getItem(HINT_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+  function closeHint() {
+    hintClosed = true;
+    try {
+      localStorage.setItem(HINT_KEY, "1");
+    } catch {
+      // Remembering it is a convenience only.
+    }
+  }
+
+  const hint = $derived.by(() => {
+    if (!show) return "";
+    if (show.slides.length === 0) return "「＋ 追加」を押すか、写真や動画を左の欄にドロップしてください。";
+    if (show.assets.some((asset) => asset.state.state === "importing"))
+      return "取り込み中でも、タイトルや説明を入力できます。";
+    return "準備ができたら、右上の「▶ 上映する」を押してください。";
+  });
+
+  function onkeydown(event: KeyboardEvent) {
+    const target = event.target as HTMLElement;
+    if (target.closest("input, textarea, select")) return;
+    const mod = event.ctrlKey || event.metaKey;
+    if (mod && event.key.toLowerCase() === "z") {
+      (event.shiftKey ? open.redo : open.undo)();
+      event.preventDefault();
+    } else if (mod && event.key.toLowerCase() === "y") {
+      open.redo();
+      event.preventDefault();
+    }
+  }
+</script>
+
+<svelte:window {onkeydown} />
+
+{#if show}
+  <div class="editor">
+    <header>
+      <button class="quiet" onclick={onhome} title="ホームに戻る">← ホーム</button>
+      <input
+        class="title"
+        aria-label="スライドショーの名前"
+        value={show.title}
+        oninput={(e) => {
+          const title = e.currentTarget.value;
+          open.edit((show) => (show.title = title), "title");
+        }}
+      />
+      <span class="saved" class:error={saveError} title={saveError ?? ""}>
+        {saveError ? "保存できません" : "自動保存済み"}
+      </span>
+      <div class="history">
+        <button class="quiet" disabled={!open.state?.canUndo} onclick={open.undo} title="元に戻す（Ctrl+Z）">↶ 元に戻す</button>
+        <button class="quiet" disabled={!open.state?.canRedo} onclick={open.redo} title="やり直す（Ctrl+Shift+Z）">↷ やり直す</button>
+      </div>
+      <nav>
+        {#each TABS as [key, name] (key)}
+          <button class="tab" class:current={tab === key} aria-pressed={tab === key} onclick={() => (tab = key)}>{name}</button>
+        {/each}
+      </nav>
+      <div class="present">
+        <button class="live" disabled={show.slides.length === 0} onclick={() => onpresent(false)}>▶ 上映する</button>
+        <button class="live more" disabled={show.slides.length === 0} onclick={() => onpresent(true)} title="出力先の画面を選ぶ">▾</button>
+      </div>
+    </header>
+
+    {#if open.error}
+      <p class="banner error">
+        {open.error}
+        <button class="quiet" onclick={() => (open.error = null)}>閉じる</button>
+      </p>
+    {/if}
+
+    <div class="columns">
+      <aside class="left">
+        <SlideList bind:selected playing={playing ? playingSlide : null} />
+      </aside>
+
+      <section class="center">
+        <Preview {selected} bind:playing onslide={(slide) => (playingSlide = slide)} />
+        <div class="controls">
+          {#if playing}
+            <button onclick={() => (playing = false)}>■ 止める</button>
+          {:else}
+            <button disabled={selected === null} onclick={() => (playing = true)}>▶ このスライドから再生</button>
+          {/if}
+          <span class="hint">プレビューは上映と同じ描画です。音は出ません。</span>
+        </div>
+        {#if !hintClosed && hint}
+          <p class="next">
+            {hint}
+            <button class="quiet" onclick={closeHint} title="案内を閉じる">✕</button>
+          </p>
+        {/if}
+      </section>
+
+      <aside class="right">
+        {#if tab === "slides"}
+          <SlidePanel {selected} />
+        {:else if tab === "look"}
+          <LookPanel />
+        {:else}
+          <MusicPanel />
+        {/if}
+      </aside>
+    </div>
+  </div>
+{/if}
+
+<style>
+  .editor {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface);
+  }
+
+  .title {
+    width: 260px;
+    font-weight: 600;
+    border-color: transparent;
+    background: transparent;
+  }
+
+  .title:hover,
+  .title:focus {
+    border-color: var(--line);
+  }
+
+  .saved {
+    font-size: 12px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  .saved.error {
+    color: var(--err);
+  }
+
+  .history {
+    display: flex;
+  }
+
+  .history button {
+    font-size: 13px;
+    padding: 6px 8px;
+  }
+
+  nav {
+    margin-left: auto;
+    display: flex;
+    gap: 2px;
+    background: var(--surface-2);
+    padding: 3px;
+    border-radius: 9px;
+  }
+
+  .tab {
+    border: none;
+    background: transparent;
+    padding: 6px 16px;
+  }
+
+  .tab.current {
+    background: var(--surface);
+    color: var(--accent);
+    font-weight: 600;
+    box-shadow: 0 1px 2px rgb(0 0 0 / 15%);
+  }
+
+  .present {
+    display: flex;
+    margin-left: 12px;
+  }
+
+  .present button:first-child {
+    border-radius: 8px 0 0 8px;
+  }
+
+  .more {
+    border-radius: 0 8px 8px 0;
+    border-left: 1px solid rgb(255 255 255 / 35%);
+    padding: 7px 9px;
+  }
+
+  .banner {
+    margin: 0;
+    padding: 8px 16px;
+    background: var(--err-soft);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .columns {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: 300px 1fr 320px;
+  }
+
+  .left,
+  .right {
+    padding: 14px;
+    overflow-y: auto;
+    min-height: 0;
+  }
+
+  .left {
+    border-right: 1px solid var(--line);
+    overflow: hidden;
+  }
+
+  .right {
+    border-left: 1px solid var(--line);
+    background: var(--surface);
+  }
+
+  .center {
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+    overflow-y: auto;
+  }
+
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .next {
+    margin: 0;
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    background: var(--accent-soft);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .next button {
+    padding: 2px 8px;
+  }
+</style>
