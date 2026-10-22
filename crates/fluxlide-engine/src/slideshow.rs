@@ -789,6 +789,11 @@ impl Slideshow {
             return;
         }
         let start = self.mixer_time(start);
+        // Not due yet (held on the title card): a window that never closes
+        // would be kept by the ducker forever.
+        if !start.is_finite() {
+            return;
+        }
         let span = (start, start + span_secs(&ready.entry));
         match &mut self.announced {
             Some(announced) if announced.span == span => {}
@@ -860,8 +865,11 @@ impl Slideshow {
                 opacity: 1.0,
             });
         }
-        // Coming in from the title card, the card fades out like a caption.
-        if self.from_card && in_transition {
+        // Coming in from the title card, the card stays until the first
+        // slide is loaded, then fades out like a caption.
+        if self.from_card && self.current.is_none() {
+            overlays.extend(card(1.0));
+        } else if self.from_card && in_transition {
             overlays.extend(card((1.0 - 2.0 * progress).max(0.0)));
         }
         let transition = if self.fade_out.is_some() {

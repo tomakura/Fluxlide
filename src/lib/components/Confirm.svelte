@@ -1,5 +1,7 @@
 <script lang="ts">
   // A question that must be answered before going on.
+  import { modal } from "$lib/modal";
+
   let {
     title,
     message,
@@ -13,26 +15,22 @@
     onconfirm: () => void;
     oncancel: () => void;
   } = $props();
-
-  let confirmButton = $state<HTMLButtonElement | null>(null);
-  $effect(() => confirmButton?.focus());
-
-  function onkeydown(event: KeyboardEvent) {
-    if (event.key === "Escape") {
-      oncancel();
-      event.preventDefault();
-      event.stopPropagation();
-    }
-  }
 </script>
 
-<div class="backdrop" role="presentation" {onkeydown}>
-  <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title">
+<div class="backdrop" role="presentation">
+  <div
+    class="dialog"
+    role="alertdialog"
+    aria-modal="true"
+    aria-labelledby="confirm-title"
+    tabindex="-1"
+    {@attach modal(() => oncancel())}
+  >
     <h2 id="confirm-title">{title}</h2>
     <p>{message}</p>
     <div class="buttons">
       <button onclick={oncancel}>やめる</button>
-      <button class="live" bind:this={confirmButton} onclick={onconfirm}>{confirmLabel}</button>
+      <button class="live" data-autofocus onclick={onconfirm}>{confirmLabel}</button>
     </div>
   </div>
 </div>

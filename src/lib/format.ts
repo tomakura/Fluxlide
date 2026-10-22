@@ -47,8 +47,9 @@ export function zoomOf(motion: Motion | null): "in" | "out" | "still" | "none" {
 export function seconds(ms: number): string {
   const secs = Math.round(ms / 100) / 10;
   if (secs < 60) return `${secs}秒`;
-  const minutes = Math.floor(secs / 60);
-  const rest = Math.round(secs - minutes * 60);
+  const whole = Math.round(secs);
+  const minutes = Math.floor(whole / 60);
+  const rest = whole - minutes * 60;
   return rest ? `${minutes}分${rest}秒` : `${minutes}分`;
 }
 

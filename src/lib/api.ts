@@ -28,8 +28,8 @@ export const showState = () => invoke<ShowState | null>("show_state");
 /// `show` is a change made to the state of `revision`. `group` names the
 /// control being changed, so that typing or dragging in it is undone in one
 /// step. An edit made from an older revision is not applied.
-export const editShow = (show: ShowDefinition, revision: number, group: string | null = null) =>
-  invoke<EditOutcome>("edit_show", { show, group, revision });
+export const editShow = (show: ShowDefinition, session: number, revision: number, group: string | null = null) =>
+  invoke<EditOutcome>("edit_show", { show, group, session, revision });
 export const undoShow = () => invoke<ShowState>("undo_show");
 export const redoShow = () => invoke<ShowState>("redo_show");
 

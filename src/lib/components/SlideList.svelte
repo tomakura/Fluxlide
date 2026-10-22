@@ -18,7 +18,8 @@
   const show = $derived(open.show);
   const mediaDir = $derived(open.state?.mediaDir ?? "");
 
-  // Dragging: the slide being moved, and where it would go.
+  // Dragging: the slide being moved, and the row it would go before
+  // (the number of rows for the end), counted with it still in the list.
   let dragging = $state<{ id: SlideId; to: number } | null>(null);
   let list = $state<HTMLOListElement | null>(null);
 
@@ -43,7 +44,7 @@
   function moveDrag(event: PointerEvent) {
     if (!dragging || !list) return;
     const rows = [...list.querySelectorAll<HTMLElement>(":scope > li")];
-    let to = rows.length - 1;
+    let to = rows.length;
     for (const [index, row] of rows.entries()) {
       const rect = row.getBoundingClientRect();
       if (event.clientY < rect.top + rect.height / 2) {
@@ -59,7 +60,9 @@
     const { id, to } = dragging;
     dragging = null;
     const from = show.slides.findIndex((slide) => slide.id === id);
-    if (from !== to) moveTo(id, to);
+    // Taking the slide out moves the rows after it up by one.
+    const index = to > from ? to - 1 : to;
+    if (from >= 0 && index !== from) moveTo(id, index);
   }
 
   function moveTo(id: SlideId, to: number) {
@@ -119,6 +122,7 @@
           class:selected={slide.id === selected}
           class:playing={slide.id === playing}
           class:drop-before={dragging && dragging.to === index && dragging.id !== slide.id}
+          class:drop-after={dragging && dragging.to === show.slides.length && index === show.slides.length - 1}
         >
           <button class="row quiet" onclick={() => (selected = slide.id)}>
             <span
@@ -220,7 +224,8 @@
     background: var(--live);
   }
 
-  li.drop-before::before {
+  li.drop-before::before,
+  li.drop-after::after {
     content: "";
     position: absolute;
     left: 0;
@@ -228,6 +233,11 @@
     top: -3px;
     height: 2px;
     background: var(--accent);
+  }
+
+  li.drop-after::after {
+    top: auto;
+    bottom: -3px;
   }
 
   .row {

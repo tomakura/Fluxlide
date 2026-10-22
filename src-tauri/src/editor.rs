@@ -170,19 +170,27 @@ pub async fn open_project(
     settings: State<'_, SettingsState>,
     dir: PathBuf,
 ) -> Result<ShowState, String> {
-    if !dir.starts_with(projects_dir(&app)?) && project::summary(&dir).is_ok() {
-        settings.update(&app, |settings| settings.remember_dir(&dir))?;
-    }
+    let elsewhere = !dir.starts_with(projects_dir(&app)?);
     let session = state.session();
-    tauri::async_runtime::spawn_blocking(move || {
-        // Imports of the session being closed stop before the media folder
-        // is cleaned, even when it is the same project opened again.
-        close(&session);
-        let (project, show) = Project::open(&dir).map_err(|err| err.to_string())?;
-        Ok(replace(&app, &session, Session::new(project, show)))
-    })
-    .await
-    .map_err(|err| err.to_string())?
+    let opened = {
+        let app = app.clone();
+        let dir = dir.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            // Imports of the session being closed stop before the media folder
+            // is cleaned, even when it is the same project opened again.
+            close(&session);
+            let (project, show) = Project::open(&dir).map_err(|err| err.to_string())?;
+            Ok(replace(&app, &session, Session::new(project, show)))
+        })
+        .await
+        .map_err(|err| err.to_string())?
+    };
+    // Only a project that opened is remembered, and the project is open
+    // even if the settings cannot be written.
+    if opened.is_ok() && elsewhere {
+        let _ = settings.update(&app, |settings| settings.remember_dir(&dir));
+    }
+    opened
 }
 
 fn close(slot: &Mutex<Option<Session>>) {
@@ -227,12 +235,13 @@ pub fn edit_show(
     state: State<'_, EditorState>,
     show: ShowDefinition,
     group: Option<String>,
+    session: u64,
     revision: u64,
 ) -> Result<EditOutcome, String> {
     let mut applied = false;
-    let state = with_session(&state, |session| {
-        if session.revision() == revision {
-            session.edit(show, group.as_deref());
+    let state = with_session(&state, |open| {
+        if open.epoch() == session && open.revision() == revision {
+            open.edit(show, group.as_deref());
             applied = true;
         }
     })?;

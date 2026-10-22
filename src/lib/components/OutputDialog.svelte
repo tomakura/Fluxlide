@@ -5,6 +5,7 @@
   import * as api from "$lib/api";
   import type { MonitorInfo } from "$lib/bindings/MonitorInfo";
   import type { Playback } from "$lib/bindings/Playback";
+  import { modal } from "$lib/modal";
   import { open } from "$lib/show.svelte";
 
   let {
@@ -53,7 +54,14 @@
 </script>
 
 <div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && oncancel()}>
-  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="output-title">
+  <div
+    class="dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="output-title"
+    tabindex="-1"
+    {@attach modal(() => oncancel())}
+  >
     <h2 id="output-title">どの画面に映しますか？</h2>
 
     <div class="screens" style:width="{layout.width}px" style:height="{layout.height}px">

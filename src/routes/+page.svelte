@@ -15,6 +15,9 @@
   let notice = $state<string | null>(null);
   let error = $state<string | null>(null);
   let syncOffsetMs = $state(0);
+  // From "▶ 上映する" until the presentation opens, so pressing it again
+  // does not open a second one.
+  let starting = false;
 
   $effect(() => {
     api.showState().then((state) => {
@@ -31,6 +34,7 @@
 
   /// "▶ 上映する": straight to the remembered screen, or after asking.
   async function present(choose: boolean) {
+    if (starting || notice) return;
     error = null;
     try {
       const [monitors, settings] = await Promise.all([api.listMonitors(), api.getSettings()]);
@@ -56,12 +60,16 @@
 
   async function start(monitor: MonitorInfo, remember: boolean) {
     choosing = null;
+    if (starting) return;
+    starting = true;
     try {
       if (remember) await api.setOutputScreen(monitor.name);
       await api.startPresentation(monitor.index);
       screen = "presenting";
     } catch (err) {
       error = `上映を始められませんでした: ${err}`;
+    } finally {
+      starting = false;
     }
   }
 </script>
