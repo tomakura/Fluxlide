@@ -256,6 +256,9 @@ pub struct Slideshow {
     /// Playback time at which the show started to go to the title card at the end.
     ending: Option<f64>,
     blackout: bool,
+    blackout_overlay: Overlay,
+    blackout_from: f32,
+    blackout_started: f64,
 }
 
 /// Where a presentation is, for the operator's screen.
@@ -303,6 +306,7 @@ impl Slideshow {
             AtEnd::Stop => PassEnd::Hold,
         };
         let mut slideshow = Self {
+            blackout_overlay: Overlay::black(&renderer, output_size),
             renderer,
             ffmpeg: Ffmpeg::locate().map_err(|err| err.to_string()),
             show,
@@ -345,6 +349,8 @@ impl Slideshow {
             from_card: false,
             ending: None,
             blackout: false,
+            blackout_from: 0.0,
+            blackout_started: 0.0,
         };
         slideshow.advance_mode = slideshow.show.playback.advance;
         slideshow.pass = slideshow.build_pass();
@@ -406,6 +412,7 @@ impl Slideshow {
             return Ok(());
         }
         self.output_size = output_size;
+        self.blackout_overlay = Overlay::black(&self.renderer, output_size);
         if let Some((watermark, overlay)) = &mut self.watermark {
             *overlay = Overlay::watermark(&self.renderer, watermark, output_size)?;
         }
@@ -614,9 +621,22 @@ impl Slideshow {
         self.paused_at.is_some()
     }
 
-    /// Shows black, with no caption or watermark, while playback goes on.
+    /// Fades the entire output to black (or back) over 400 ms while playback
+    /// goes on. The fade uses real time, so it also works while paused.
     pub fn set_blackout(&mut self, blackout: bool) {
+        if self.blackout == blackout {
+            return;
+        }
+        self.blackout_from = self.blackout_opacity();
+        self.blackout_started = self.real;
         self.blackout = blackout;
+    }
+
+    fn blackout_opacity(&self) -> f32 {
+        let t = ((self.real - self.blackout_started) / 0.4).clamp(0.0, 1.0) as f32;
+        let eased = t * t * (3.0 - 2.0 * t);
+        let target = if self.blackout { 1.0 } else { 0.0 };
+        self.blackout_from + (target - self.blackout_from) * eased
     }
 
     /// Where the show is, with up to `count` upcoming slides.
@@ -812,15 +832,27 @@ impl Slideshow {
 
     /// What to draw for the time given to the last [`Slideshow::update`].
     pub fn frame(&self) -> Frame<'_> {
+        let opacity = self.blackout_opacity();
+        if opacity >= 1.0 {
+            return Frame::default();
+        }
+        let mut frame = self.content_frame();
+        if opacity > 0.0 {
+            frame.overlays.push(OverlayRef {
+                overlay: &self.blackout_overlay,
+                opacity,
+            });
+        }
+        frame
+    }
+
+    fn content_frame(&self) -> Frame<'_> {
         let empty = Frame {
             from: None,
             to: None,
             transition: None,
             overlays: Vec::new(),
         };
-        if self.blackout {
-            return empty;
-        }
         let card = |opacity: f32| {
             self.card
                 .as_ref()
@@ -1758,6 +1790,9 @@ mod tests {
         );
 
         show.set_blackout(true);
+        // The picture is still visible at the start of the fade.
+        assert!(show.frame().to.is_some());
+        show.update(0.9);
         let frame = show.frame();
         assert!(frame.to.is_none() && frame.overlays.is_empty());
         drop(frame);
@@ -1766,6 +1801,61 @@ mod tests {
         assert_eq!(current(&show), Some(SlideId(3)));
 
         update_until(&mut show, 1.5, |show| show.loading.is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn blackout_fades_while_paused_and_reverses_without_a_jump() {
+        let Some(renderer) = crate::test_renderer() else {
+            return;
+        };
+        let (dir, mut definition) = three_photos("blackout-fade", Playback::default());
+        definition.assets[0].meta.title = "白いキャプション".into();
+        let mut show = Slideshow::new(renderer.clone(), definition, dir.clone(), (32, 32));
+        show.start_at(0, true);
+        update_exactly(&mut show, 0.0);
+        show.pause();
+        let mut target = crate::OffscreenTarget::new(&renderer, 32, 32).unwrap();
+        let before = target
+            .render_rgba(&renderer, &crate::Scene::Frame(show.frame()))
+            .unwrap();
+        show.set_blackout(true);
+        assert_eq!(show.blackout_opacity(), 0.0);
+        show.update(0.2);
+        assert!((show.blackout_opacity() - 0.5).abs() < 0.001);
+        let middle = target
+            .render_rgba(&renderer, &crate::Scene::Frame(show.frame()))
+            .unwrap();
+        assert!(middle.iter().zip(&before).any(|(m, b)| *m > 0 && m < b));
+        show.update(0.4);
+        let black = target
+            .render_rgba(&renderer, &crate::Scene::Frame(show.frame()))
+            .unwrap();
+        assert!(
+            black
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|p| *p == [0, 0, 0, 255])
+        );
+        show.set_blackout(false);
+        show.update(0.6);
+        let opacity = show.blackout_opacity();
+        assert!((opacity - 0.5).abs() < 0.001);
+        show.set_blackout(true);
+        assert_eq!(show.blackout_opacity(), opacity);
+        show.update(0.8);
+        assert!((show.blackout_opacity() - 0.75).abs() < 0.001);
+        show.set_blackout(false);
+        show.update(1.2);
+        assert!(show.blackout_opacity() < 0.001);
+        let restored = target
+            .render_rgba(&renderer, &crate::Scene::Frame(show.frame()))
+            .unwrap();
+        assert_eq!(restored, before);
+        assert_eq!(current(&show), Some(SlideId(1)));
+        show.set_output_size((48, 32)).unwrap();
+        assert_eq!(show.blackout_overlay.size(), (48, 32));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

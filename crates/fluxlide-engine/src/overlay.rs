@@ -186,6 +186,29 @@ pub struct Overlay {
 }
 
 impl Overlay {
+    /// A black veil drawn after all captions and watermarks.
+    pub(crate) fn black(renderer: &Renderer, size: (u32, u32)) -> Self {
+        Self::from_plan(
+            renderer,
+            OverlayPlan {
+                size,
+                opacity: 1.0,
+                pieces: vec![PlanPiece::Shape {
+                    rect: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: size.0 as f32,
+                        height: size.1 as f32,
+                    },
+                    color: Color::new([0, 0, 0], 1.0),
+                    radius: 0.0,
+                    border: 0.0,
+                    gradient: [1.0, 1.0],
+                }],
+            },
+        )
+    }
+
     /// The output size this overlay was laid out for.
     pub fn size(&self) -> (u32, u32) {
         self.size
