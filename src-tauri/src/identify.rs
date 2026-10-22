@@ -2,14 +2,18 @@
 //! few seconds, so the operator can tell which screen is which when
 //! choosing where to present (`docs/ui-draft.md`, C-2).
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, WebviewUrl, WebviewWindowBuilder};
 
 /// How long the numbers stay.
 const SHOWN_FOR: Duration = Duration::from_secs(3);
 /// Size of each number's window, in logical pixels.
 const SIZE: f64 = 320.0;
+/// Makes each label new: a destroyed window may still hold its label for a
+/// moment, so pressing the button again must not reuse it.
+static NEXT: AtomicU64 = AtomicU64::new(0);
 
 /// Shows screen `n` (from 1, in the order of `list_monitors`) on each screen.
 #[tauri::command]
@@ -17,10 +21,7 @@ pub async fn identify_monitors(app: AppHandle) -> Result<(), String> {
     let monitors = app.available_monitors().map_err(|err| err.to_string())?;
     let mut windows = Vec::new();
     for (index, monitor) in monitors.iter().enumerate() {
-        let label = format!("identify-{index}");
-        if let Some(old) = app.get_webview_window(&label) {
-            let _ = old.destroy();
-        }
+        let label = format!("identify-{}", NEXT.fetch_add(1, Ordering::Relaxed));
         let scale = monitor.scale_factor();
         let position = monitor.position();
         let size = monitor.size();
@@ -29,7 +30,7 @@ pub async fn identify_monitors(app: AppHandle) -> Result<(), String> {
         let x = f64::from(position.x) / scale + (f64::from(size.width) / scale - SIZE) / 2.0;
         let y = f64::from(position.y) / scale + (f64::from(size.height) / scale - SIZE) / 2.0;
         let url = WebviewUrl::App(format!("identify?n={}", index + 1).into());
-        let window = WebviewWindowBuilder::new(&app, &label, url)
+        let built = WebviewWindowBuilder::new(&app, &label, url)
             .title("Fluxlide")
             .decorations(false)
             .resizable(false)
@@ -38,9 +39,17 @@ pub async fn identify_monitors(app: AppHandle) -> Result<(), String> {
             .focused(false)
             .position(x, y)
             .inner_size(SIZE, SIZE)
-            .build()
-            .map_err(|err| err.to_string())?;
-        windows.push(window);
+            .build();
+        match built {
+            Ok(window) => windows.push(window),
+            Err(err) => {
+                // The numbers already shown would otherwise stay on top.
+                for window in windows {
+                    let _ = window.destroy();
+                }
+                return Err(err.to_string());
+            }
+        }
     }
     tauri::async_runtime::spawn(async move {
         sleep(SHOWN_FOR).await;
