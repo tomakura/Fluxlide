@@ -6,7 +6,7 @@
   import type { ShowDefinition } from "$lib/bindings/ShowDefinition";
   import type { Slide } from "$lib/bindings/Slide";
   import type { SlideId } from "$lib/bindings/SlideId";
-  import { FITS, effective, seconds, transitionName } from "$lib/format";
+  import { FITS, ZOOMS, effective, seconds, transitionName, zoomOf } from "$lib/format";
   import { open } from "$lib/show.svelte";
   import TransitionSelect from "./TransitionSelect.svelte";
 
@@ -37,16 +37,11 @@
   const ms = (value: string) => (value.trim() === "" ? null : Math.max(0, Math.round(Number(value) * 1000)));
   const secs = (ms: number | null) => (ms === null ? "" : String(ms / 1000));
 
-  const ZOOMS: Record<string, Motion | null> = {
-    none: null,
-    in: { fromScale: 1, toScale: 1.15, fromOffset: [0, 0], toOffset: [0, 0] },
-    out: { fromScale: 1.15, toScale: 1, fromOffset: [0, 0], toOffset: [0, 0] },
+  const ZOOM_NAMES = { in: "ズームイン", out: "ズームアウト", still: "なし" } as const;
+  const zoomName = (motion: Motion | null) => {
+    const key = zoomOf(motion);
+    return key === "none" ? "なし" : ZOOM_NAMES[key];
   };
-
-  function zoomOf(motion: Motion | null): string {
-    if (!motion) return "none";
-    return motion.toScale >= motion.fromScale ? "in" : "out";
-  }
 </script>
 
 {#if show && slide && asset}
@@ -185,13 +180,17 @@
           <select
             value={zoomOf(slide.motion)}
             onchange={(e) => {
-              const motion = ZOOMS[e.currentTarget.value];
+              const key = e.currentTarget.value as keyof typeof ZOOMS | "none";
+              const motion = key === "none" ? null : ZOOMS[key];
               setSlide((slide) => (slide.motion = motion));
             }}
           >
-            <option value="none">なし</option>
-            <option value="in">ズームイン</option>
-            <option value="out">ズームアウト</option>
+            <option value="none">
+              見た目の設定に従う（{zoomName(show.look.motion)}）
+            </option>
+            {#each Object.entries(ZOOM_NAMES) as [key, name] (key)}
+              <option value={key}>{name}</option>
+            {/each}
           </select>
         </label>
         <label>
