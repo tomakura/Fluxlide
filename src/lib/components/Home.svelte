@@ -45,7 +45,8 @@
   const openSample = () =>
     begin(async () => {
       open.take(await api.createProject("Fluxlide のサンプル"));
-      await open.run(async () => (await api.importSample()).state);
+      const result = await api.importSample();
+      open.take(result.state);
     });
 
   const openDir = (dir: string) => begin(async () => open.take(await api.openProject(dir)));
