@@ -58,26 +58,26 @@ impl Default for CaptionStyle {
     }
 }
 
-/// Sizes as fractions of the output's height (40, 26 and 24 pixels at 1080).
-const TITLE_SIZE: f32 = 0.037;
-const AUTHOR_SIZE: f32 = 0.024;
-const DESCRIPTION_SIZE: f32 = 0.0222;
-/// Medium for the title, Light for the rest.
+/// Sizes as fractions of the output's height (44, 20 and 22 pixels at 1080).
+const TITLE_SIZE: f32 = 0.0407;
+const AUTHOR_SIZE: f32 = 0.0185;
+const DESCRIPTION_SIZE: f32 = 0.0204;
+/// Medium for the title, Regular for the smaller supporting text.
 const TITLE_WEIGHT: u16 = 500;
-const BODY_WEIGHT: u16 = 300;
+const BODY_WEIGHT: u16 = 400;
 /// Letter spacing in em.
-const TITLE_TRACKING: f32 = 0.06;
-const BODY_TRACKING: f32 = 0.08;
+const TITLE_TRACKING: f32 = 0.04;
+const BODY_TRACKING: f32 = 0.025;
 /// Space between baselines in multiples of the text size.
-const TITLE_LINE_HEIGHT: f32 = 1.4;
-const BODY_LINE_HEIGHT: f32 = 1.6;
+const TITLE_LINE_HEIGHT: f32 = 1.3;
+const BODY_LINE_HEIGHT: f32 = 1.55;
 /// Longest each part may get before it is cut with "…".
 const TITLE_MAX_LINES: usize = 2;
 const AUTHOR_MAX_LINES: usize = 1;
 const DESCRIPTION_MAX_LINES: usize = 3;
 /// Space under the title and under the author, as fractions of the height.
-const GAP_AFTER_TITLE: f32 = 0.006;
-const GAP_AFTER_AUTHOR: f32 = 0.012;
+const GAP_AFTER_TITLE: f32 = 0.01;
+const GAP_AFTER_AUTHOR: f32 = 0.016;
 /// Distance of the caption from the edges of the output.
 const MARGIN: f32 = 0.05;
 
@@ -129,7 +129,7 @@ pub(crate) fn plan_caption(
     let margin = (height * MARGIN).round();
     let card_padding = (height * 0.022).round();
     let max_text_width = match style.design {
-        CaptionDesign::Band => (width * 0.7).min(width - 2.0 * margin),
+        CaptionDesign::Band => (width * 0.58).min(width - 2.0 * margin),
         CaptionDesign::Simple => (width * 0.6).min(width - 2.0 * margin - height * 0.03),
         // Narrow outputs (portrait) get a wider card than 0.36 of the width.
         CaptionDesign::Card => (width * 0.36)
@@ -137,12 +137,8 @@ pub(crate) fn plan_caption(
             .min(width - 2.0 * margin - 2.0 * card_padding),
         CaptionDesign::None => unreachable!("handled above"),
     };
-    let shadow = (style.design == CaptionDesign::Simple).then(|| {
-        (
-            (height * 0.006).round().max(2.0) as u32,
-            (height * 0.003).round().max(1.0) as u32,
-        )
-    });
+    let shadow = (style.design == CaptionDesign::Simple)
+        .then(|| ((height * 0.004).round().max(1.0) as u32, 0));
 
     let parts = [
         (Part::Title, &caption.title, TITLE_MAX_LINES),
@@ -255,7 +251,7 @@ pub(crate) fn plan_caption(
             y: (text_y + line.top).round() as i32,
             block: line.block,
             color: Color::new(text_color, alpha),
-            shadow: if shadow.is_some() { 0.85 } else { 0.0 },
+            shadow: if shadow.is_some() { 0.55 } else { 0.0 },
         });
     }
     Ok(Some(OverlayPlan {

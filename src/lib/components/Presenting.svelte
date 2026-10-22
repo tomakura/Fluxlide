@@ -308,6 +308,10 @@
     display: block;
   }
 
+  .big img {
+    transition: opacity 0.4s ease-in-out;
+  }
+
   .big.dim img {
     opacity: 0.15;
   }
