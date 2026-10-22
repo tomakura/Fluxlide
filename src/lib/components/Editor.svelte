@@ -104,7 +104,7 @@
       </div>
       <nav>
         {#each TABS as [key, name] (key)}
-          <button class="tab" class:current={tab === key} onclick={() => (tab = key)}>{name}</button>
+          <button class="tab" class:current={tab === key} aria-pressed={tab === key} onclick={() => (tab = key)}>{name}</button>
         {/each}
       </nav>
       <div class="present">
