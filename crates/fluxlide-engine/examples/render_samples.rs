@@ -1,4 +1,5 @@
-//! Writes sample frames (transitions, captions, watermarks, fit modes) as
+//! Writes sample frames (transitions, captions, watermarks, fit modes, the
+//! title card) as
 //! PNG files so they can be looked at. Usage:
 //!
 //! ```text
@@ -36,6 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     captions(&renderer, &out_dir, &sunset, &fog)?;
     watermarks(&renderer, &out_dir, &sunset, &sea, &fog)?;
     fits(&renderer, &out_dir, &portrait, &sunset)?;
+    title_card(&renderer, &out_dir)?;
     println!("wrote samples to {}", out_dir.display());
     Ok(())
 }
@@ -329,6 +331,24 @@ enum Scene3 {
 
 /// A generated picture with smooth gradients, a light source and fine
 /// detail, so banding, blur and text legibility show up.
+/// The screen before and after a presentation.
+fn title_card(renderer: &Renderer, out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let mut target = OffscreenTarget::new(renderer, SIZE.0, SIZE.1)?;
+    let card = Overlay::title_card(renderer, "港の写真展 2026", SIZE)?;
+    let frame = Frame {
+        from: None,
+        to: None,
+        transition: None,
+        overlays: vec![OverlayRef {
+            overlay: &card,
+            opacity: 1.0,
+        }],
+    };
+    let pixels = render(renderer, &mut target, frame)?;
+    save(&out_dir.join("title-card.png"), SIZE, pixels)?;
+    Ok(())
+}
+
 fn photo(renderer: &Renderer, scene: Scene3, width: u32, height: u32) -> MediaTexture {
     let mut pixels = Vec::with_capacity((width * height * 4) as usize);
     for y in 0..height {

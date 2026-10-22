@@ -7,4 +7,4 @@ export type MusicStats = {
 /**
  * "idle", "playing" or "gap".
  */
-state: "idle" | "playing" | "gap", title: string | null, artist: string | null, tracksStarted: number, tracksFailed: number, underruns: number, starvedTransitions: number, lastError: string | null, };
+state: "idle" | "playing" | "gap", title: string | null, artist: string | null, volume: number, tracksStarted: number, tracksFailed: number, underruns: number, starvedTransitions: number, lastError: string | null, };

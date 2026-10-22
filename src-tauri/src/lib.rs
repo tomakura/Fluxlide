@@ -1,10 +1,12 @@
 mod editor;
 mod history;
+mod identify;
 mod import;
 mod presentation;
 mod preview;
 mod project;
 mod session;
+mod settings;
 
 use fluxlide_engine::media::video::Ffmpeg;
 use presentation::PresentationState;
@@ -82,6 +84,7 @@ pub fn run() {
         .manage(PresentationState::default())
         .manage(editor::EditorState::default())
         .manage(preview::PreviewState::default())
+        .manage(settings::SettingsState::default())
         .setup(|app| {
             let session = app.state::<editor::EditorState>().session();
             app.manage(import::Importer::start(app.handle().clone(), session));
@@ -93,9 +96,9 @@ pub fn run() {
                 return;
             }
             match event {
-                // Esc in the management window must not end the presentation.
+                // Keys pressed in the management window belong to it.
                 WindowEvent::Focused(true) => {
-                    presentation::set_escape_enabled(window.app_handle(), false);
+                    presentation::set_presenter_keys_enabled(window.app_handle(), false);
                 }
                 WindowEvent::Destroyed => {
                     let app = window.app_handle();
@@ -118,14 +121,18 @@ pub fn run() {
             editor::redo_show,
             import::import_files,
             import::replace_asset_file,
+            identify::identify_monitors,
             presentation::list_monitors,
-            presentation::media_assets,
             presentation::presentation_status,
+            presentation::control_presentation,
             presentation::start_presentation,
             presentation::stop_presentation,
             preview::start_preview,
             preview::stop_preview,
             preview::preview_frame,
+            settings::get_settings,
+            settings::set_sync_offset,
+            settings::set_output_screen,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

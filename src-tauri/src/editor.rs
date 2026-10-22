@@ -13,6 +13,7 @@ use ts_rs::TS;
 use crate::import;
 use crate::project::{self, Project};
 use crate::session::Session;
+use crate::settings::SettingsState;
 
 /// Sent with the current [`EditorState`] whenever the definition changes
 /// other than in answer to a command (an import finishing, for example).
@@ -99,12 +100,30 @@ pub fn projects_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|err| err.to_string())
 }
 
+/// The projects in the app's folder and those opened from elsewhere, most
+/// recently changed first.
 #[tauri::command]
-pub async fn list_projects(app: AppHandle) -> Result<Vec<ProjectSummary>, String> {
+pub async fn list_projects(
+    app: AppHandle,
+    settings: State<'_, SettingsState>,
+) -> Result<Vec<ProjectSummary>, String> {
     let root = projects_dir(&app)?;
-    let summaries = tauri::async_runtime::spawn_blocking(move || project::list(&root))
-        .await
-        .map_err(|err| err.to_string())?;
+    let elsewhere = settings.get(&app).recent_dirs;
+    let summaries = tauri::async_runtime::spawn_blocking(move || {
+        let mut found = project::list(&root);
+        // A folder that was moved or deleted since is left out.
+        found.extend(
+            elsewhere
+                .iter()
+                .filter(|dir| !dir.starts_with(&root))
+                .filter_map(|dir| project::summary(dir).ok()),
+        );
+        found.sort_by_key(|summary| std::cmp::Reverse(summary.updated_at));
+        found.dedup_by(|a, b| a.dir == b.dir);
+        found
+    })
+    .await
+    .map_err(|err| err.to_string())?;
     let scope = app.asset_protocol_scope();
     Ok(summaries
         .into_iter()
@@ -138,12 +157,18 @@ pub async fn create_project(
     .map_err(|err| err.to_string())?
 }
 
+/// Opens the project in `dir`. One outside the app's folder ("ほかの場所から
+/// 開く") is remembered for the home screen.
 #[tauri::command]
 pub async fn open_project(
     app: AppHandle,
     state: State<'_, EditorState>,
+    settings: State<'_, SettingsState>,
     dir: PathBuf,
 ) -> Result<ShowState, String> {
+    if !dir.starts_with(projects_dir(&app)?) && project::summary(&dir).is_ok() {
+        settings.update(&app, |settings| settings.remember_dir(&dir))?;
+    }
     let session = state.session();
     tauri::async_runtime::spawn_blocking(move || {
         // Imports of the session being closed stop before the media folder
