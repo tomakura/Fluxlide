@@ -73,6 +73,16 @@ async fn video_decoder_status() -> VideoDecoderStatus {
     }
 }
 
+/// The folder of license texts in an installed app (none while developing).
+#[tauri::command]
+fn licenses_dir(app: tauri::AppHandle) -> Option<String> {
+    app.path()
+        .resolve("licenses", tauri::path::BaseDirectory::Resource)
+        .ok()
+        .filter(|dir| dir.is_dir())
+        .map(|dir| dir.display().to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -115,6 +125,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             engine_status,
             video_decoder_status,
+            licenses_dir,
             editor::list_projects,
             editor::create_project,
             editor::open_project,

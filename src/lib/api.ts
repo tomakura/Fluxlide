@@ -76,6 +76,9 @@ export const exportEstimate = (choice: ExportChoice) => invoke<ExportEstimate>("
 export const startExport = (choice: ExportChoice, path: string) => invoke<void>("start_export", { choice, path });
 export const cancelExport = () => invoke<void>("cancel_export");
 
+/// The folder of license texts, in an installed app.
+export const licensesDir = () => invoke<string | null>("licenses_dir");
+
 export const getSettings = () => invoke<Settings>("get_settings");
 export const setSyncOffset = (offsetMs: number) => invoke<Settings>("set_sync_offset", { offsetMs });
 export const setOutputScreen = (name: string | null) =>
