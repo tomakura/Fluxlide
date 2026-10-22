@@ -24,6 +24,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::audio::{OfflineMixer, TRACK_CHANNELS};
+use crate::bgm::{Bgm, BgmConfig, BgmSource};
 use crate::media::video::{Ffmpeg, collect_log, command};
 use crate::{EngineError, OffscreenTarget, Renderer, Scene, Slideshow};
 
@@ -33,6 +34,8 @@ pub const EXPORT_SAMPLE_RATE: u32 = 48_000;
 const WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Frames read back but not yet taken by the encoder.
 const QUEUED_FRAMES: usize = 2;
+/// The music fades out over the end of the file, as the picture fades to black.
+const MUSIC_END_FADE_SECS: f64 = 2.0;
 
 /// H.264 encoders in order of preference. The operating systems' encoders
 /// come first: the LGPL build of FFmpeg that Fluxlide bundles has only
@@ -59,6 +62,16 @@ pub struct ExportSettings {
     /// The encoder to use, or `None` for the first available of
     /// [`VIDEO_ENCODERS`].
     pub video_encoder: Option<String>,
+    pub music: Option<ExportMusic>,
+}
+
+/// The background music of an export.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExportMusic {
+    pub source: BgmSource,
+    pub config: BgmConfig,
+    /// Lower the music while videos with sound play.
+    pub duck_for_videos: bool,
 }
 
 impl Default for ExportSettings {
@@ -69,6 +82,7 @@ impl Default for ExportSettings {
             video_kbps: 12_000,
             audio_kbps: 192,
             video_encoder: None,
+            music: None,
         }
     }
 }
@@ -230,9 +244,31 @@ fn render_pass(
     let mut mixer = OfflineMixer::export(EXPORT_SAMPLE_RATE);
     show.set_audio(mixer.mixer());
     show.play_once();
+    // Kept until the end: dropping it stops the music.
+    let _bgm = match &settings.music {
+        Some(music) => {
+            let bgm = Bgm::start(
+                ffmpeg.clone(),
+                &mixer.mixer(),
+                &music.source,
+                music.config.clone(),
+            )?;
+            if music.duck_for_videos {
+                show.set_ducker(bgm.ducker());
+            }
+            Some(bgm)
+        }
+        None => None,
+    };
 
     let mut encoder_process = VideoEncoder::spawn(ffmpeg, settings, encoder, &temp.video)?;
-    let audio_file = std::fs::File::create(&temp.audio)
+    // Read back at the end, to fade the music out.
+    let audio_file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&temp.audio)
         .map_err(|err| EngineError::Export(format!("could not write the sound: {err}")))?;
     let mut audio_out = BufWriter::new(audio_file);
 
@@ -253,6 +289,10 @@ fn render_pass(
             show.update(time);
             if !show.is_waiting() {
                 break;
+            }
+            if cancel.load(Ordering::Relaxed) {
+                encoder_process.abort();
+                return Err(EngineError::Export("the export was cancelled".into()));
             }
             if waited > WAIT_TIMEOUT {
                 encoder_process.abort();
@@ -285,6 +325,10 @@ fn render_pass(
         let frames = (end - samples_written) as usize;
         let mut audio_waited = Duration::ZERO;
         while !mixer.has_samples_for(frames) {
+            if cancel.load(Ordering::Relaxed) {
+                encoder_process.abort();
+                return Err(EngineError::Export("the export was cancelled".into()));
+            }
             if audio_waited > WAIT_TIMEOUT {
                 encoder_process.abort();
                 return Err(EngineError::Export(format!(
@@ -311,9 +355,13 @@ fn render_pass(
             media_secs: time,
         });
     }
-    audio_out
-        .flush()
+    let audio_file = audio_out
+        .into_inner()
         .map_err(|err| EngineError::Export(format!("could not write the sound: {err}")))?;
+    if settings.music.is_some() {
+        fade_out_tail(audio_file, samples_written)
+            .map_err(|err| EngineError::Export(format!("could not write the sound: {err}")))?;
+    }
     let finish_started = Instant::now();
     encoder_process.finish()?;
     report.encode_wait_secs += finish_started.elapsed().as_secs_f64();
@@ -325,6 +373,29 @@ fn render_pass(
         ));
     }
     Ok(report)
+}
+
+/// Fades the last [`MUSIC_END_FADE_SECS`] of the raw sound in `file`, which
+/// holds `frames` stereo frames, to silence.
+fn fade_out_tail(mut file: std::fs::File, frames: u64) -> std::io::Result<()> {
+    use std::io::{Read, Seek, SeekFrom};
+    let fade = ((MUSIC_END_FADE_SECS * f64::from(EXPORT_SAMPLE_RATE)) as u64).min(frames);
+    if fade == 0 {
+        return Ok(());
+    }
+    let frame_bytes = (TRACK_CHANNELS * 4) as u64;
+    let start = (frames - fade) * frame_bytes;
+    let mut tail = vec![0u8; (fade * frame_bytes) as usize];
+    file.seek(SeekFrom::Start(start))?;
+    file.read_exact(&mut tail)?;
+    for (index, frame) in tail.chunks_exact_mut(frame_bytes as usize).enumerate() {
+        let gain = 1.0 - (index + 1) as f32 / fade as f32;
+        for sample in frame.as_chunks_mut::<4>().0 {
+            *sample = (f32::from_le_bytes(*sample) * gain).to_le_bytes();
+        }
+    }
+    file.seek(SeekFrom::Start(start))?;
+    file.write_all(&tail)
 }
 
 /// An `ffmpeg` process encoding raw RGBA frames from its standard input.
@@ -611,6 +682,106 @@ mod tests {
         assert!(err.is_err());
         assert!(!cancelled.exists());
         assert!(!dir.join("cancelled.mp4.fluxlide-video.mkv").exists());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_music_plays_through_and_fades_out_at_the_end() {
+        let Some(renderer) = crate::test_renderer() else {
+            return;
+        };
+        let Ok(ffmpeg) = Ffmpeg::locate() else {
+            eprintln!("skipping export test: ffmpeg not found");
+            return;
+        };
+        let dir =
+            std::env::temp_dir().join(format!("fluxlide-export-music-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        image::RgbImage::from_pixel(64, 36, image::Rgb([40, 40, 200]))
+            .save(dir.join("photo.png"))
+            .unwrap();
+        let song = dir.join("song.wav");
+        let made = command(ffmpeg.ffmpeg_path())
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
+            .arg("sine=frequency=440:duration=10")
+            .arg(&song)
+            .status()
+            .unwrap();
+        assert!(made.success());
+
+        let mut definition = ShowDefinition::default();
+        definition.assets.push(Asset {
+            id: AssetId(1),
+            kind: AssetKind::Photo,
+            file: "photo.png".into(),
+            original_name: "photo.png".into(),
+            state: AssetState::Ready,
+            meta: AssetMeta::default(),
+            size: None,
+            duration_ms: None,
+            has_audio: false,
+        });
+        definition.slides.push(Slide::new(SlideId(1), AssetId(1)));
+        definition.look.photo_ms = 4000;
+        let settings = ExportSettings {
+            size: (64, 36),
+            fps: 20,
+            video_encoder: Some("mpeg4".into()),
+            music: Some(ExportMusic {
+                source: BgmSource::Files(vec![song]),
+                config: BgmConfig {
+                    tuning: crate::bgm::BgmTuning {
+                        fade_secs: 0.0,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                duck_for_videos: false,
+            }),
+            ..Default::default()
+        };
+        let mut show = Slideshow::new(renderer.clone(), definition, dir.clone(), settings.size);
+        let out = dir.join("out.mp4");
+        export_slideshow(
+            &renderer,
+            &ffmpeg,
+            &mut show,
+            &settings,
+            &out,
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+
+        // The sound, as mono 1 kHz samples.
+        let decoded = command(ffmpeg.ffmpeg_path())
+            .args(["-v", "error", "-i"])
+            .arg(&out)
+            .args(["-f", "f32le", "-ac", "1", "-ar", "1000", "pipe:1"])
+            .output()
+            .unwrap();
+        let samples: Vec<f32> = decoded
+            .stdout
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|bytes| f32::from_le_bytes(*bytes))
+            .collect();
+        let loudness = |range: std::ops::Range<usize>| {
+            let part = &samples[range];
+            (part.iter().map(|s| s * s).sum::<f32>() / part.len() as f32).sqrt()
+        };
+        let len = samples.len();
+        assert!(len > 3000, "{len}");
+        // FFmpeg's sine is at 1/8 of full scale, and the BGM at half volume:
+        // about 0.044 RMS. Heard from the start, with no wait in the file.
+        let full = 0.125 * 0.5 / 2f32.sqrt();
+        assert!(loudness(100..400) > full * 0.8, "{}", loudness(100..400));
+        assert!(loudness(len / 2 - 200..len / 2 + 200) > full * 0.8);
+        // Silent by the last frames.
+        let end = loudness(len - 50..len);
+        assert!(end < full * 0.1, "{end}");
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

@@ -264,6 +264,8 @@ struct Shared {
     current_seq: AtomicU64,
     underruns: AtomicU64,
     starved: AtomicU64,
+    /// Every track failed: the BGM stays silent.
+    gave_up: AtomicBool,
 }
 
 impl Shared {
@@ -282,6 +284,7 @@ impl Shared {
             current_seq: AtomicU64::new(0),
             underruns: AtomicU64::new(0),
             starved: AtomicU64::new(0),
+            gave_up: AtomicBool::new(false),
         };
         shared.set_tuning(tuning);
         shared
@@ -605,6 +608,8 @@ impl Playing {
 
 struct PlaylistSource {
     shared: Arc<Shared>,
+    /// Of the mixer the source is in.
+    sample_rate: f64,
     incoming: Receiver<TrackFeed>,
     queue: VecDeque<TrackFeed>,
     phase: Phase,
@@ -751,6 +756,36 @@ impl Source for PlaylistSource {
             },
             Ordering::Relaxed,
         );
+    }
+
+    /// The music is ready when the track playing has decoded past these
+    /// frames and its fade out (whose start is known only once its end is
+    /// decoded), and the next track has, if it starts within them.
+    fn ready_for(&mut self, frames: usize) -> bool {
+        if self.shared.gave_up.load(Ordering::Relaxed) {
+            return true;
+        }
+        self.queue.extend(self.incoming.try_iter());
+        let tuning = self.shared.tuning();
+        let rate = self.sample_rate;
+        let fade = (tuning.fade_secs * rate) as usize;
+        let gap = (tuning.gap_secs * rate) as usize;
+        let decoded = |feed: &TrackFeed| {
+            feed.finished.load(Ordering::Acquire)
+                || feed.samples.slots() / TRACK_CHANNELS >= frames + fade
+        };
+        let next_starts = match &self.phase {
+            Phase::Idle => true,
+            Phase::Gap(left) => (*left as usize) < frames,
+            Phase::Playing(playing) => {
+                if !decoded(&playing.feed) {
+                    return false;
+                }
+                playing.feed.finished.load(Ordering::Acquire)
+                    && playing.feed.samples.slots() / TRACK_CHANNELS + gap < frames
+            }
+        };
+        !next_starts || self.queue.front().is_some_and(decoded)
     }
 }
 
@@ -979,6 +1014,7 @@ impl Controller {
         info.fail(path, reason);
         if self.failures_in_row >= self.playlist.len() && !self.gave_up {
             self.gave_up = true;
+            self.shared.gave_up.store(true, Ordering::Relaxed);
             info.all_tracks_failed = true;
             info.push(BgmEvent::AllTracksFailed);
         }
@@ -1051,6 +1087,7 @@ impl Bgm {
         let (duck_commands, duck_incoming) = mpsc::channel();
         let playlist_source = PlaylistSource {
             shared: shared.clone(),
+            sample_rate: f64::from(mixer.format().sample_rate),
             incoming,
             queue: VecDeque::new(),
             phase: Phase::Idle,
@@ -1210,6 +1247,7 @@ mod tests {
             let (duck_commands, duck_incoming) = mpsc::channel();
             let source = PlaylistSource {
                 shared: shared.clone(),
+                sample_rate: f64::from(RATE),
                 incoming,
                 queue: VecDeque::new(),
                 phase: Phase::Idle,
@@ -1275,6 +1313,49 @@ mod tests {
             self.frames_done += frames;
             out.chunks(2).map(|frame| frame[0]).collect()
         }
+    }
+
+    #[test]
+    fn export_waits_for_the_music_to_be_decoded() {
+        // A fade of 100 frames: the end of a track must be known that far ahead.
+        let mut rig = Rig::new(tuning(0.1, 0.0, FadeCurve::Linear));
+        // Nothing handed over yet.
+        assert!(!rig.offline.has_samples_for(10));
+
+        // A track still decoding, 50 frames in: not enough to see its fade.
+        let (mut producer, samples) = rtrb::RingBuffer::new(1000);
+        let finished = Arc::new(AtomicBool::new(false));
+        for _ in 0..50 {
+            producer.push(0.5).unwrap();
+            producer.push(0.0).unwrap();
+        }
+        rig.feeds
+            .send(TrackFeed {
+                seq: 1,
+                samples,
+                finished: finished.clone(),
+            })
+            .unwrap();
+        assert!(!rig.offline.has_samples_for(10));
+        for _ in 0..100 {
+            producer.push(0.5).unwrap();
+            producer.push(0.0).unwrap();
+        }
+        assert!(rig.offline.has_samples_for(10));
+
+        // Decoded to its end, 150 frames: the next track is needed only once
+        // the buffer reaches past it.
+        finished.store(true, Ordering::Release);
+        rig.render(140);
+        assert!(rig.offline.has_samples_for(5));
+        assert!(!rig.offline.has_samples_for(20));
+        rig.queue_constant(2, 200, 0.25);
+        assert!(rig.offline.has_samples_for(20));
+
+        // With every track failed there is nothing to wait for.
+        rig.render(200);
+        rig.shared.gave_up.store(true, Ordering::Relaxed);
+        assert!(rig.offline.has_samples_for(500));
     }
 
     fn tuning(fade: f64, gap: f64, curve: FadeCurve) -> BgmTuning {

@@ -1,4 +1,5 @@
 mod editor;
+mod export;
 mod history;
 mod identify;
 mod import;
@@ -83,6 +84,7 @@ pub fn run() {
                 .build(),
         )
         .manage(PresentationState::default())
+        .manage(export::ExportState::default())
         .manage(editor::EditorState::default())
         .manage(preview::PreviewState::default())
         .manage(settings::SettingsState::default())
@@ -104,6 +106,7 @@ pub fn run() {
                 WindowEvent::Destroyed => {
                     let app = window.app_handle();
                     presentation::stop_blocking(&app.state::<PresentationState>());
+                    app.state::<export::ExportState>().cancel_blocking();
                     app.exit(0);
                 }
                 _ => {}
@@ -120,6 +123,9 @@ pub fn run() {
             editor::edit_show,
             editor::undo_show,
             editor::redo_show,
+            export::export_estimate,
+            export::start_export,
+            export::cancel_export,
             import::import_files,
             import::replace_asset_file,
             identify::identify_monitors,

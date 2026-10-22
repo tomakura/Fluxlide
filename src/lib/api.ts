@@ -7,6 +7,10 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AssetId } from "./bindings/AssetId";
 import type { Control } from "./bindings/Control";
 import type { EditOutcome } from "./bindings/EditOutcome";
+import type { ExportChoice } from "./bindings/ExportChoice";
+import type { ExportEstimate } from "./bindings/ExportEstimate";
+import type { ExportFinishedEvent } from "./bindings/ExportFinishedEvent";
+import type { ExportProgressEvent } from "./bindings/ExportProgressEvent";
 import type { ImportProgress } from "./bindings/ImportProgress";
 import type { ImportResult } from "./bindings/ImportResult";
 import type { LoadedTransition } from "./bindings/LoadedTransition";
@@ -66,6 +70,12 @@ export const loadTransition = (path: string) => invoke<LoadedTransition>("load_t
 /// The names of the music files `source` plays.
 export const musicTracks = (source: MusicSource) => invoke<string[]>("music_tracks", { source });
 
+/// What writing the open show as `choice` will make.
+export const exportEstimate = (choice: ExportChoice) => invoke<ExportEstimate>("export_estimate", { choice });
+/// Starts writing the open show to `path`; see `onExportProgress` and `onExportFinished`.
+export const startExport = (choice: ExportChoice, path: string) => invoke<void>("start_export", { choice, path });
+export const cancelExport = () => invoke<void>("cancel_export");
+
 export const getSettings = () => invoke<Settings>("get_settings");
 export const setSyncOffset = (offsetMs: number) => invoke<Settings>("set_sync_offset", { offsetMs });
 export const setOutputScreen = (name: string | null) =>
@@ -82,6 +92,11 @@ export const onPresentationEndRequested = (handler: () => void): Promise<Unliste
 /// The presentation ended from its own window.
 export const onPresentationEnded = (handler: () => void): Promise<UnlistenFn> =>
   listen("presentation-ended", () => handler());
+
+export const onExportProgress = (handler: (progress: ExportProgressEvent) => void): Promise<UnlistenFn> =>
+  listen<ExportProgressEvent>("export-progress", (event) => handler(event.payload));
+export const onExportFinished = (handler: (finished: ExportFinishedEvent) => void): Promise<UnlistenFn> =>
+  listen<ExportFinishedEvent>("export-finished", (event) => handler(event.payload));
 
 /// A URL the page can load a file of the open project (or a listed
 /// thumbnail) from.

@@ -282,6 +282,13 @@ pub trait Source: Send {
     /// stereo with `timeline.frames()` frames. Runs on the audio thread, so it
     /// must not block.
     fn render(&mut self, out: &mut [f32], timeline: &Timeline<'_>);
+
+    /// For export: whether the next `frames` frames can be rendered as
+    /// they will sound, without waiting for a decoder. Live playback does
+    /// not ask.
+    fn ready_for(&mut self, _frames: usize) -> bool {
+        true
+    }
 }
 
 /// Keeps a [`Source`] playing; dropping it removes the source.
@@ -702,11 +709,19 @@ impl OfflineMixer {
         core.voices.extend(core.incoming.try_iter());
         // One frame more than asked for: a voice also reads the following frame.
         let needed = (frames + 1) * TRACK_CHANNELS;
-        core.voices.iter().all(|voice| {
+        let voices = core.voices.iter().all(|voice| {
             voice.control.stopped.load(Ordering::Relaxed)
                 || voice.control.finished.load(Ordering::Relaxed)
                 || voice.samples.slots() >= needed
-        })
+        });
+        core.sources.extend(core.incoming_sources.try_iter());
+        core.sources
+            .retain(|slot| !slot.stopped.load(Ordering::Relaxed));
+        voices
+            && core
+                .sources
+                .iter_mut()
+                .all(|slot| slot.source.ready_for(frames))
     }
 
     /// Mixes `frames` frames of stereo sound whose first frame is heard at
