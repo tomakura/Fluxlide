@@ -109,6 +109,13 @@ impl Transition {
         Self::builtin("wipe", WIPE, [x, y, 0.0, 0.0])
     }
 
+    /// A yellow cover with a paw-shaped hole closes in on the outgoing
+    /// picture, a dark paw fills the hole while the pictures change, and
+    /// the hole opens again on the incoming picture.
+    pub fn paw() -> Self {
+        Self::builtin("paw", PAW, [0.0; 4])
+    }
+
     /// Builds a transition from WGSL source that defines
     /// `fn transition(uv: vec2<f32>, progress: f32) -> vec4<f32>`.
     ///
@@ -268,3 +275,4 @@ const FADE: &str = include_str!("transitions/fade.wgsl");
 const SLIDE: &str = include_str!("transitions/slide.wgsl");
 const ZOOM: &str = include_str!("transitions/zoom.wgsl");
 const WIPE: &str = include_str!("transitions/wipe.wgsl");
+const PAW: &str = include_str!("transitions/paw.wgsl");

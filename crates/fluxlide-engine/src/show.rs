@@ -228,6 +228,8 @@ pub enum TransitionChoice {
         direction: Direction,
     },
     Zoom,
+    /// A paw-shaped hole closes and opens again.
+    Paw,
     /// One of [`Look::custom_transitions`].
     Custom {
         id: TransitionId,

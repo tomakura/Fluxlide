@@ -1048,6 +1048,7 @@ impl Slideshow {
             TransitionChoice::Slide { direction } => Transition::slide(direction),
             TransitionChoice::Wipe { direction } => Transition::wipe(direction),
             TransitionChoice::Zoom => Transition::zoom(),
+            TransitionChoice::Paw => Transition::paw(),
             TransitionChoice::Custom { id } => self
                 .custom_transitions
                 .get(&id)
