@@ -100,10 +100,11 @@ fn paw_distance(p: vec2<f32>) -> f32 {
 }
 
 // Each movement starts gently and takes longer to stop: it speeds up
-// (cubic) over the first 20% of its time and slows down (quadratic) over
-// the rest. The two parts meet at the same speed.
+// (cubic) over the first 20% of its time and slows down (quartic) over
+// the rest, so it eases into place rather than braking to a stop. The two
+// parts meet at the same speed.
 const PAW_EASE_TURN: f32 = 0.2;
-const PAW_EASE_AT_TURN: f32 = 0.142857;
+const PAW_EASE_AT_TURN: f32 = 0.25;
 
 fn paw_ease(t: f32) -> f32 {
     let x = clamp(t, 0.0, 1.0);
@@ -112,7 +113,7 @@ fn paw_ease(t: f32) -> f32 {
         return PAW_EASE_AT_TURN * a * a * a;
     }
     let b = (1.0 - x) / (1.0 - PAW_EASE_TURN);
-    return 1.0 - (1.0 - PAW_EASE_AT_TURN) * b * b;
+    return 1.0 - (1.0 - PAW_EASE_AT_TURN) * b * b * b * b;
 }
 
 fn transition(uv: vec2<f32>, progress: f32) -> vec4<f32> {
