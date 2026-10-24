@@ -33,6 +33,7 @@
       { kind: "wipe", direction },
     ]),
     ["zoom", "ズーム", { kind: "zoom" }],
+    ["paw", "肉球", { kind: "paw" }],
     ["cut", "カット（すぐ切り替える）", { kind: "cut" }],
     ...show.look.customTransitions.map((custom): [string, string, TransitionChoice] => [
       `custom-${custom.id}`,

@@ -13,7 +13,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use fluxlide_engine::show::{SHOW_VERSION, ShowDefinition};
+use fluxlide_engine::show::{DEFAULT_TRANSITION_MS, SHOW_VERSION, ShowDefinition};
 use rusqlite::{Connection, OptionalExtension, params};
 
 pub const DATABASE_FILE: &str = "project.sqlite";
@@ -188,18 +188,37 @@ pub fn list(parent: &Path) -> Vec<Summary> {
     found
 }
 
-/// Checks the version of a stored definition before reading it. A
-/// definition without one is not accepted as the current version, so a
-/// future conversion cannot miss it.
+/// Checks the version of a stored definition before reading it, and
+/// converts an older one. A definition without one, or with version 0
+/// (never written), is not accepted as any version, so a conversion
+/// cannot miss it.
 fn parse_definition(json: &str) -> Result<ShowDefinition, ProjectError> {
-    let value: serde_json::Value =
+    let mut value: serde_json::Value =
         serde_json::from_str(json).map_err(|err| ProjectError::Damaged(err.to_string()))?;
     let version = value
         .get("version")
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| ProjectError::Damaged("版の情報がありません".into()))?;
+    if version == 0 {
+        return Err(ProjectError::Damaged("版0の定義は読めません".into()));
+    }
     if version > u64::from(SHOW_VERSION) {
         return Err(ProjectError::TooNew);
+    }
+    if version == 1 {
+        // Version 1 always stored the look's transition length, 1 s unless
+        // changed. Every transition then had that length by default, so
+        // leaving it unset keeps them as they were and lets the paw, added
+        // in version 2, take its own.
+        if let Some(look) = value
+            .get_mut("look")
+            .and_then(serde_json::Value::as_object_mut)
+            && look.get("transitionMs").and_then(serde_json::Value::as_u64)
+                == Some(u64::from(DEFAULT_TRANSITION_MS))
+        {
+            look.insert("transitionMs".into(), serde_json::Value::Null);
+        }
+        value["version"] = SHOW_VERSION.into();
     }
     serde_json::from_value(value).map_err(|err| ProjectError::Damaged(err.to_string()))
 }
@@ -345,6 +364,12 @@ pub(crate) mod tests {
             parse_definition(&missing.to_string()),
             Err(ProjectError::Damaged(_))
         ));
+        let mut zero = show.clone();
+        zero["version"] = 0.into();
+        assert!(matches!(
+            parse_definition(&zero.to_string()),
+            Err(ProjectError::Damaged(_))
+        ));
         let mut newer = show.clone();
         newer["version"] = (SHOW_VERSION + 1).into();
         assert!(matches!(
@@ -352,6 +377,19 @@ pub(crate) mod tests {
             Err(ProjectError::TooNew)
         ));
         assert_eq!(parse_definition(&show.to_string()).unwrap(), photo_show(1));
+    }
+
+    #[test]
+    fn a_version_1_definition_keeps_a_changed_transition_length_only() {
+        let mut show = serde_json::to_value(photo_show(1)).unwrap();
+        show["version"] = 1.into();
+        show["look"]["transitionMs"] = 1_000.into();
+        let read = parse_definition(&show.to_string()).unwrap();
+        assert_eq!(read.version, SHOW_VERSION);
+        assert_eq!(read.look.transition_ms, None);
+        show["look"]["transitionMs"] = 2_500.into();
+        let read = parse_definition(&show.to_string()).unwrap();
+        assert_eq!(read.look.transition_ms, Some(2_500));
     }
 
     #[test]

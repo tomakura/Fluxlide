@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { clock, fileSize, roughly, seconds } from "./format";
+import type { ShowDefinition } from "./bindings/ShowDefinition";
+import type { Slide } from "./bindings/Slide";
+import { clock, effective, fileSize, roughly, seconds } from "./format";
 
 describe("format", () => {
   it("writes lengths in seconds and minutes", () => {
@@ -23,5 +25,15 @@ describe("format", () => {
     expect(roughly(20)).toBe("1分未満");
     expect(roughly(180)).toBe("約3分");
     expect(roughly(4800)).toBe("約1時間20分");
+  });
+
+  it("gives a transition without a length its own, unless the look sets one", () => {
+    const show = { look: { transition: { kind: "paw" }, transitionMs: null } } as ShowDefinition;
+    const slide = { transition: null, transitionMs: null, framing: { fit: null } } as unknown as Slide;
+    expect(effective(slide, show).transitionMs).toBe(5000);
+    expect(effective({ ...slide, transition: { kind: "fade" } }, show).transitionMs).toBe(1000);
+    expect(effective({ ...slide, transitionMs: 3000 }, show).transitionMs).toBe(3000);
+    show.look.transitionMs = 2000;
+    expect(effective(slide, show).transitionMs).toBe(2000);
   });
 });

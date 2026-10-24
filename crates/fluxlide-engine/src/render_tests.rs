@@ -138,6 +138,7 @@ fn every_transition_starts_on_the_outgoing_and_ends_on_the_incoming_picture() {
         Transition::wipe(Direction::Left),
         Transition::wipe(Direction::Down),
         Transition::wipe(Direction::Up),
+        Transition::paw(),
     ];
     for transition in &all {
         let start = render(
@@ -235,6 +236,30 @@ fn wipe_reveals_the_incoming_picture_behind_an_edge_travelling_in_its_direction(
     // The edge is soft: right on it, the two pictures are mixed.
     let middle = pixel(&early, 40, 12, 10);
     assert!(middle[0] > 20 && middle[2] > 20, "{middle:?}");
+}
+
+#[test]
+fn paw_closes_on_a_dark_paw_and_opens_on_the_incoming_picture() {
+    let Some(renderer) = test_renderer() else {
+        return;
+    };
+    let red = solid(&renderer, [255, 0, 0]);
+    let blue = solid(&renderer, [0, 0, 255]);
+    let paw = Transition::paw();
+    let size = (64, 36);
+    let yellow = [228, 202, 57];
+    // Closed: the dark paw in the middle, the yellow cover around it.
+    let closed = render(&renderer, size, transition_frame(&red, &blue, &paw, 0.5));
+    assert_close(pixel(&closed, 64, 32, 20), [36, 16, 0], 2, "palm, closed");
+    assert_close(pixel(&closed, 64, 2, 2), yellow, 2, "corner, closed");
+    // Opening: the incoming picture shows through the palm.
+    let opening = render(&renderer, size, transition_frame(&red, &blue, &paw, 0.65));
+    assert_close(pixel(&opening, 64, 32, 21), [0, 0, 255], 2, "palm, opening");
+    assert_close(pixel(&opening, 64, 2, 2), yellow, 2, "corner, opening");
+    // Closing: the outgoing picture, darkening, in the hole.
+    let closing = render(&renderer, size, transition_frame(&red, &blue, &paw, 0.2));
+    let palm = pixel(&closing, 64, 32, 21);
+    assert!(palm[0] > 60 && palm[0] < 250 && palm[2] < 5, "{palm:?}");
 }
 
 #[test]

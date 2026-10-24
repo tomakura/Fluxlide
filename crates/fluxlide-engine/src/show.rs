@@ -34,11 +34,13 @@ use crate::{CaptionDesign, Corner, Direction, Fit};
 
 /// Version of the [`ShowDefinition`] layout. Raised when a stored project
 /// needs converting to be read.
-pub const SHOW_VERSION: u32 = 1;
+pub const SHOW_VERSION: u32 = 2;
 
 /// Defaults from the screen design (`docs/ui-draft.md`).
 pub const DEFAULT_PHOTO_MS: u32 = 10_000;
 pub const DEFAULT_TRANSITION_MS: u32 = 1_000;
+/// The paw closes and opens slowly, as in the PowerPoint it comes from.
+pub const PAW_TRANSITION_MS: u32 = 5_000;
 
 /// Identifies an [`Asset`] within its project.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, TS)]
@@ -228,10 +230,23 @@ pub enum TransitionChoice {
         direction: Direction,
     },
     Zoom,
+    /// A paw-shaped hole closes and opens again.
+    Paw,
     /// One of [`Look::custom_transitions`].
     Custom {
         id: TransitionId,
     },
+}
+
+impl TransitionChoice {
+    /// Length used when neither the slide nor the look sets one.
+    pub fn default_ms(self) -> u32 {
+        match self {
+            Self::Cut => 0,
+            Self::Paw => PAW_TRANSITION_MS,
+            _ => DEFAULT_TRANSITION_MS,
+        }
+    }
 }
 
 /// A transition written by the user in WGSL (see `transition.rs` for the
@@ -322,7 +337,9 @@ impl VideoOptions {
 pub struct Look {
     pub photo_ms: u32,
     pub transition: TransitionChoice,
-    pub transition_ms: u32,
+    /// Length of every transition whose slide sets none. `None`: each
+    /// transition's own length ([`TransitionChoice::default_ms`]).
+    pub transition_ms: Option<u32>,
     pub fit: Fit,
     pub caption: CaptionLook,
     pub watermark: Option<WatermarkSpec>,
@@ -332,12 +349,20 @@ pub struct Look {
     pub motion: Option<Motion>,
 }
 
+impl Look {
+    /// Length of the fade to black after the last slide.
+    pub fn to_black_ms(&self) -> u32 {
+        self.transition_ms
+            .unwrap_or(TransitionChoice::Fade.default_ms())
+    }
+}
+
 impl Default for Look {
     fn default() -> Self {
         Self {
             photo_ms: DEFAULT_PHOTO_MS,
             transition: TransitionChoice::Fade,
-            transition_ms: DEFAULT_TRANSITION_MS,
+            transition_ms: None,
             fit: Fit::Blur,
             caption: CaptionLook::default(),
             watermark: None,
@@ -560,12 +585,15 @@ impl Timeline {
                 let choice = slide.transition.unwrap_or(look.transition);
                 let ms = match choice {
                     TransitionChoice::Cut => 0,
-                    _ => slide.transition_ms.unwrap_or(look.transition_ms),
+                    _ => slide
+                        .transition_ms
+                        .or(look.transition_ms)
+                        .unwrap_or(choice.default_ms()),
                 };
                 (choice, ms)
             })
             .collect();
-        joins.push((TransitionChoice::Fade, look.transition_ms));
+        joins.push((TransitionChoice::Fade, look.to_black_ms()));
         for (index, (_, _, body)) in slides.iter().enumerate() {
             if let Body::Video(range) = body {
                 for join in [index, index + 1] {
@@ -702,6 +730,28 @@ mod tests {
     }
 
     #[test]
+    fn a_transition_without_a_length_takes_its_own() {
+        let mut show = show(vec![photo(1), photo(2), photo(3)]);
+        show.look.transition = TransitionChoice::Paw;
+        show.slides[2].transition = Some(TransitionChoice::Wipe {
+            direction: Direction::Right,
+        });
+        let timeline = Timeline::build(&show, &listed(&show));
+        let entries = &timeline.entries;
+        assert_eq!(entries[0].enter_ms, 5_000);
+        assert_eq!(entries[1].enter_ms, 5_000);
+        assert_eq!(entries[2].enter_ms, 1_000);
+        // The fade to black at the end is not a paw.
+        assert_eq!(timeline.end_ms - entries[2].leave_ms, 1_000);
+
+        // A length set in the look is used for every transition.
+        show.look.transition_ms = Some(2_000);
+        let timeline = Timeline::build(&show, &listed(&show));
+        assert_eq!(timeline.entries[1].enter_ms, 2_000);
+        assert_eq!(timeline.entries[2].enter_ms, 2_000);
+    }
+
+    #[test]
     fn a_video_plays_its_range_once_with_the_transitions_inside_it() {
         let mut show = show(vec![photo(1), video(2, 8_000), photo(3)]);
         show.slides[1].video = VideoOptions {
@@ -719,7 +769,7 @@ mod tests {
     #[test]
     fn transitions_around_a_short_video_are_shortened_to_fit_it() {
         let mut show = show(vec![photo(1), video(2, 1_200), photo(3)]);
-        show.look.transition_ms = 2_000;
+        show.look.transition_ms = Some(2_000);
         let timeline = Timeline::build(&show, &listed(&show));
         let video = timeline.entries[1];
         assert_eq!(video.enter_ms, 600);

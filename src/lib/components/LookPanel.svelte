@@ -7,7 +7,7 @@
   import type { Fit } from "$lib/bindings/Fit";
   import type { Look } from "$lib/bindings/Look";
   import type { WatermarkSpec } from "$lib/bindings/WatermarkSpec";
-  import { CORNERS, FITS, PHOTO_EXTENSIONS, ZOOMS, zoomOf } from "$lib/format";
+  import { CORNERS, FITS, PHOTO_EXTENSIONS, ZOOMS, ownLength, zoomOf } from "$lib/format";
   import { dropUnusedAsset, removeCustomTransition } from "$lib/edits";
   import { open } from "$lib/show.svelte";
   import TransitionSelect from "./TransitionSelect.svelte";
@@ -229,10 +229,14 @@
           type="number"
           min="0.1"
           step="0.1"
-          value={look.transitionMs / 1000}
+          placeholder={`${ownLength(look.transition) / 1000}（種類ごとの長さ）`}
+          value={look.transitionMs === null ? "" : look.transitionMs / 1000}
           oninput={(e) => {
-            const ms = Math.round(Number(e.currentTarget.value) * 1000);
-            if (ms > 0) setLook((look) => (look.transitionMs = ms), "transitionMs");
+            // Left empty, each transition takes its own length.
+            const value = e.currentTarget.value;
+            const ms = Math.round(Number(value) * 1000);
+            if (value.trim() === "") setLook((look) => (look.transitionMs = null), "transitionMs");
+            else if (ms > 0) setLook((look) => (look.transitionMs = ms), "transitionMs");
           }}
         />
       </label>

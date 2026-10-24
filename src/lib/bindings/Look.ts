@@ -9,7 +9,12 @@ import type { WatermarkSpec } from "./WatermarkSpec";
 /**
  * Settings shared by all slides (the "見た目" tab).
  */
-export type Look = { photoMs: number, transition: TransitionChoice, transitionMs: number, fit: Fit, caption: CaptionLook, watermark: WatermarkSpec | null, customTransitions: Array<CustomTransition>, 
+export type Look = { photoMs: number, transition: TransitionChoice, 
+/**
+ * Length of every transition whose slide sets none. `None`: each
+ * transition's own length ([`TransitionChoice::default_ms`]).
+ */
+transitionMs: number | null, fit: Fit, caption: CaptionLook, watermark: WatermarkSpec | null, customTransitions: Array<CustomTransition>, 
 /**
  * Slow zoom for every photo whose slide has none of its own. A slide
  * that should stay still while this is set has a motion of 1 to 1.

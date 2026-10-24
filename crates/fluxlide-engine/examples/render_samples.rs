@@ -72,6 +72,7 @@ fn transitions(
         ("zoom", Transition::zoom()),
         ("wipe-right", Transition::wipe(Direction::Right)),
         ("wipe-down", Transition::wipe(Direction::Down)),
+        ("paw", Transition::paw()),
     ];
     for (name, transition) in all {
         let steps = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0f32];

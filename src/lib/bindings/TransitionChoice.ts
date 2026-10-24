@@ -5,4 +5,4 @@ import type { TransitionId } from "./TransitionId";
 /**
  * A transition chosen by name, turned into a shader by the engine.
  */
-export type TransitionChoice = { "kind": "cut" } | { "kind": "fade" } | { "kind": "slide", direction: Direction, } | { "kind": "wipe", direction: Direction, } | { "kind": "zoom" } | { "kind": "custom", id: TransitionId, };
+export type TransitionChoice = { "kind": "cut" } | { "kind": "fade" } | { "kind": "slide", direction: Direction, } | { "kind": "wipe", direction: Direction, } | { "kind": "zoom" } | { "kind": "paw" } | { "kind": "custom", id: TransitionId, };
