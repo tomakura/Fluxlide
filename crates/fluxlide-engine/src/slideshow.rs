@@ -25,11 +25,13 @@
 //! title card, the show can wait on it before the first slide and end on
 //! it after the last.
 //!
-//! With an [`AudioMixer`] attached, a video's sound starts with its picture
-//! on the same playback clock and its volume follows the picture's opacity
-//! through transitions. With a [`Ducker`] attached, each video with sound is
-//! announced to the BGM as soon as the time it will start is known, so the
-//! BGM can be faded out before it.
+//! A video plays once its transition in is over, and ends before the next
+//! slide comes in; through the transitions it stays on its first or last
+//! frame. With an [`AudioMixer`] attached, its sound plays with its picture
+//! on the same playback clock; if the operator moves on before the video
+//! ends, the sound fades out with the picture. With a [`Ducker`] attached,
+//! each video with sound is announced to the BGM as soon as the time it
+//! will start is known, so the BGM can be faded out before it.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -121,6 +123,11 @@ struct Showing {
 }
 
 impl Showing {
+    /// Playback time at which a video starts to play.
+    fn play_at(&self) -> f64 {
+        self.anchor + ms_to_secs(u64::from(self.entry.enter_ms))
+    }
+
     /// Playback time at which the next slide is due to come in.
     fn leave_at(&self) -> f64 {
         self.anchor + ms_to_secs(self.entry.leave_ms - self.entry.start_ms)
@@ -577,8 +584,10 @@ impl Slideshow {
         let Some(current) = &self.current else {
             return;
         };
-        let elapsed = now - current.anchor;
-        let remaining = span_secs(&current.entry) - elapsed;
+        // Paused during the transition in, the sound still starts with the
+        // video; paused while it played, it goes on from there.
+        let played = (now - current.play_at()).max(0.0);
+        let remaining = play_secs(&current.entry) - played;
         let (Some(mixer), Ok(ffmpeg), Some(asset)) = (
             &self.audio,
             &self.ffmpeg,
@@ -590,13 +599,13 @@ impl Slideshow {
             return;
         }
         let range = PlayRange {
-            start: ms_to_secs(u64::from(current.entry.video_start_ms.unwrap_or(0))) + elapsed,
+            start: ms_to_secs(u64::from(current.entry.video_start_ms.unwrap_or(0))) + played,
             length: Some(remaining),
         };
         let path = self.media_dir.join(&asset.file);
         let track = AudioTrack::open(ffmpeg, &path, mixer.format(), range);
-        let start = self.mixer_time(now);
-        let end = self.mixer_time(current.anchor + span_secs(&current.entry));
+        let start = self.mixer_time(now.max(current.play_at()));
+        let end = self.mixer_time(current.leave_at());
         let duck = self
             .ducker
             .as_ref()
@@ -605,9 +614,9 @@ impl Slideshow {
         let current = self.current.as_mut().expect("checked above");
         match track {
             Ok(mut track) => {
-                current.voice = track
-                    .take_samples()
-                    .map(|(samples, finished)| mixer.play(samples, finished, start, 0.0));
+                current.voice = track.take_samples().map(|(samples, finished)| {
+                    mixer.play(samples, finished, start, current.volume())
+                });
                 current._duck = duck;
                 if let Prepared::Video { audio, .. } = &mut current.media {
                     *audio = Some(track);
@@ -732,8 +741,9 @@ impl Slideshow {
 
         self.video_late = false;
         for showing in self.current.iter_mut().chain(self.outgoing.iter_mut()) {
+            let play_at = showing.play_at();
             if let Prepared::Video { player, .. } = &mut showing.media {
-                let update = player.update(&self.renderer, now - showing.anchor);
+                let update = player.update(&self.renderer, now - play_at);
                 self.video_late |= update.late;
                 self.stats.video_late_frames += u64::from(update.late);
                 self.stats.video_skipped_frames += u64::from(update.skipped);
@@ -808,13 +818,13 @@ impl Slideshow {
         if !ready.media.has_sound() {
             return;
         }
-        let start = self.mixer_time(start);
+        let start = self.mixer_time(start + ms_to_secs(u64::from(ready.entry.enter_ms)));
         // Not due yet (held on the title card): a window that never closes
         // would be kept by the ducker forever.
         if !start.is_finite() {
             return;
         }
-        let span = (start, start + span_secs(&ready.entry));
+        let span = (start, start + play_secs(&ready.entry));
         match &mut self.announced {
             Some(announced) if announced.span == span => {}
             Some(announced) => {
@@ -996,9 +1006,9 @@ impl Slideshow {
             // Already fully visible: as if it had come in just before.
             anchor -= ms_to_secs(u64::from(entry.enter_ms));
         }
-        let mixer_anchor = self.mixer_time(anchor);
-        // The sound starts at the same playback time as the picture, silent
-        // until `update` raises it with the transition.
+        // The sound starts when the video starts to play.
+        let play_at = self.mixer_time(anchor + ms_to_secs(u64::from(entry.enter_ms)));
+        let volume = slide.video.volume;
         let voice = match (&mut media, &self.audio) {
             (
                 Prepared::Video {
@@ -1007,11 +1017,11 @@ impl Slideshow {
                 Some(mixer),
             ) => track
                 .take_samples()
-                .map(|(samples, finished)| mixer.play(samples, finished, mixer_anchor, 0.0)),
+                .map(|(samples, finished)| mixer.play(samples, finished, play_at, volume)),
             _ => None,
         };
         let duck = media.has_sound().then(|| {
-            let (start, end) = (mixer_anchor, mixer_anchor + span_secs(&entry));
+            let (start, end) = (play_at, play_at + play_secs(&entry));
             match (self.announced.take(), &self.ducker) {
                 (Some(announced), _) => {
                     announced.window.set(start, end);
@@ -1150,7 +1160,7 @@ impl Slideshow {
         let kind = asset.kind;
         let range = PlayRange {
             start: ms_to_secs(u64::from(entry.video_start_ms.unwrap_or(0))),
-            length: Some(span_secs(&entry)),
+            length: Some(play_secs(&entry)),
         };
         let renderer = self.renderer.clone();
         let ffmpeg = self.ffmpeg.clone();
@@ -1227,9 +1237,10 @@ fn ms_to_secs(ms: u64) -> f64 {
     ms as f64 / 1000.0
 }
 
-/// How long an entry is on screen, transitions included.
-fn span_secs(entry: &TimelineEntry) -> f64 {
-    ms_to_secs(entry.end_ms - entry.start_ms)
+/// How long a video plays: from the end of its transition in until the
+/// next slide comes in.
+fn play_secs(entry: &TimelineEntry) -> f64 {
+    ms_to_secs(entry.leave_ms - entry.play_start_ms())
 }
 
 fn prepare(
@@ -1589,8 +1600,9 @@ mod tests {
 
         update_exactly(&mut show, 0.0);
         update_until(&mut show, 1.0, |show| show.ready.is_some());
-        // Announced as soon as it is ready, for the time its range plays.
-        assert_eq!(probe.windows(), [(1.5, 2.5)]);
+        // Announced as soon as it is ready, for the time its range plays:
+        // after its transition in (1.5 to 2.0).
+        assert_eq!(probe.windows(), [(2.0, 3.0)]);
         let Some(Ready {
             media: Prepared::Video { player, .. },
             ..
@@ -1604,17 +1616,18 @@ mod tests {
         show.update(1.6);
         assert_eq!(show.stats().current, Some(SlideId(2)));
         assert_eq!(show.current.as_ref().unwrap().anchor, 1.5);
-        assert_eq!(probe.windows(), [(1.5, 2.5)]);
+        assert_eq!(probe.windows(), [(2.0, 3.0)]);
 
-        // The photo comes back in at 2.0 and the video is gone at 2.5.
-        update_until(&mut show, 1.9, |show| show.ready.is_some());
-        show.update(2.2);
-        show.update(2.5);
+        // The photo comes back in once the range has played, at 3.0, and
+        // the video is gone at 3.5.
+        update_until(&mut show, 2.9, |show| show.ready.is_some());
+        show.update(3.2);
+        show.update(3.5);
         assert_eq!(show.stats().current, Some(SlideId(1)));
         assert!(show.outgoing.is_none());
         assert_eq!(probe.windows(), []);
 
-        update_until(&mut show, 2.5, |show| show.loading.is_none());
+        update_until(&mut show, 3.5, |show| show.loading.is_none());
         // Stops the decoders, which keep the clip open on Windows.
         drop(show);
         std::fs::remove_dir_all(&dir).unwrap();
@@ -1923,17 +1936,18 @@ mod tests {
         show.set_ducker(ducker);
 
         update_exactly(&mut show, 0.0);
-        assert_eq!(probe.windows(), [(0.0, 2.0)]);
-        show.update(0.5);
+        // It plays once it has come in from black, at 0.5.
+        assert_eq!(probe.windows(), [(0.5, 2.5)]);
+        show.update(1.0);
         show.pause();
         assert!(show.current.as_ref().unwrap().voice.is_none());
         assert_eq!(probe.windows(), []);
 
         // After 3 s paused, the rest of the video (1.5 s) plays from now.
-        show.update(3.5);
+        show.update(4.0);
         show.resume();
         assert!(show.current.as_ref().unwrap().voice.is_some());
-        assert_eq!(probe.windows(), [(3.5, 5.0)]);
+        assert_eq!(probe.windows(), [(4.0, 5.5)]);
 
         drop(show);
         std::fs::remove_dir_all(&dir).unwrap();
