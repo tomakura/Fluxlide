@@ -6,7 +6,7 @@
   import type { ShowDefinition } from "$lib/bindings/ShowDefinition";
   import type { Slide } from "$lib/bindings/Slide";
   import type { SlideId } from "$lib/bindings/SlideId";
-  import { FITS, ZOOMS, effective, seconds, transitionName, zoomOf } from "$lib/format";
+  import { FITS, ZOOMS, effective, ownLength, seconds, transitionName, zoomOf } from "$lib/format";
   import { open } from "$lib/show.svelte";
   import TransitionSelect from "./TransitionSelect.svelte";
 
@@ -166,7 +166,9 @@
             type="number"
             min="0"
             step="0.1"
-            placeholder={`${show.look.transitionMs / 1000}（見た目の設定）`}
+            placeholder={show.look.transitionMs === null
+              ? `${ownLength(uses.transition) / 1000}（${transitionName(uses.transition, show)}の長さ）`
+              : `${show.look.transitionMs / 1000}（見た目の設定）`}
             disabled={uses.transition.kind === "cut"}
             value={secs(slide.transitionMs)}
             oninput={(e) => {

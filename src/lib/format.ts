@@ -110,13 +110,27 @@ export const FITS: Record<Fit, string> = {
   cover: "トリミング",
 };
 
+/// Length of a transition when neither its slide nor the look sets one
+/// (the engine's `TransitionChoice::default_ms`).
+export function ownLength(choice: TransitionChoice): number {
+  switch (choice.kind) {
+    case "cut":
+      return 0;
+    case "paw":
+      return 5000;
+    default:
+      return 1000;
+  }
+}
+
 /// What the slide actually uses: its own settings, or the look's.
 export function effective(slide: Slide, show: ShowDefinition) {
   const transition = slide.transition ?? show.look.transition;
   return {
     durationMs: slide.durationMs ?? show.look.photoMs,
     transition,
-    transitionMs: transition.kind === "cut" ? 0 : (slide.transitionMs ?? show.look.transitionMs),
+    transitionMs:
+      transition.kind === "cut" ? 0 : (slide.transitionMs ?? show.look.transitionMs ?? ownLength(transition)),
     fit: slide.framing.fit ?? show.look.fit,
   };
 }

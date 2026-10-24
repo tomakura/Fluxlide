@@ -626,7 +626,7 @@ mod tests {
             definition.slides.push(Slide::new(SlideId(id), AssetId(id)));
         }
         definition.look.photo_ms = 500;
-        definition.look.transition_ms = 250;
+        definition.look.transition_ms = Some(250);
         let timeline = crate::show::Timeline::build(&definition, &[0, 1]);
         let settings = ExportSettings {
             size: (64, 36),

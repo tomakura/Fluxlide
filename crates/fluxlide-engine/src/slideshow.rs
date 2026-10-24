@@ -932,7 +932,7 @@ impl Slideshow {
         start: f64,
         card: impl Fn(f32) -> Option<OverlayRef<'a>>,
     ) -> Frame<'a> {
-        let secs = ms_to_secs(u64::from(self.show.look.transition_ms));
+        let secs = ms_to_secs(u64::from(self.show.look.to_black_ms()));
         let progress = if secs > 0.0 {
             ((self.now - start) / secs).clamp(0.0, 1.0) as f32
         } else {
@@ -1293,7 +1293,7 @@ mod tests {
             show.slides.push(Slide::new(SlideId(id), AssetId(id)));
         }
         show.look.photo_ms = 1_000;
-        show.look.transition_ms = 500;
+        show.look.transition_ms = Some(500);
         show
     }
 
