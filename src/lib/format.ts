@@ -97,6 +97,8 @@ export function transitionName(choice: TransitionChoice, show: ShowDefinition): 
       return `ワイプ（${DIRECTIONS[choice.direction]}）`;
     case "zoom":
       return "ズーム";
+    case "paw":
+      return "肉球";
     case "custom":
       return show.look.customTransitions.find((t) => t.id === choice.id)?.name ?? "カスタム";
   }
