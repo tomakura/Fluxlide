@@ -339,8 +339,10 @@ pub struct Ducker {
 impl Ducker {
     /// Announces that sound plays from playback time `start` to `end`
     /// (`f64::INFINITY` while the end is not known). The window can be
-    /// adjusted with [`DuckWindow::set`]; dropping it ends it at the time the
-    /// BGM learns of that, if it had no end yet.
+    /// adjusted with [`DuckWindow::set`]. Dropping it means the sound is gone
+    /// when the BGM learns of that: a window whose fade out has not begun is
+    /// forgotten, one that is fading out finishes at its start and comes
+    /// back, and one that has started ends then, unless its end came first.
     pub fn open_window(&self, start: f64, end: f64) -> DuckWindow {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let window = DuckWindow {
@@ -465,11 +467,19 @@ impl DuckState {
                         }),
                     }
                 }
+                // The sound was cut short (a video skipped, or one that was
+                // ready but will not play), or has ended already. A dip that
+                // has begun is not dropped, which would make the BGM jump
+                // back up at once.
                 DuckCommand::Close { id } => {
-                    if let Some(window) = self.windows.iter_mut().find(|window| window.id == id)
-                        && window.end.is_infinite()
-                    {
-                        window.end = now.max(window.start);
+                    if let Some(index) = self.windows.iter().position(|window| window.id == id) {
+                        let window = &mut self.windows[index];
+                        let fade_start = (window.start - self.fade_out).max(window.announced);
+                        if now < fade_start {
+                            self.windows.remove(index);
+                        } else {
+                            window.end = window.end.min(now.max(window.start));
+                        }
                     }
                 }
             }
@@ -1565,6 +1575,61 @@ mod tests {
         assert_eq!(at(10.5), 1.0);
         assert!(close(at(12.5), 0.5));
         assert_eq!(at(14.0), 0.0);
+    }
+
+    #[test]
+    fn a_video_cut_short_brings_the_bgm_back_when_its_window_is_dropped() {
+        let mut rig = Rig::new(BgmTuning {
+            duck_fade_out_secs: 0.5,
+            duck_fade_in_secs: 1.0,
+            ..tuning(0.0, 0.0, FadeCurve::Linear)
+        });
+        rig.queue_constant(1, 12_000, 1.0);
+        // A video from 1 s that would end at 9 s, skipped at 3 s.
+        let window = rig.ducker.open_window(1.0, 9.0);
+        let out = rig.render(3000);
+        assert!(out[1000..].iter().all(|sample| *sample == 0.0));
+        drop(window);
+        let out = rig.render(2000);
+        assert!(close(out[500], 0.5));
+        assert_eq!(out[1200], 1.0);
+    }
+
+    #[test]
+    fn a_video_that_will_not_play_does_not_dip_the_bgm() {
+        let mut rig = Rig::new(BgmTuning {
+            duck_fade_out_secs: 0.5,
+            duck_fade_in_secs: 1.0,
+            ..tuning(0.0, 0.0, FadeCurve::Linear)
+        });
+        rig.queue_constant(1, 6_000, 1.0);
+        // Announced for 3 s to 5 s, then given up at 1 s.
+        let window = rig.ducker.open_window(3.0, 5.0);
+        rig.render(1000);
+        drop(window);
+        let out = rig.render(5000);
+        assert!(out.iter().all(|sample| *sample == 1.0));
+    }
+
+    #[test]
+    fn a_video_given_up_while_the_bgm_fades_out_does_not_make_it_jump() {
+        let mut rig = Rig::new(BgmTuning {
+            duck_fade_out_secs: 1.0,
+            duck_fade_in_secs: 1.0,
+            ..tuning(0.0, 0.0, FadeCurve::Linear)
+        });
+        rig.queue_constant(1, 6_000, 1.0);
+        // Announced for 3 s to 5 s, given up at 2.5 s, half way down.
+        let window = rig.ducker.open_window(3.0, 5.0);
+        let before = rig.render(2500);
+        drop(window);
+        let after = rig.render(3000);
+        let steps = before.windows(2).chain(after.windows(2));
+        assert!(steps.clone().all(|pair| (pair[1] - pair[0]).abs() < 0.01));
+        assert!(after[0] > 0.4 && after[0] < 0.6);
+        assert_eq!(after[2900], 1.0);
+        let joined = (after[0] - before[2499]).abs();
+        assert!(joined < 0.01, "{joined}");
     }
 
     #[test]

@@ -3,6 +3,7 @@
   // window, so a drop counts here only while this zone is under the pointer.
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import type { Snippet } from "svelte";
+  import { dropPoint, isWindows } from "$lib/drop";
 
   let { ondrop, children }: { ondrop: (files: string[]) => void; children: Snippet } = $props();
 
@@ -12,9 +13,7 @@
   function inside(position: { x: number; y: number }) {
     if (!zone) return false;
     const rect = zone.getBoundingClientRect();
-    // Drop positions are in physical pixels.
-    const x = position.x / window.devicePixelRatio;
-    const y = position.y / window.devicePixelRatio;
+    const { x, y } = dropPoint(position, isWindows(), window.devicePixelRatio);
     return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
   }
 
