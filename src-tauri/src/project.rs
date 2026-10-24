@@ -188,9 +188,10 @@ pub fn list(parent: &Path) -> Vec<Summary> {
     found
 }
 
-/// Checks the version of a stored definition before reading it. A
-/// definition without one is not accepted as the current version, so a
-/// future conversion cannot miss it.
+/// Checks the version of a stored definition before reading it, and
+/// converts an older one. A definition without one, or with version 0
+/// (never written), is not accepted as any version, so a conversion
+/// cannot miss it.
 fn parse_definition(json: &str) -> Result<ShowDefinition, ProjectError> {
     let mut value: serde_json::Value =
         serde_json::from_str(json).map_err(|err| ProjectError::Damaged(err.to_string()))?;
@@ -198,10 +199,13 @@ fn parse_definition(json: &str) -> Result<ShowDefinition, ProjectError> {
         .get("version")
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| ProjectError::Damaged("版の情報がありません".into()))?;
+    if version == 0 {
+        return Err(ProjectError::Damaged("版0の定義は読めません".into()));
+    }
     if version > u64::from(SHOW_VERSION) {
         return Err(ProjectError::TooNew);
     }
-    if version < 2 {
+    if version == 1 {
         // Version 1 always stored the look's transition length, 1 s unless
         // changed. Every transition then had that length by default, so
         // leaving it unset keeps them as they were and lets the paw, added
@@ -358,6 +362,12 @@ pub(crate) mod tests {
         missing.as_object_mut().unwrap().remove("version");
         assert!(matches!(
             parse_definition(&missing.to_string()),
+            Err(ProjectError::Damaged(_))
+        ));
+        let mut zero = show.clone();
+        zero["version"] = 0.into();
+        assert!(matches!(
+            parse_definition(&zero.to_string()),
             Err(ProjectError::Damaged(_))
         ));
         let mut newer = show.clone();
