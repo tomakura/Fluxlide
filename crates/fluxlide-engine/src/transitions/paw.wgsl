@@ -99,9 +99,21 @@ fn paw_distance(p: vec2<f32>) -> f32 {
     return min(palm, min(front, side));
 }
 
+// Each movement starts gently and takes longer to stop: it speeds up
+// (cubic) over the first 20% of its time and slows down (quartic) over
+// the rest, so it eases into place rather than braking to a stop. The two
+// parts meet at the same speed.
+const PAW_EASE_TURN: f32 = 0.2;
+const PAW_EASE_AT_TURN: f32 = 0.25;
+
 fn paw_ease(t: f32) -> f32 {
     let x = clamp(t, 0.0, 1.0);
-    return x * x * (3.0 - 2.0 * x);
+    if (x < PAW_EASE_TURN) {
+        let a = x / PAW_EASE_TURN;
+        return PAW_EASE_AT_TURN * a * a * a;
+    }
+    let b = (1.0 - x) / (1.0 - PAW_EASE_TURN);
+    return 1.0 - (1.0 - PAW_EASE_AT_TURN) * b * b * b * b;
 }
 
 fn transition(uv: vec2<f32>, progress: f32) -> vec4<f32> {
@@ -110,7 +122,10 @@ fn transition(uv: vec2<f32>, progress: f32) -> vec4<f32> {
     // Open, the hole is large enough for the palm to cover outputs up to
     // 16:9; wider ones open further.
     let open_scale = 4.6 * max(fx.aspect, 16.0 / 9.0);
-    let scale = mix(open_scale, 1.0, closing - opening);
+    // The scale moves by ratio rather than by difference, so the hole
+    // seems to grow and shrink at an even pace instead of rushing while
+    // it is large.
+    let scale = exp2(log2(open_scale) * (1.0 - closing + opening));
     let units = PAW_UNITS_PER_HEIGHT / scale;
     let p = vec2<f32>((uv.x - PAW_ANCHOR.x) * fx.aspect, uv.y - PAW_ANCHOR.y) * units;
     let d = paw_distance(p);
@@ -123,7 +138,7 @@ fn transition(uv: vec2<f32>, progress: f32) -> vec4<f32> {
     let line = max(0.0, min(near + pixel * 0.5, half_line) - max(near - pixel * 0.5, -half_line)) / pixel;
 
     let picture = mix(from_color(uv).rgb, to_color(uv).rgb, clamp((progress - 0.4) / 0.1, 0.0, 1.0));
-    let stamp = min(closing, 1.0 - clamp((progress - 0.5) / 0.1, 0.0, 1.0));
+    let stamp = min(closing, 1.0 - paw_ease((progress - 0.5) / 0.1));
     let hole = mix(picture, PAW_STAMP, stamp);
     let color = mix(mix(hole, PAW_COVER, outside), PAW_LINE, line);
     return vec4<f32>(color, 1.0);

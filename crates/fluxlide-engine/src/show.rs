@@ -17,11 +17,13 @@
 //! All times are whole milliseconds. A slide's transition is the one used to
 //! enter it, from the slide before (or from black for the first). A photo's
 //! duration is the time it is fully visible: the transitions in and out come
-//! on top of it. A video plays its chosen range once; it enters and leaves
-//! during the first and last moments of that range.
+//! on top of it. A video plays its chosen range once, while it is fully
+//! visible: it waits on its first frame through the transition in, and
+//! stays on its last frame through the transition out.
 //!
 //! ```text
-//!            enter     shown (photo: duration)     leave = next's enter
+//!            enter     shown (photo: duration,     leave = next's enter
+//!                             video: its range)
 //! slide 1  |=======|---------------------------|=======|
 //! slide 2                                      |=======|-----------|====
 //!          ^start                              ^start of slide 2
@@ -535,8 +537,17 @@ pub struct TimelineEntry {
     pub leave_ms: u64,
     /// When it is gone: the end of the transition out.
     pub end_ms: u64,
-    /// For a video, where in the file playback starts at `start_ms`.
+    /// For a video, where in the file playback starts, at
+    /// [`play_start_ms`](Self::play_start_ms). It plays until `leave_ms`.
     pub video_start_ms: Option<u32>,
+}
+
+impl TimelineEntry {
+    /// When the slide is fully visible: the end of its transition in, and
+    /// when a video starts to play.
+    pub fn play_start_ms(&self) -> u64 {
+        self.start_ms + u64::from(self.enter_ms)
+    }
 }
 
 impl Timeline {
@@ -548,8 +559,8 @@ impl Timeline {
     pub fn build(show: &ShowDefinition, order: &[usize]) -> Self {
         let look = &show.look;
         let mut skipped = Vec::new();
-        // Each usable slide with its own length: the photo's duration or the
-        // video's range.
+        // Each usable slide with the time it is fully visible: the photo's
+        // duration or the video's range.
         let mut slides = Vec::new();
         for &index in order {
             let Some(slide) = show.slides.get(index) else {
@@ -563,22 +574,20 @@ impl Timeline {
                 skipped.push((slide.id, SkipReason::AssetNotReady));
                 continue;
             }
-            let body = match asset.kind {
-                AssetKind::Photo => Body::Photo(slide.duration_ms.unwrap_or(look.photo_ms)),
+            let shown = match asset.kind {
+                AssetKind::Photo => slide.duration_ms.unwrap_or(look.photo_ms),
                 AssetKind::Video => match asset.duration_ms.map(|ms| slide.video.range_ms(ms)) {
-                    Some(range) if range > 0 => Body::Video(range),
+                    Some(range) if range > 0 => range,
                     _ => {
                         skipped.push((slide.id, SkipReason::NoLength));
                         continue;
                     }
                 },
             };
-            slides.push((slide, asset, body));
+            slides.push((slide, asset, shown));
         }
 
-        // The transition into each slide, and the final one to black, as
-        // asked for. A video cannot spend more than half its range on either
-        // transition, so those next to a video are shortened to fit.
+        // The transition into each slide, and the final one to black.
         let mut joins: Vec<(TransitionChoice, u32)> = slides
             .iter()
             .map(|(slide, _, _)| {
@@ -594,24 +603,14 @@ impl Timeline {
             })
             .collect();
         joins.push((TransitionChoice::Fade, look.to_black_ms()));
-        for (index, (_, _, body)) in slides.iter().enumerate() {
-            if let Body::Video(range) = body {
-                for join in [index, index + 1] {
-                    joins[join].1 = joins[join].1.min(range / 2);
-                }
-            }
-        }
 
         let mut entries = Vec::with_capacity(slides.len());
         let mut start = 0u64;
-        for (index, (slide, asset, body)) in slides.iter().enumerate() {
+        for (index, (slide, asset, shown)) in slides.iter().enumerate() {
             let (enter, enter_ms) = joins[index];
             let leave_ms = joins[index + 1].1;
             // Where the next slide starts to come in.
-            let leave = match body {
-                Body::Photo(duration) => start + u64::from(enter_ms) + u64::from(*duration),
-                Body::Video(range) => start + u64::from(*range) - u64::from(leave_ms),
-            };
+            let leave = start + u64::from(enter_ms) + u64::from(*shown);
             entries.push(TimelineEntry {
                 slide: slide.id,
                 asset: asset.id,
@@ -638,14 +637,6 @@ impl Timeline {
             .iter()
             .filter(move |entry| entry.start_ms <= time_ms && time_ms < entry.end_ms)
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum Body {
-    /// Fully visible this long.
-    Photo(u32),
-    /// The video's chosen range, transitions included.
-    Video(u32),
 }
 
 #[cfg(test)]
@@ -752,7 +743,7 @@ mod tests {
     }
 
     #[test]
-    fn a_video_plays_its_range_once_with_the_transitions_inside_it() {
+    fn a_video_plays_its_range_once_between_its_transitions() {
         let mut show = show(vec![photo(1), video(2, 8_000), photo(3)]);
         show.slides[1].video = VideoOptions {
             start_ms: 2_000,
@@ -761,22 +752,23 @@ mod tests {
         };
         let timeline = Timeline::build(&show, &listed(&show));
         let video = timeline.entries[1];
-        assert_eq!(video.end_ms - video.start_ms, 4_000);
+        // In over 1 s, then the 4 s range, then the next comes in.
+        assert_eq!(video.play_start_ms(), video.start_ms + 1_000);
+        assert_eq!(video.leave_ms - video.play_start_ms(), 4_000);
+        assert_eq!(video.end_ms - video.start_ms, 6_000);
         assert_eq!(video.video_start_ms, Some(2_000));
         assert_eq!(timeline.entries[2].start_ms, video.leave_ms);
     }
 
     #[test]
-    fn transitions_around_a_short_video_are_shortened_to_fit_it() {
+    fn transitions_next_to_a_short_video_keep_their_length() {
         let mut show = show(vec![photo(1), video(2, 1_200), photo(3)]);
         show.look.transition_ms = Some(2_000);
         let timeline = Timeline::build(&show, &listed(&show));
         let video = timeline.entries[1];
-        assert_eq!(video.enter_ms, 600);
-        assert_eq!(video.end_ms - video.start_ms, 1_200);
-        assert_eq!(timeline.entries[2].enter_ms, 600);
-        // The photo after it keeps the asked-for transition to black.
-        assert_eq!(timeline.end_ms - timeline.entries[2].leave_ms, 2_000);
+        assert_eq!(video.enter_ms, 2_000);
+        assert_eq!(video.leave_ms - video.play_start_ms(), 1_200);
+        assert_eq!(timeline.entries[2].enter_ms, 2_000);
     }
 
     #[test]
