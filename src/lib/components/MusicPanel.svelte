@@ -98,10 +98,12 @@
   <div class="panel">
     <fieldset>
       <legend>BGM</legend>
-      <div class="choices" role="radiogroup" aria-label="BGM">
-        <button role="radio" aria-checked={!music.source} class:current={!music.source} onclick={() => setMusic((music) => (music.source = null))}>なし</button>
-        <button role="radio" aria-checked={music.source?.kind === "folder"} class:current={music.source?.kind === "folder"} onclick={chooseFolder}>フォルダ…</button>
-        <button role="radio" aria-checked={music.source?.kind === "files"} class:current={music.source?.kind === "files"} onclick={chooseFiles}>曲を選ぶ…</button>
+      <!-- Buttons, not radios: the folder and song buttons open a file
+           picker each time, also to choose again. -->
+      <div class="choices" role="group" aria-label="BGM">
+        <button aria-pressed={!music.source} class:current={!music.source} onclick={() => setMusic((music) => (music.source = null))}>なし</button>
+        <button aria-pressed={music.source?.kind === "folder"} class:current={music.source?.kind === "folder"} onclick={chooseFolder}>フォルダ…</button>
+        <button aria-pressed={music.source?.kind === "files"} class:current={music.source?.kind === "files"} onclick={chooseFiles}>曲を選ぶ…</button>
       </div>
       {#if music.source?.kind === "folder"}
         <p class="path" title={music.source.path}>{music.source.path}</p>
