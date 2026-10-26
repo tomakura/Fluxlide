@@ -99,7 +99,8 @@ impl Prepared {
 
 /// A slide loaded and waiting for its time.
 struct Ready {
-    /// Position of `entry` in its pass.
+    /// The pass `entry` is in, and its position there.
+    pass: usize,
     index: usize,
     entry: TimelineEntry,
     slide: Slide,
@@ -108,6 +109,7 @@ struct Ready {
 }
 
 struct Showing {
+    pass: usize,
     index: usize,
     entry: TimelineEntry,
     slide: Slide,
@@ -184,6 +186,7 @@ struct Announced {
 }
 
 struct Loading {
+    pass: usize,
     index: usize,
     entry: TimelineEntry,
     slide: Slide,
@@ -221,9 +224,15 @@ pub struct Slideshow {
     watermark: Option<(Watermark, Overlay)>,
     pass_end: PassEnd,
     rng: Rng,
-    /// The pass being played, and the index of its next entry to load.
+    /// The pass being played, its number, and the index of its next entry
+    /// to load.
     pass: Timeline,
+    pass_number: usize,
     next_entry: usize,
+    /// The pass before this one, for going back into it; and the pass after
+    /// it once back there, so that going forward again plays the same slides.
+    earlier_pass: Option<Timeline>,
+    later_pass: Option<Timeline>,
     current: Option<Showing>,
     outgoing: Option<Showing>,
     fade_out: Option<FadeOut>,
@@ -329,7 +338,10 @@ impl Slideshow {
                 skipped: Vec::new(),
                 end_ms: 0,
             },
+            pass_number: 0,
             next_entry: 0,
+            earlier_pass: None,
+            later_pass: None,
             current: None,
             outgoing: None,
             fade_out: None,
@@ -544,11 +556,22 @@ impl Slideshow {
         let Some(current) = &self.current else {
             return;
         };
-        let target = match current.index.checked_sub(1) {
+        let (pass, index) = (current.pass, current.index);
+        let target = match index.checked_sub(1) {
             Some(target) => target,
-            None if self.pass_end == PassEnd::Loop => self.pass.entries.len().saturating_sub(1),
+            None if self.pass_end == PassEnd::Loop => {
+                if pass == self.pass_number {
+                    self.back_to_earlier_pass();
+                }
+                self.pass.entries.len().saturating_sub(1)
+            }
             None => return,
         };
+        // The next pass is drawn as the last slide of a pass loads the one
+        // after it, while that last slide is still on screen.
+        if pass < self.pass_number {
+            self.back_to_earlier_pass();
+        }
         self.resume();
         self.ready = None;
         self.loading = None;
@@ -558,6 +581,15 @@ impl Slideshow {
         self.next_entry = target;
         self.start_loading();
         self.advance_now = true;
+    }
+
+    /// Makes the pass before this one the pass being played, keeping this
+    /// one to play after it again.
+    fn back_to_earlier_pass(&mut self) {
+        if let Some(earlier) = self.earlier_pass.take() {
+            self.later_pass = Some(std::mem::replace(&mut self.pass, earlier));
+            self.pass_number -= 1;
+        }
     }
 
     /// Stops the playback clock. The sound of a video stops with it.
@@ -992,6 +1024,7 @@ impl Slideshow {
     /// Puts the ready slide on screen with its `start_ms` at `anchor`.
     fn begin_slide(&mut self, mut anchor: f64) {
         let Some(Ready {
+            pass,
             index,
             entry,
             slide,
@@ -1038,6 +1071,7 @@ impl Slideshow {
         }
         self.stats.current = Some(slide.id);
         self.current = Some(Showing {
+            pass,
             index,
             entry,
             slide,
@@ -1077,6 +1111,7 @@ impl Slideshow {
                 }
             };
             let Some(Loading {
+                pass,
                 index,
                 entry,
                 slide,
@@ -1101,6 +1136,7 @@ impl Slideshow {
                         });
                     }
                     self.ready = Some(Ready {
+                        pass,
                         index,
                         entry,
                         slide,
@@ -1127,7 +1163,12 @@ impl Slideshow {
             if self.pass_end != PassEnd::Loop || self.pass.entries.is_empty() {
                 return None;
             }
-            self.pass = self.build_pass();
+            let next = match self.later_pass.take() {
+                Some(pass) => pass,
+                None => self.build_pass(),
+            };
+            self.earlier_pass = Some(std::mem::replace(&mut self.pass, next));
+            self.pass_number += 1;
             self.next_entry = 0;
         }
         let index = self.next_entry;
@@ -1187,6 +1228,7 @@ impl Slideshow {
         match spawned {
             Ok(_) => {
                 self.loading = Some(Loading {
+                    pass: self.pass_number,
                     index,
                     entry,
                     slide,
@@ -1388,6 +1430,7 @@ mod tests {
         let (_never_sent, result) = mpsc::channel();
         let ready = show.ready.take().unwrap();
         show.loading = Some(Loading {
+            pass: ready.pass,
             index: ready.index,
             entry: ready.entry,
             slide: ready.slide.clone(),
@@ -1684,6 +1727,57 @@ mod tests {
         update_until(&mut show, 12.0, |show| current(show) == Some(SlideId(3)));
 
         update_until(&mut show, 13.0, |show| show.loading.is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn back_across_shuffled_passes_returns_to_the_slide_shown_before() {
+        let Some(renderer) = crate::test_renderer() else {
+            return;
+        };
+        let (dir, definition) = three_photos(
+            "shuffle-back",
+            Playback {
+                advance: Advance::Manual,
+                order: Order::Shuffle,
+                ..Default::default()
+            },
+        );
+        let mut show = Slideshow::new(renderer, definition, dir.clone(), (32, 32));
+        let first: Vec<SlideId> = show.pass.entries.iter().map(|e| e.slide).collect();
+        // The second pass is drawn in an order that differs from the first
+        // at every position the first is looked up by.
+        let seed = (0..)
+            .find(|&seed| {
+                show.rng = Rng(seed);
+                let second = show.build_pass().entries;
+                second[0].slide != first[2] && second[1].slide != first[1]
+            })
+            .unwrap();
+        show.rng = Rng(seed);
+
+        let mut now = 0.0;
+        let mut step = |show: &mut Slideshow, go: fn(&mut Slideshow), slide: SlideId| {
+            now += 1.0;
+            update_until(show, now, |show| show.ready.is_some());
+            go(show);
+            update_until(show, now, |show| current(show) == Some(slide));
+        };
+        update_exactly(&mut show, 0.0);
+        step(&mut show, Slideshow::next, first[1]);
+        step(&mut show, Slideshow::next, first[2]);
+        // The last slide of the pass: the next pass is drawn as it loads
+        // its successor, and back still goes to the slide before.
+        step(&mut show, Slideshow::previous, first[1]);
+        // Forward again comes to the same slides.
+        step(&mut show, Slideshow::next, first[2]);
+        let second = show.pass.entries[0].slide;
+        step(&mut show, Slideshow::next, second);
+        // From the first slide of the next pass, back is the last of the first.
+        step(&mut show, Slideshow::previous, first[2]);
+        step(&mut show, Slideshow::next, second);
+
+        update_until(&mut show, now + 1.0, |show| show.loading.is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
