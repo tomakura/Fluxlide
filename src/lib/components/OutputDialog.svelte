@@ -5,6 +5,7 @@
   import * as api from "$lib/api";
   import type { MonitorInfo } from "$lib/bindings/MonitorInfo";
   import type { Playback } from "$lib/bindings/Playback";
+  import { screenName } from "$lib/format";
   import { modal } from "$lib/modal";
   import { open } from "$lib/show.svelte";
 
@@ -73,8 +74,8 @@
           onclick={() => (chosen = monitor.index)}
         >
           <strong>{monitor.index + 1}</strong>
-          <span>{monitor.name}</span>
-          <span class="hint">{monitor.width}×{monitor.height}</span>
+          {#if screenName(monitor.name)}<span>{screenName(monitor.name)}</span>{/if}
+          <span class="hint">{Math.round(monitor.width / monitor.scaleFactor)}×{Math.round(monitor.height / monitor.scaleFactor)}</span>
           {#if monitor.hasMainWindow}<span class="tag">操作用</span>{/if}
         </button>
       {/each}
@@ -85,18 +86,18 @@
       <div class="options">
         <fieldset>
           <legend>進め方</legend>
-          <label class="inline"><input type="radio" checked={playback.advance === "auto"} onchange={() => setPlayback("advance", "auto")} />自動</label>
-          <label class="inline"><input type="radio" checked={playback.advance === "manual"} onchange={() => setPlayback("advance", "manual")} />手動（キーやボタンで進める）</label>
+          <label class="inline"><input type="radio" name="advance" checked={playback.advance === "auto"} onchange={() => setPlayback("advance", "auto")} />自動</label>
+          <label class="inline"><input type="radio" name="advance" checked={playback.advance === "manual"} onchange={() => setPlayback("advance", "manual")} />手動</label>
         </fieldset>
         <fieldset>
           <legend>最後まで再生したら</legend>
-          <label class="inline"><input type="radio" checked={playback.atEnd === "loop"} onchange={() => setPlayback("atEnd", "loop")} />ループ</label>
-          <label class="inline"><input type="radio" checked={playback.atEnd === "stop"} onchange={() => setPlayback("atEnd", "stop")} />最後のスライドで停止</label>
+          <label class="inline"><input type="radio" name="atEnd" checked={playback.atEnd === "loop"} onchange={() => setPlayback("atEnd", "loop")} />ループ</label>
+          <label class="inline"><input type="radio" name="atEnd" checked={playback.atEnd === "stop"} onchange={() => setPlayback("atEnd", "stop")} />最後のスライドで停止</label>
         </fieldset>
         <fieldset>
           <legend>順番</legend>
-          <label class="inline"><input type="radio" checked={playback.order === "asListed"} onchange={() => setPlayback("order", "asListed")} />並び順</label>
-          <label class="inline"><input type="radio" checked={playback.order === "shuffle"} onchange={() => setPlayback("order", "shuffle")} />シャッフル</label>
+          <label class="inline"><input type="radio" name="order" checked={playback.order === "asListed"} onchange={() => setPlayback("order", "asListed")} />並び順</label>
+          <label class="inline"><input type="radio" name="order" checked={playback.order === "shuffle"} onchange={() => setPlayback("order", "shuffle")} />シャッフル</label>
         </fieldset>
       </div>
     {/if}
@@ -170,8 +171,8 @@
     font-size: 11px;
     padding: 1px 6px;
     border-radius: 4px;
-    background: var(--accent-soft);
-    color: var(--accent);
+    background: var(--surface);
+    color: var(--muted);
   }
 
   .identify {

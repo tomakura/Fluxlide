@@ -23,11 +23,11 @@
     open.edit((show) => change(show.look), group && `look:${group}`);
   }
 
-  const DESIGNS: [CaptionDesign, string, string][] = [
-    ["band", "下帯", "下に薄い帯を敷いて文字を置く"],
-    ["simple", "シンプル", "左下に細い線と文字だけ"],
-    ["card", "カード", "右下に明るい札を出す"],
-    ["none", "なし", "キャプションを出さない"],
+  const DESIGNS: [CaptionDesign, string][] = [
+    ["band", "下帯"],
+    ["simple", "シンプル"],
+    ["card", "カード"],
+    ["none", "なし"],
   ];
 
   const DEFAULT_WATERMARK: Omit<WatermarkSpec, "content"> = { corner: "topRight", opacity: 0.6, size: 0.045 };
@@ -105,19 +105,17 @@
 
 {#if show && look}
   <div class="panel">
-    <h3>見た目（すべてのスライドに共通）</h3>
-
     <fieldset>
       <legend>キャプションのデザイン</legend>
       <div class="designs">
-        {#each DESIGNS as [design, name, note] (design)}
+        {#each DESIGNS as [design, name] (design)}
           <button
             class="design"
             class:current={look.caption.design === design}
+            aria-pressed={look.caption.design === design}
             onclick={() => setLook((look) => (look.caption.design = design))}
           >
-            <strong>{name}</strong>
-            <span class="hint">{note}</span>
+            {name}
           </button>
         {/each}
       </div>
@@ -183,7 +181,7 @@
           </label>
         </div>
         <label>
-          大きさ
+          大きさ {Math.round(watermark.size * 1000) / 10}%
           <input
             type="range"
             min="0.02"
@@ -229,7 +227,7 @@
           type="number"
           min="0.1"
           step="0.1"
-          placeholder={`${ownLength(look.transition) / 1000}（種類ごとの長さ）`}
+          placeholder={String(ownLength(look.transition) / 1000)}
           value={look.transitionMs === null ? "" : look.transitionMs / 1000}
           oninput={(e) => {
             // Left empty, each transition takes its own length.
@@ -266,12 +264,11 @@
           }}
         >
           <option value="none">なし</option>
-          <option value="in">すべての写真をズームイン</option>
-          <option value="out">すべての写真をズームアウト</option>
+          <option value="in">ズームイン</option>
+          <option value="out">ズームアウト</option>
         </select>
       </label>
     </div>
-    <p class="hint">スライドごとの設定は「写真・動画」タブで変えられます。</p>
 
     <details>
       <summary>詳細設定</summary>
@@ -290,7 +287,6 @@
             }}
           />
         </label>
-        <p class="hint">書体は Noto Sans JP です（上映と書き出しで同じ文字になるよう、アプリに入れた書体だけを使います）。</p>
 
         <fieldset>
           <legend>カスタムトランジション（WGSL）</legend>
@@ -299,15 +295,9 @@
               <span>{custom.name}</span>
               <button class="quiet" onclick={() => open.edit((show) => removeCustomTransition(show, custom.id))}>外す</button>
             </div>
-          {:else}
-            <p class="hint">まだありません。追加すると、トランジションの一覧に出ます。</p>
           {/each}
           <button disabled={adding} onclick={addTransition}>{adding ? "確かめています…" : "WGSL ファイルを追加…"}</button>
           {#if transitionError}<pre class="error">{transitionError}</pre>{/if}
-          <p class="hint">
-            <code>fn transition(uv: vec2&lt;f32&gt;, progress: f32) -&gt; vec4&lt;f32&gt;</code> を書いたファイルです。
-            追加するときに GPU で確かめ、間違いがあれば理由を表示します。
-          </p>
         </fieldset>
       </div>
     </details>
@@ -319,11 +309,6 @@
     display: flex;
     flex-direction: column;
     gap: 14px;
-  }
-
-  h3 {
-    margin: 0;
-    font-size: 15px;
   }
 
   fieldset {
@@ -348,11 +333,6 @@
   }
 
   .design {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 2px;
-    text-align: left;
     padding: 8px 10px;
   }
 

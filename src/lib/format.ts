@@ -69,6 +69,12 @@ export function roughly(secs: number): string {
   return `約${Math.floor(minutes / 60)}時間${rest ? `${rest}分` : ""}`;
 }
 
+/// A screen's name worth showing, or `null`. macOS names a screen it knows
+/// no name for "Monitor #<id>", which tells the operator nothing.
+export function screenName(name: string): string | null {
+  return /^Monitor #\d+$/.test(name) ? null : name;
+}
+
 /// "0:05", "12:34", "1:02:03" for a running time.
 export function clock(totalSecs: number): string {
   const secs = Math.floor(totalSecs);

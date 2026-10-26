@@ -22,7 +22,7 @@
   }
 
   const PURPOSES: [Purpose, string, string][] = [
-    ["tv", "テレビ・プロジェクター", "1920×1080 · MP4"],
+    ["tv", "テレビ・プロジェクター", "1920×1080"],
     ["web", "パソコン・動画サイト", "1920×1080 · 容量小さめ"],
     ["phone", "スマホ・SNS", "縦 1080×1920"],
     ["high", "高画質", "3840×2160"],
@@ -135,22 +135,19 @@
       </div>
 
       {#if estimate}
-        <p class="estimate">
-          長さ {clock(estimate.durationSecs)}・ファイルは最大 {fileSize(estimate.bytes)} ほど・書き出しにかかる時間は{roughly(estimate.workSecs)}（目安）
-        </p>
+        <dl class="estimate">
+          <div><dt>長さ</dt><dd>{clock(estimate.durationSecs)}</dd></div>
+          <div><dt>ファイルサイズ</dt><dd>最大 {fileSize(estimate.bytes)}</dd></div>
+          <div><dt>処理時間</dt><dd>{roughly(estimate.workSecs)}</dd></div>
+        </dl>
         {#if estimate.skippedSlides > 0}
           <p class="hint">取り込み中か読めないスライドが {estimate.skippedSlides} 枚あり、書き出しには入りません。</p>
         {/if}
       {/if}
-      <p class="hint">音ズレ補正は上映のための設定なので、書き出しには入りません。BGM は入ります。</p>
 
       <details>
         <summary>詳細設定</summary>
         <div class="details">
-          <label>
-            形式
-            <select disabled><option>MP4（H.264・AAC）</option></select>
-          </label>
           <label>
             フレームレート
             <select
@@ -244,7 +241,28 @@
   }
 
   .estimate {
-    font-size: 14px;
+    margin: 0;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+
+  .estimate div {
+    padding: 8px 12px;
+    border-radius: 8px;
+    background: var(--surface-2);
+  }
+
+  dt {
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  dd {
+    margin: 2px 0 0;
+    font-size: 16px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
   }
 
   details summary {
@@ -254,7 +272,7 @@
 
   .details {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: 1fr 1fr;
     gap: 10px;
     padding-top: 10px;
   }

@@ -107,7 +107,6 @@
         {/each}
       </ul>
     {/if}
-    <p class="hint">変更は自動で保存されます。保存の操作はいりません。</p>
   </section>
 </main>
 
@@ -128,7 +127,6 @@
     display: flex;
     flex-direction: column;
     gap: 24px;
-    justify-content: center;
   }
 
   .brand {
@@ -147,9 +145,11 @@
     font-size: 17px;
   }
 
+  /* The text of the quiet buttons lines up with the edge above. */
   .more {
     display: flex;
     gap: 8px;
+    margin-left: -14px;
   }
 
   .new {
@@ -165,7 +165,9 @@
     min-height: 0;
   }
 
+  /* As tall as the brand beside it, so the two line up. */
   .head {
+    min-height: 56px;
     display: flex;
     justify-content: space-between;
     align-items: center;
