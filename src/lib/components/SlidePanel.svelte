@@ -37,6 +37,9 @@
   const ms = (value: string) => (value.trim() === "" ? null : Math.max(0, Math.round(Number(value) * 1000)));
   const secs = (ms: number | null) => (ms === null ? "" : String(ms / 1000));
 
+  /// A position as a signed percentage, "+12%".
+  const percent = (value: number) => `${value > 0 ? "+" : ""}${Math.round(value * 100)}%`;
+
   const ZOOM_NAMES = { in: "ズームイン", out: "ズームアウト", still: "なし" } as const;
   const zoomName = (motion: Motion | null) => {
     const key = zoomOf(motion);
@@ -226,7 +229,7 @@
         </label>
         <div class="pair">
           <label>
-            左右の位置
+            左右の位置 {percent(slide.framing.offset[0])}
             <input
               type="range"
               min="-0.5"
@@ -240,7 +243,7 @@
             />
           </label>
           <label>
-            上下の位置
+            上下の位置 {percent(slide.framing.offset[1])}
             <input
               type="range"
               min="-0.5"

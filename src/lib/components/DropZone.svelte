@@ -47,6 +47,7 @@
     text-align: center;
     color: var(--muted);
     font-size: 13px;
+    text-wrap: balance;
   }
 
   .over {

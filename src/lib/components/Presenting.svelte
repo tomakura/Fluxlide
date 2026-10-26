@@ -6,7 +6,7 @@
   import type { Control } from "$lib/bindings/Control";
   import type { PresentationStatus } from "$lib/bindings/PresentationStatus";
   import type { SlideId } from "$lib/bindings/SlideId";
-  import { clock, thumbnailUrl } from "$lib/format";
+  import { clock, screenName, thumbnailUrl } from "$lib/format";
   import { open } from "$lib/show.svelte";
   import Confirm from "./Confirm.svelte";
 
@@ -21,6 +21,7 @@
   const playback = $derived(status?.stats.playback ?? null);
   const position = $derived(playback?.position ?? null);
   const music = $derived(playback?.bgm ?? null);
+  const screen = $derived(status?.monitorName ? screenName(status.monitorName) : null);
 
   $effect(() => {
     let stopped = false;
@@ -95,7 +96,7 @@
 <div class="presenting">
   <header>
     <span class="live-tag">● 上映中</span>
-    <span>出力先: {status?.monitorName ?? "…"}</span>
+    {#if screen}<span>出力先: {screen}</span>{/if}
     <span class="time">経過 {clock(playback?.elapsedSecs ?? 0)}</span>
     <button class="end" onclick={() => (confirming = true)}>■ 上映を終了</button>
   </header>
@@ -163,7 +164,7 @@
   <footer>
     <div class="transport">
       <button onclick={() => send({ kind: "previous" })} disabled={position?.beforeStart}>◀ 前へ</button>
-      <button class="primary" onclick={() => send({ kind: position?.beforeStart ? "start" : "togglePause" })}>
+      <button class="live" onclick={() => send({ kind: position?.beforeStart ? "start" : "togglePause" })}>
         {position?.paused ? "▶ 再開" : position?.beforeStart ? "▶ 始める" : "❚❚ 一時停止"}
       </button>
       <button onclick={() => send({ kind: "next" })}>次へ ▶</button>
@@ -175,9 +176,9 @@
     <div class="sound">
       {#if music}
         <span class="song" title={music.artist ?? ""}>♪ {music.title ?? "曲を準備しています"}</span>
-        <button class="quiet" onclick={() => send({ kind: "nextTrack" })}>次の曲</button>
+        <button onclick={() => send({ kind: "nextTrack" })}>次の曲</button>
         <label class="inline">
-          音量
+          音量 {Math.round((volume ?? music.volume) * 100)}%
           <input
             type="range"
             min="0"
@@ -193,13 +194,22 @@
       {:else if playback?.bgmError}
         <span class="error" title={playback.bgmError}>BGMを再生できません</span>
       {/if}
-      <label class="inline offset">
-        音ズレ補正
-        <button class="quiet" onclick={() => setOffset(offset - 10)}>−</button>
-        <input type="number" step="10" value={offset} onchange={(e) => setOffset(Number(e.currentTarget.value))} />
+      <!-- Not a <label>: clicking its text would press the first button. -->
+      <div class="offset" role="group" aria-labelledby="offset-name">
+        <span id="offset-name">音ズレ補正</span>
+        <button onclick={() => setOffset(offset - 10)}>−10</button>
+        <input
+          type="number"
+          min="-500"
+          max="1000"
+          step="10"
+          aria-labelledby="offset-name"
+          value={offset}
+          onchange={(e) => setOffset(Number(e.currentTarget.value))}
+        />
         <span>ミリ秒</span>
-        <button class="quiet" onclick={() => setOffset(offset + 10)}>＋</button>
-      </label>
+        <button onclick={() => setOffset(offset + 10)}>＋10</button>
+      </div>
     </div>
 
     <p class="keys hint">
@@ -263,7 +273,7 @@
     flex: 1;
     min-height: 0;
     display: grid;
-    grid-template-columns: 3fr 2fr;
+    grid-template-columns: 2fr 1fr;
     gap: 24px;
     padding: 20px 24px;
   }
@@ -415,6 +425,12 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .offset {
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
 
   .offset input {

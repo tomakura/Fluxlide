@@ -21,6 +21,7 @@
   --navy: #13213b;
   --coral: #e8553a;
   --radius: 10px;
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%235a6779' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   font-family: "BIZ UDPGothic", "Hiragino Sans", "Yu Gothic UI", "Meiryo", sans-serif;
   font-size: 14px;
   color: var(--fg);
@@ -45,6 +46,7 @@
     --ok: #4cc08a;
     --err: #f27769;
     --err-soft: #3a1b18;
+    --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%2397a3b3' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   }
 }
 
@@ -57,6 +59,11 @@ body {
   margin: 0;
   height: 100%;
   overflow: hidden;
+}
+
+/* Keeps a line from ending with one or two characters on its own. */
+body {
+  text-wrap: pretty;
 }
 
 button {
@@ -112,6 +119,31 @@ select {
   border-radius: 8px;
   padding: 7px 10px;
   width: 100%;
+}
+
+/* The OS's own menu is shorter than a text field beside it, so menus are
+   drawn like the fields with an arrow of their own. */
+select {
+  appearance: none;
+  padding-right: 28px;
+  background: var(--chevron) no-repeat right 10px center, var(--surface);
+  text-overflow: ellipsis;
+}
+
+select:disabled {
+  opacity: 0.45;
+}
+
+/* Number fields keep their arrow keys; the spin buttons made them look
+   like menus. */
+input[type="number"] {
+  appearance: textfield;
+}
+
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  appearance: none;
+  margin: 0;
 }
 
 input:focus,

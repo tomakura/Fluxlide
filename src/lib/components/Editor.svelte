@@ -94,6 +94,12 @@
 
 <svelte:window {onkeydown} />
 
+{#snippet arrow()}
+  <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+    <path d="M5 4.5 2.5 7 5 9.5M3 7h7a3.5 3.5 0 0 1 0 7H8" />
+  </svg>
+{/snippet}
+
 {#if show}
   <div class="editor">
     <header>
@@ -111,15 +117,14 @@
         {saveError ? "保存できません" : "自動保存済み"}
       </span>
       <div class="history">
-        <button class="quiet" disabled={!open.state?.canUndo} onclick={open.undo} title="元に戻す（Ctrl+Z）">↶ 元に戻す</button>
-        <button class="quiet" disabled={!open.state?.canRedo} onclick={open.redo} title="やり直す（Ctrl+Shift+Z）">↷ やり直す</button>
+        <button class="quiet" disabled={!open.state?.canUndo} onclick={open.undo} title="元に戻す（Ctrl+Z）">
+          {@render arrow()}元に戻す
+        </button>
+        <button class="quiet redo" disabled={!open.state?.canRedo} onclick={open.redo} title="やり直す（Ctrl+Shift+Z）">
+          {@render arrow()}やり直す
+        </button>
       </div>
-      <nav>
-        {#each TABS as [key, name] (key)}
-          <button class="tab" class:current={tab === key} aria-pressed={tab === key} onclick={() => (tab = key)}>{name}</button>
-        {/each}
-      </nav>
-      <button class="quiet" disabled={show.slides.length === 0 && !exporting.running} onclick={() => (exportOpen = true)}>
+      <button class="quiet export" disabled={show.slides.length === 0 && !exporting.running} onclick={() => (exportOpen = true)}>
         {exporting.running ? `書き出し中 ${Math.round(exporting.fraction * 100)}%` : "動画に書き出す"}
       </button>
       <div class="present">
@@ -145,31 +150,39 @@
       </aside>
 
       <section class="center">
-        <Preview {selected} bind:playing onslide={(slide) => (playingSlide = slide)} />
-        <div class="controls">
-          {#if playing}
-            <button onclick={() => (playing = false)}>■ 止める</button>
-          {:else}
-            <button disabled={selected === null} onclick={() => (playing = true)}>▶ このスライドから再生</button>
+        <div class="stage">
+          <Preview {selected} bind:playing onslide={(slide) => (playingSlide = slide)} />
+          <div class="controls">
+            {#if playing}
+              <button onclick={() => (playing = false)}>■ 止める</button>
+            {:else}
+              <button disabled={selected === null} onclick={() => (playing = true)}>▶ このスライドから再生</button>
+            {/if}
+          </div>
+          {#if !hintClosed && hint}
+            <p class="next">
+              {hint}
+              <button class="quiet" onclick={closeHint} title="案内を閉じる">✕</button>
+            </p>
           {/if}
-          <span class="hint">プレビューは上映と同じ描画です。音は出ません。</span>
         </div>
-        {#if !hintClosed && hint}
-          <p class="next">
-            {hint}
-            <button class="quiet" onclick={closeHint} title="案内を閉じる">✕</button>
-          </p>
-        {/if}
       </section>
 
       <aside class="right">
-        {#if tab === "slides"}
-          <SlidePanel {selected} />
-        {:else if tab === "look"}
-          <LookPanel />
-        {:else}
-          <MusicPanel />
-        {/if}
+        <nav>
+          {#each TABS as [key, name] (key)}
+            <button class="tab" class:current={tab === key} aria-pressed={tab === key} onclick={() => (tab = key)}>{name}</button>
+          {/each}
+        </nav>
+        <div class="settings">
+          {#if tab === "slides"}
+            <SlidePanel {selected} />
+          {:else if tab === "look"}
+            <LookPanel />
+          {:else}
+            <MusicPanel />
+          {/if}
+        </div>
       </aside>
     </div>
   </div>
@@ -192,7 +205,8 @@
   }
 
   .title {
-    width: 260px;
+    flex: 0 1 260px;
+    min-width: 120px;
     font-weight: 600;
     border-color: transparent;
     background: transparent;
@@ -220,21 +234,43 @@
   .history button {
     font-size: 13px;
     padding: 6px 8px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+  }
+
+  .history svg {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .redo svg {
+    transform: scaleX(-1);
+  }
+
+  .export {
+    margin-left: auto;
+    white-space: nowrap;
   }
 
   nav {
-    margin-left: auto;
     display: flex;
     gap: 2px;
+    margin: 14px 14px 0;
     background: var(--surface-2);
     padding: 3px;
     border-radius: 9px;
   }
 
   .tab {
+    flex: 1;
     border: none;
     background: transparent;
-    padding: 6px 16px;
+    padding: 6px 8px;
   }
 
   .tab.current {
@@ -246,7 +282,7 @@
 
   .present {
     display: flex;
-    margin-left: 12px;
+    flex-shrink: 0;
   }
 
   .present button:first-child {
@@ -275,30 +311,42 @@
     grid-template-columns: 300px 1fr 320px;
   }
 
-  .left,
-  .right {
-    padding: 14px;
-    overflow-y: auto;
-    min-height: 0;
-  }
-
   .left {
+    padding: 14px;
+    min-height: 0;
     border-right: 1px solid var(--line);
     overflow: hidden;
   }
 
   .right {
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
     border-left: 1px solid var(--line);
     background: var(--surface);
   }
 
+  .settings {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 14px;
+  }
+
   .center {
     padding: 20px;
+    min-width: 0;
+    overflow-y: auto;
+  }
+
+  /* As wide as the column allows while the preview, its button and the
+     hint still fit in the window's height. */
+  .stage {
+    width: min(100%, calc((100vh - 220px) * 16 / 9));
+    margin: 0 auto;
     display: flex;
     flex-direction: column;
     gap: 12px;
-    min-width: 0;
-    overflow-y: auto;
   }
 
   .controls {

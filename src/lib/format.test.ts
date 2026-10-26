@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ShowDefinition } from "./bindings/ShowDefinition";
 import type { Slide } from "./bindings/Slide";
-import { clock, effective, fileSize, roughly, seconds } from "./format";
+import { clock, effective, fileSize, roughly, screenName, seconds } from "./format";
 
 describe("format", () => {
   it("writes lengths in seconds and minutes", () => {
@@ -25,6 +25,11 @@ describe("format", () => {
     expect(roughly(20)).toBe("1分未満");
     expect(roughly(180)).toBe("約3分");
     expect(roughly(4800)).toBe("約1時間20分");
+  });
+
+  it("leaves out the names macOS makes up for screens", () => {
+    expect(screenName("Monitor #41055")).toBeNull();
+    expect(screenName("LG HDR 4K")).toBe("LG HDR 4K");
   });
 
   it("gives a transition without a length its own, unless the look sets one", () => {

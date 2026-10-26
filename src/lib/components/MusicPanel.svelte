@@ -6,7 +6,7 @@
   import * as api from "$lib/api";
   import type { MonitorInfo } from "$lib/bindings/MonitorInfo";
   import type { Music } from "$lib/bindings/Music";
-  import { MUSIC_FILTER } from "$lib/format";
+  import { MUSIC_FILTER, screenName } from "$lib/format";
   import { open } from "$lib/show.svelte";
 
   const music = $derived(open.show?.music);
@@ -96,24 +96,17 @@
 
 {#if music}
   <div class="panel">
-    <h3>音楽</h3>
-
     <fieldset>
       <legend>BGM</legend>
-      <div class="choices">
-        <button class:current={music.source?.kind === "folder"} onclick={chooseFolder}>フォルダを指定…</button>
-        <button class:current={music.source?.kind === "files"} onclick={chooseFiles}>曲を個別に選ぶ…</button>
-        {#if music.source}
-          <button class="quiet" onclick={() => setMusic((music) => (music.source = null))}>BGM なし</button>
-        {/if}
+      <!-- Buttons, not radios: the folder and song buttons open a file
+           picker each time, also to choose again. -->
+      <div class="choices" role="group" aria-label="BGM">
+        <button aria-pressed={!music.source} class:current={!music.source} onclick={() => setMusic((music) => (music.source = null))}>なし</button>
+        <button aria-pressed={music.source?.kind === "folder"} class:current={music.source?.kind === "folder"} onclick={chooseFolder}>フォルダ…</button>
+        <button aria-pressed={music.source?.kind === "files"} class:current={music.source?.kind === "files"} onclick={chooseFiles}>曲を選ぶ…</button>
       </div>
       {#if music.source?.kind === "folder"}
-        <p class="path" title={music.source.path}>📁 {music.source.path}</p>
-        <p class="hint">フォルダに曲を足すと、次に上映するときから流れます。</p>
-      {:else if music.source?.kind === "files"}
-        <p class="hint">{music.source.paths.length}曲を選んでいます。</p>
-      {:else}
-        <p class="hint">BGM は流しません。</p>
+        <p class="path" title={music.source.path}>{music.source.path}</p>
       {/if}
       {#if tracks}
         <details>
@@ -166,12 +159,9 @@
 
     <fieldset>
       <legend>音ズレ補正（この機器の設定）</legend>
-      <p class="hint">
-        Bluetooth のスピーカーなどで音が映像より遅れて聞こえるときに、音を早めます。テスト音を出して、光と音が同時になるように合わせてください。
-      </p>
       <div class="offset">
         <button onclick={() => setOffset(offset - 10)}>−10</button>
-        <input type="number" step="10" value={offset} onchange={(e) => setOffset(Number(e.currentTarget.value))} />
+        <input type="number" min="-500" max="1000" step="10" value={offset} onchange={(e) => setOffset(Number(e.currentTarget.value))} />
         <span>ミリ秒</span>
         <button onclick={() => setOffset(offset + 10)}>＋10</button>
       </div>
@@ -179,7 +169,7 @@
         {#if monitors.length > 1}
           <select bind:value={testScreen} disabled={testing} aria-label="テスト音を出す画面">
             {#each monitors as monitor (monitor.index)}
-              <option value={monitor.index}>{monitor.index + 1}: {monitor.name}</option>
+              <option value={monitor.index}>{monitor.index + 1}{screenName(monitor.name) ? `: ${screenName(monitor.name)}` : ""}</option>
             {/each}
           </select>
         {/if}
@@ -262,11 +252,6 @@
     gap: 14px;
   }
 
-  h3 {
-    margin: 0;
-    font-size: 15px;
-  }
-
   fieldset {
     border: 1px solid var(--line);
     border-radius: 8px;
@@ -286,13 +271,23 @@
     margin: 0;
   }
 
-  .choices,
   .test,
   .offset {
     display: flex;
     gap: 6px;
     flex-wrap: wrap;
     align-items: center;
+  }
+
+  .choices {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+  }
+
+  .choices button {
+    padding: 7px 4px;
+    white-space: nowrap;
   }
 
   .choices .current {
@@ -307,6 +302,7 @@
   .path {
     overflow-wrap: anywhere;
     font-size: 13px;
+    color: var(--muted);
   }
 
   ol {
