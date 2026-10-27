@@ -65,12 +65,17 @@
   async function remove() {
     const project = doomed;
     doomed = null;
-    if (!project) return;
+    if (!project || busy) return;
+    // Opening it while it is deleted would open a folder that is going.
+    busy = true;
+    error = null;
     try {
       await api.deleteProject(project.dir);
       projects = (projects ?? []).filter((p) => p.dir !== project.dir);
     } catch (err) {
       error = String(err);
+    } finally {
+      busy = false;
     }
   }
 

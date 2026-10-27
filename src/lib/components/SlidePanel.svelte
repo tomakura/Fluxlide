@@ -89,7 +89,7 @@
           setSlide((slide) => (slide.showCaption = on));
         }}
       />
-      この写真にキャプションを出す
+      このスライドにキャプションを出す
     </label>
     <p class="hint caption-note">出す文字は「ファイル」タブ、デザインは「全体の見た目」で決めます。</p>
 

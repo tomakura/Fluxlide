@@ -219,24 +219,36 @@ pub async fn delete_project(
 ) -> Result<(), String> {
     let root = projects_dir(&app)?;
     let session = state.session();
-    let inside = dir.parent() == Some(root.as_path());
-    if inside {
-        let dir = dir.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            // Stops the imports of the open project, which may be this one.
-            close(&session);
-            if !dir.join(project::DATABASE_FILE).is_file() {
-                return Err(project::ProjectError::NotFound(dir).to_string());
-            }
-            std::fs::remove_dir_all(&dir)
-                .map_err(|err| format!("スライドショーを削除できません: {err}"))
-        })
-        .await
-        .map_err(|err| err.to_string())??;
+    if dir.parent() != Some(root.as_path()) {
+        return settings
+            .update(&app, |settings| settings.forget_dir(&dir))
+            .map(|_| ());
     }
-    settings
-        .update(&app, |settings| settings.forget_dir(&dir))
-        .map(|_| ())
+    tauri::async_runtime::spawn_blocking(move || {
+        // Stops the imports of the open project, which may be this one.
+        close(&session);
+        if !dir.join(project::DATABASE_FILE).is_file() {
+            return Err(project::ProjectError::NotFound(dir).to_string());
+        }
+        remove_folder(&dir).map_err(|err| format!("スライドショーを削除できません: {err}"))
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+/// Removes `dir` until it is gone. An import that was stopping when the
+/// project closed may still make its thumbnail folder again, or hold a file
+/// open for a moment.
+fn remove_folder(dir: &std::path::Path) -> std::io::Result<()> {
+    let mut last = Ok(());
+    for _ in 0..30 {
+        last = std::fs::remove_dir_all(dir);
+        if last.is_ok() && !dir.exists() {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    last.and_then(|()| Err(std::io::Error::other("フォルダーが残っています")))
 }
 
 fn close(slot: &Mutex<Option<Session>>) {
