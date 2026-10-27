@@ -32,6 +32,13 @@
 
   let tab = $state<Tab>("look");
   let files = $state(false);
+  // The preview of this screen is gone while the file settings are open, so
+  // a playback is over, and must not start again on coming back.
+  function openFiles() {
+    playing = false;
+    playingSlide = null;
+    files = true;
+  }
   let exportOpen = $state(false);
   // An export that ends while its dialog is closed says so there (once:
   // not again when the editor is opened later).
@@ -129,7 +136,7 @@
           {@render arrow()}やり直す
         </button>
       </div>
-      <button class="quiet files" disabled={show.slides.length === 0} onclick={() => (files = true)}>
+      <button class="quiet files" disabled={show.slides.length === 0} onclick={openFiles}>
         ファイルごとの設定
       </button>
       <button class="quiet export" disabled={show.slides.length === 0 && !exporting.running} onclick={() => (exportOpen = true)}>
@@ -154,7 +161,7 @@
 
     <div class="columns">
       <aside class="left">
-        <SlideList bind:selected playing={playing ? playingSlide : null} onopen={() => (files = true)} />
+        <SlideList bind:selected playing={playing ? playingSlide : null} onopen={openFiles} />
       </aside>
 
       <section class="center">

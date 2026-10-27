@@ -219,7 +219,7 @@ pub async fn delete_project(
 ) -> Result<(), String> {
     let root = projects_dir(&app)?;
     let session = state.session();
-    if dir.parent() != Some(root.as_path()) {
+    if !is_project_folder_of(&root, &dir) {
         return settings
             .update(&app, |settings| settings.forget_dir(&dir))
             .map(|_| ());
@@ -237,6 +237,12 @@ pub async fn delete_project(
     })
     .await
     .map_err(|err| err.to_string())?
+}
+
+/// Whether `dir` is a folder made directly inside the app's folder `root`.
+/// A path ending in `..` has `root` as its parent too, but is not one.
+fn is_project_folder_of(root: &std::path::Path, dir: &std::path::Path) -> bool {
+    dir.parent() == Some(root) && dir.file_name().is_some()
 }
 
 /// Removes `dir` until it is gone, since a file in it may stay open for a
@@ -330,4 +336,20 @@ fn with_session(
     let session = guard.as_mut().ok_or("スライドショーが開かれていません。")?;
     change(session);
     Ok(ShowState::of(session))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn only_a_folder_made_directly_in_the_app_folder_is_removed() {
+        let root = Path::new("/data/projects");
+        assert!(is_project_folder_of(root, Path::new("/data/projects/show-1")));
+        assert!(!is_project_folder_of(root, Path::new("/data/projects/..")));
+        assert!(!is_project_folder_of(root, Path::new("/data/projects")));
+        assert!(!is_project_folder_of(root, Path::new("/data/projects/show-1/media")));
+        assert!(!is_project_folder_of(root, Path::new("/elsewhere/show-1")));
+    }
 }

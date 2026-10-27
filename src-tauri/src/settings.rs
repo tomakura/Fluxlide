@@ -139,6 +139,16 @@ mod tests {
     }
 
     #[test]
+    fn a_forgotten_project_leaves_the_recent_ones_and_others_stay() {
+        let mut settings = Settings::default();
+        settings.remember_dir(Path::new("/shows/1"));
+        settings.remember_dir(Path::new("/shows/2"));
+        settings.forget_dir(Path::new("/shows/1"));
+        settings.forget_dir(Path::new("/shows/3"));
+        assert_eq!(settings.recent_dirs, [Path::new("/shows/2")]);
+    }
+
+    #[test]
     fn missing_fields_take_their_defaults() {
         let settings: Settings = serde_json::from_str(r#"{"syncOffsetMs": 120}"#).unwrap();
         assert_eq!(settings.sync_offset_ms, 120.0);

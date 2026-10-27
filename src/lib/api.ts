@@ -27,7 +27,7 @@ export const listProjects = () => invoke<ProjectSummary[]>("list_projects");
 export const createProject = (title: string) => invoke<ShowState>("create_project", { title });
 export const openProject = (dir: string) => invoke<ShowState>("open_project", { dir });
 export const deleteProject = (dir: string) => invoke<void>("delete_project", { dir });
-export const closeProject =() => invoke<void>("close_project");
+export const closeProject = () => invoke<void>("close_project");
 export const showState = () => invoke<ShowState | null>("show_state");
 
 /// `show` is a change made to the state of `revision`. `group` names the
