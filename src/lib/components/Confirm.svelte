@@ -1,6 +1,7 @@
 <script lang="ts">
   // A question that must be answered before going on.
   import { modal } from "$lib/modal";
+  import { appear, pop } from "$lib/motion";
 
   let {
     title,
@@ -17,10 +18,11 @@
   } = $props();
 </script>
 
-<div class="backdrop" role="presentation">
+<div class="backdrop" role="presentation" transition:appear|global>
   <div
     class="dialog"
     role="alertdialog"
+    transition:pop|global
     aria-modal="true"
     aria-labelledby="confirm-title"
     tabindex="-1"

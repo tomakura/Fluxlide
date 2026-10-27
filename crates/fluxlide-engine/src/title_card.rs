@@ -7,7 +7,7 @@
 //! back plates are white instead of navy.
 
 use crate::overlay::{Color, Overlay, OverlayPlan, PlanPiece, Rect, check_size};
-use crate::text::{TextStyle, render_text};
+use crate::text::{Halo, TextStyle, render_text};
 use crate::{EngineError, Renderer};
 
 /// Height of the mark's 64-unit box, as a fraction of the output's height.
@@ -50,8 +50,8 @@ pub(crate) fn plan_title_card(title: &str, size: (u32, u32)) -> Result<OverlayPl
         tracking: TITLE_TRACKING,
         line_height: 1.3,
     };
-    let shadow = ((height * 0.004).round().max(1.0) as u32, 1);
-    let block = render_text(title, &style, width * MAX_TITLE_WIDTH, 2, Some(shadow));
+    let shadow = Halo::shadow((height * 0.004).round().max(1.0) as u32, 1);
+    let block = render_text(title, &style, width * MAX_TITLE_WIDTH, 2, shadow);
     let unit = height * LOGO_HEIGHT / 64.0;
 
     // The plates and the title are centred together as one group.
@@ -92,6 +92,7 @@ pub(crate) fn plan_title_card(title: &str, size: (u32, u32)) -> Result<OverlayPl
         });
     }
     Ok(OverlayPlan {
+        parts: Vec::new(),
         size,
         opacity: 1.0,
         pieces,

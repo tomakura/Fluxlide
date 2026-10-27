@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::media::MediaTexture;
 use crate::overlay::{Color, Overlay, OverlayPlan, PlanPiece, Rect, check_size};
-use crate::text::{TextStyle, render_text};
+use crate::text::{Halo, TextStyle, render_text};
 use crate::{EngineError, Renderer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
@@ -112,10 +112,11 @@ pub(crate) fn plan_watermark(
                 line_height: 1.2,
             };
             let max_width = width - 2.0 * margin - frame_height;
-            let shadow = ((frame_height * 0.08).round().max(2.0) as u32, 1);
-            let Some(block) = render_text(text, &style, max_width, 1, Some(shadow)) else {
+            let shadow = Halo::shadow((frame_height * 0.08).round().max(2.0) as u32, 1);
+            let Some(block) = render_text(text, &style, max_width, 1, shadow) else {
                 // Nothing to show for an empty text.
                 return Ok(OverlayPlan {
+                    parts: Vec::new(),
                     size,
                     opacity: watermark.opacity,
                     pieces,
@@ -167,6 +168,7 @@ pub(crate) fn plan_watermark(
         }
     }
     Ok(OverlayPlan {
+        parts: Vec::new(),
         size,
         opacity: watermark.opacity,
         pieces,

@@ -5,6 +5,7 @@
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
   import * as api from "$lib/api";
   import { modal } from "$lib/modal";
+  import { appear, pop } from "$lib/motion";
   import Mark from "./Mark.svelte";
 
   let { onclose }: { onclose: () => void } = $props();
@@ -18,10 +19,11 @@
   });
 </script>
 
-<div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
+<div class="backdrop" role="presentation" transition:appear|global onclick={(e) => e.target === e.currentTarget && onclose()}>
   <div
     class="dialog"
     role="dialog"
+    transition:pop|global
     aria-modal="true"
     aria-labelledby="about-title"
     tabindex="-1"

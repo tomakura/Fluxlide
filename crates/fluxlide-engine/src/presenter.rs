@@ -1,5 +1,6 @@
 //! Showing frames in a native window for live playback.
 
+use crate::mirror::{Mirror, MirrorFrame};
 use crate::{Compositor, EngineError, Renderer, Scene};
 
 /// Result of one [`Presenter::render`] call.
@@ -24,6 +25,7 @@ pub struct Presenter {
     /// sRGB view of it.
     view_format: wgpu::TextureFormat,
     compositor: Compositor,
+    mirror: Option<Mirror>,
 }
 
 impl Presenter {
@@ -87,7 +89,20 @@ impl Presenter {
             config,
             view_format,
             compositor: Compositor::new(renderer, view_format)?,
+            mirror: None,
         })
+    }
+
+    /// Keeps a small copy, `width` pixels wide, of what the window shows,
+    /// taken a few times a second (see [`Presenter::take_mirror_frame`]).
+    pub fn enable_mirror(&mut self, renderer: &Renderer, width: u32) {
+        self.mirror = Some(Mirror::new(renderer, self.view_format, width));
+    }
+
+    /// The newest copy of the window not taken yet, once
+    /// [`Presenter::enable_mirror`] was called.
+    pub fn take_mirror_frame(&mut self) -> Option<MirrorFrame> {
+        self.mirror.as_mut()?.take()
     }
 
     /// Current surface size in physical pixels.
@@ -136,7 +151,15 @@ impl Presenter {
             format: Some(self.view_format),
             ..Default::default()
         });
-        self.compositor.draw(renderer, &view, self.size(), scene)?;
+        let size = self.size();
+        match &mut self.mirror {
+            Some(mirror) => {
+                let target = mirror.target(renderer, self.view_format, size);
+                self.compositor.draw(renderer, target, size, scene)?;
+                mirror.finish(renderer, &view);
+            }
+            None => self.compositor.draw(renderer, &view, size, scene)?,
+        }
         renderer.queue().present(frame);
         Ok(FrameOutcome::Presented)
     }

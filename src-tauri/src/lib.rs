@@ -143,6 +143,8 @@ pub fn run() {
             identify::identify_monitors,
             presentation::list_monitors,
             presentation::presentation_status,
+            presentation::presentation_frame,
+            presentation::end_request_answered,
             presentation::control_presentation,
             presentation::start_presentation,
             presentation::start_test_sound,

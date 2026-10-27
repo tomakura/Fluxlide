@@ -9,6 +9,9 @@
   import { clock, screenName, thumbnailUrl } from "$lib/format";
   import { open } from "$lib/show.svelte";
   import Confirm from "./Confirm.svelte";
+  import { flip } from "svelte/animate";
+  import { appear, moving, rise, slideIn } from "$lib/motion";
+  import LiveOutput from "./LiveOutput.svelte";
 
   let { syncOffsetMs, onend }: { syncOffsetMs: number; onend: () => void } = $props();
 
@@ -22,6 +25,28 @@
   const position = $derived(playback?.position ?? null);
   const music = $derived(playback?.bgm ?? null);
   const screen = $derived(status?.monitorName ? screenName(status.monitorName) : null);
+  const stateText = $derived(
+    position?.beforeStart
+      ? "開始前の画面を表示しています"
+      : position?.atEnd
+        ? "終了の画面を表示しています"
+        : position?.blackout
+          ? "暗転しています"
+          : position?.paused
+            ? "一時停止しています"
+            : "いま映している画面",
+  );
+  // The slides after the next one, each with a key that stays the same as
+  // the list moves up: its id and how many times it came before (a show
+  // that loops can list a slide twice).
+  const later = $derived.by(() => {
+    const seen = new Map<number, number>();
+    return (position?.upcoming.slice(1) ?? []).map((id) => {
+      const n = seen.get(id) ?? 0;
+      seen.set(id, n + 1);
+      return { id, key: `${id}:${n}` };
+    });
+  });
 
   $effect(() => {
     let stopped = false;
@@ -37,10 +62,12 @@
     poll();
     const ended = api.onPresentationEnded(onend);
     const requested = api.onPresentationEndRequested(() => (confirming = true));
+    const cancelled = api.onPresentationEndCancelled(() => (confirming = false));
     return () => {
       stopped = true;
       ended.then((stop) => stop());
       requested.then((stop) => stop());
+      cancelled.then((stop) => stop());
     };
   });
 
@@ -50,6 +77,11 @@
     confirming = false;
     await api.stopPresentation();
     onend();
+  }
+
+  function keepGoing() {
+    confirming = false;
+    api.endRequestAnswered();
   }
 
   function setOffset(ms: number) {
@@ -93,16 +125,16 @@
 
 <svelte:window {onkeydown} />
 
-<div class="presenting">
+<div class="presenting" in:appear|global>
   <header>
-    <span class="live-tag">● 上映中</span>
+    <span class="live-tag"><span class="dot" class:still={position?.paused}>●</span> 上映中</span>
     {#if screen}<span>出力先: {screen}</span>{/if}
     <span class="time">経過 {clock(playback?.elapsedSecs ?? 0)}</span>
     <button class="end" onclick={() => (confirming = true)}>■ 上映を終了</button>
   </header>
 
   {#if status?.screenLost}
-    <p class="lost" role="alert">
+    <p class="lost" role="alert" transition:rise>
       出力先の画面（{status.monitorName}）が見つからないので、一時停止しました。つなぎ直すと、その画面に戻ります。続けるには「再開」を押してください。
     </p>
   {/if}
@@ -110,30 +142,19 @@
   <main>
     <section class="now">
       <h2>
-        {#if position?.beforeStart}
-          開始前の画面を表示しています
-        {:else if position?.atEnd}
-          終了の画面を表示しています
-        {:else if position?.blackout}
-          暗転しています
-        {:else if position?.paused}
-          一時停止しています
-        {:else}
-          いま映しているスライド
-        {/if}
+        {#key stateText}<span in:appear>{stateText}</span>{/key}
       </h2>
+      <div class="big"><LiveOutput /></div>
       {#if position?.beforeStart}
-        <div class="big start">
-          <p>{open.show?.title}</p>
+        <div class="start" out:rise>
           <button class="live startbutton" onclick={() => send({ kind: "start" })}>▶ スライドを始める</button>
           <p class="hint">Space か → キーでも始められます</p>
         </div>
       {:else}
         {@const current = card(position?.current)}
-        <figure class="big" class:dim={position?.blackout}>
-          {#if current.thumbnail}<img src={current.thumbnail} alt="" />{/if}
-          <figcaption>{current.number ?? ""}　{current.title}</figcaption>
-        </figure>
+        {#key position?.current}
+          <p class="current" in:appear>{current.number ?? ""}　{current.title}</p>
+        {/key}
       {/if}
     </section>
 
@@ -141,17 +162,21 @@
       <h2>次のスライド</h2>
       {#if position && position.upcoming.length}
         {@const next = card(position.upcoming[0])}
-        <figure class="next">
-          {#if next.thumbnail}<img src={next.thumbnail} alt="" />{/if}
-          <figcaption>{next.number}　{next.title}</figcaption>
-        </figure>
+        <div class="next-frame">
+          {#key position.upcoming[0]}
+            <figure class="next" in:slideIn>
+              {#if next.thumbnail}<img src={next.thumbnail} alt="" />{/if}
+              <figcaption>{next.number}　{next.title}</figcaption>
+            </figure>
+          {/key}
+        </div>
         <h3>この後</h3>
         <ol>
-          {#each position.upcoming.slice(1) as id, i (i)}
-            {@const later = card(id)}
-            <li>
-              {#if later.thumbnail}<img src={later.thumbnail} alt="" />{/if}
-              <span>{later.number}　{later.title}</span>
+          {#each later as item (item.key)}
+            {@const slide = card(item.id)}
+            <li animate:flip={moving()} in:rise out:appear={{ duration: 120 }}>
+              {#if slide.thumbnail}<img src={slide.thumbnail} alt="" />{/if}
+              <span>{slide.number}　{slide.title}</span>
             </li>
           {/each}
         </ol>
@@ -213,7 +238,7 @@
     </div>
 
     <p class="keys hint">
-      ← → 前へ・次へ　Space 一時停止　B 暗転　Esc 上映を終了
+      ← → 前へ・次へ　Space 一時停止　B 暗転　Esc → Enter 上映を終了
       {#if playback?.lastError}<span class="error">　{playback.lastError}</span>{/if}
       {#if saveError}<span class="error">　{saveError}</span>{/if}
     </p>
@@ -223,10 +248,10 @@
 {#if confirming}
   <Confirm
     title="上映を終了しますか？"
-    message="映している画面が閉じて、編集画面に戻ります。"
+    message="映している画面が閉じて、編集画面に戻ります。上映の画面で Enter を押しても終了します。"
     confirmLabel="上映を終了"
     onconfirm={end}
-    oncancel={() => (confirming = false)}
+    oncancel={keepGoing}
   />
 {/if}
 
@@ -255,6 +280,27 @@
 
   .live-tag {
     font-weight: 700;
+  }
+
+  .dot {
+    display: inline-block;
+    animation: beat 1.6s ease-in-out infinite;
+  }
+
+  .dot.still {
+    animation: none;
+    opacity: 0.6;
+  }
+
+  @keyframes beat {
+    50% {
+      opacity: 0.35;
+    }
+  }
+
+  .next-frame {
+    overflow: hidden;
+    border-radius: 6px;
   }
 
   .time {
@@ -307,10 +353,10 @@
     border-radius: 8px;
     overflow: hidden;
     position: relative;
+    min-height: 0;
     max-height: 100%;
   }
 
-  .big img,
   .next img {
     width: 100%;
     height: 100%;
@@ -318,12 +364,8 @@
     display: block;
   }
 
-  .big img {
-    transition: opacity 0.4s ease-in-out;
-  }
-
-  .big.dim img {
-    opacity: 0.15;
+  .current {
+    margin: 10px 0 0;
   }
 
   figcaption {
@@ -340,9 +382,8 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
-    gap: 12px;
-    color: #fff;
+    gap: 8px;
+    margin-top: 14px;
   }
 
   .start p {

@@ -6,6 +6,8 @@
   import * as api from "$lib/api";
   import type { SlideId } from "$lib/bindings/SlideId";
   import { MEDIA_FILTER, effective, slideLength, thumbnailUrl, transitionName } from "$lib/format";
+  import { flip } from "svelte/animate";
+  import { appear, moving, rise } from "$lib/motion";
   import { open } from "$lib/show.svelte";
   import { removeSlide } from "$lib/edits";
   import DropZone from "./DropZone.svelte";
@@ -119,6 +121,9 @@
         {@const asset = open.asset(slide.asset)}
         {@const copying = asset ? open.copying[asset.id] : undefined}
         <li
+          animate:flip={moving()}
+          in:rise
+          out:appear={{ duration: 140 }}
           class:selected={slide.id === selected}
           class:playing={slide.id === playing}
           class:drop-before={dragging && dragging.to === index && dragging.id !== slide.id}

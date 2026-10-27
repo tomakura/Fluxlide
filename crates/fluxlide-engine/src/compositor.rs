@@ -21,9 +21,10 @@
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 
+use crate::caption;
 use crate::media::PixelLayout;
 use crate::overlay::OVERLAY_UNIFORM_SIZE;
-use crate::scene::{Fit, Frame, Layer, Scene, TransitionRun, fit_rect, placed_rect};
+use crate::scene::{Fit, Frame, Layer, OverlayRef, Scene, TransitionRun, fit_rect, placed_rect};
 use crate::transition::{TRANSITION_UNIFORM_SIZE, Transition, TransitionLayouts};
 use crate::{EngineError, Renderer};
 
@@ -145,6 +146,8 @@ pub struct Compositor {
     /// Pipelines for the target.
     target_pipes: FormatPipelines,
     overlay_pipeline: wgpu::RenderPipeline,
+    /// Draws overlays onto the offscreen slides.
+    slide_overlay_pipeline: wgpu::RenderPipeline,
     transitions: HashMap<u64, wgpu::RenderPipeline>,
     test_pattern: TestPattern,
     /// Bound where an overlay piece has no texture of its own.
@@ -276,6 +279,15 @@ impl Compositor {
             format,
             Some(PREMULTIPLIED_OVER),
         );
+        let slide_overlay_pipeline = create_pipeline(
+            device,
+            "fluxlide-slide-overlay",
+            &overlay_layout,
+            &overlay_shader,
+            wgpu::PrimitiveTopology::TriangleStrip,
+            SLIDE_FORMAT,
+            Some(PREMULTIPLIED_OVER),
+        );
 
         let blank = device
             .create_texture(&wgpu::TextureDescriptor {
@@ -305,6 +317,7 @@ impl Compositor {
             overlay_layout,
             transition_layouts: TransitionLayouts::new(device),
             overlay_pipeline,
+            slide_overlay_pipeline,
             transitions: HashMap::new(),
             test_pattern: TestPattern::new(device, format),
             blank,
@@ -391,6 +404,13 @@ impl Compositor {
                     SlideDest::From,
                     size,
                 )?;
+                self.encode_overlays(
+                    renderer,
+                    encoder,
+                    SlideDest::From,
+                    size,
+                    &frame.from_overlays,
+                )?;
                 self.encode_slide(renderer, encoder, frame.to.as_ref(), SlideDest::To, size)?;
                 self.encode_transition(renderer, encoder, target, size, run)?;
             }
@@ -404,7 +424,13 @@ impl Compositor {
                 )?;
             }
         }
-        self.encode_overlays(renderer, encoder, target, size, frame)
+        self.encode_overlays(
+            renderer,
+            encoder,
+            SlideDest::Target(target),
+            size,
+            &frame.overlays,
+        )
     }
 
     fn ensure_targets(&mut self, device: &wgpu::Device, size: (u32, u32)) {
@@ -626,14 +652,14 @@ impl Compositor {
         &mut self,
         renderer: &Renderer,
         encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
+        dest: SlideDest<'_>,
         size: (u32, u32),
-        frame: &Frame<'_>,
+        overlays: &[OverlayRef<'_>],
     ) -> Result<(), EngineError> {
         let device = renderer.device();
         // Bind groups must outlive the render pass that uses them.
         let mut groups: Vec<(wgpu::BindGroup, u32)> = Vec::new();
-        for item in &frame.overlays {
+        for item in overlays {
             let opacity = (item.opacity * item.overlay.opacity()).clamp(0.0, 1.0);
             if opacity <= 0.0 {
                 continue;
@@ -647,8 +673,14 @@ impl Compositor {
                     size.1
                 )));
             }
-            for piece in item.overlay.draws() {
-                let uniforms = piece.uniform_bytes(size, opacity);
+            for (index, piece) in item.overlay.draws().iter().enumerate() {
+                let (fade, shift) = item.reveal.map_or((1.0, 0.0), |secs| {
+                    caption::reveal(item.overlay.part(index), secs, size.1 as f32)
+                });
+                if fade <= 0.0 {
+                    continue;
+                }
+                let uniforms = piece.uniform_bytes(size, opacity * fade, shift);
                 let offset = self.arena.push(renderer.queue(), &uniforms)?;
                 let view = piece.texture_view().unwrap_or(&self.blank);
                 let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -675,8 +707,19 @@ impl Compositor {
         if groups.is_empty() {
             return Ok(());
         }
-        let mut pass = begin_pass(encoder, target, None);
-        pass.set_pipeline(&self.overlay_pipeline);
+        let (view, pipeline) = match dest {
+            SlideDest::Target(view) => (view, &self.overlay_pipeline),
+            SlideDest::From => (
+                &self.targets.as_ref().expect("targets exist").from,
+                &self.slide_overlay_pipeline,
+            ),
+            SlideDest::To => (
+                &self.targets.as_ref().expect("targets exist").to,
+                &self.slide_overlay_pipeline,
+            ),
+        };
+        let mut pass = begin_pass(encoder, view, None);
+        pass.set_pipeline(pipeline);
         for (group, offset) in &groups {
             pass.set_bind_group(0, group, &[*offset]);
             pass.draw(0..4, 0..1);
@@ -799,7 +842,7 @@ const PREMULTIPLIED_OVER: wgpu::BlendState = wgpu::BlendState {
 };
 
 /// Starts a pass on `view`: cleared to `clear`, or kept as it is.
-fn begin_pass<'e>(
+pub(crate) fn begin_pass<'e>(
     encoder: &'e mut wgpu::CommandEncoder,
     view: &wgpu::TextureView,
     clear: Option<wgpu::Color>,
@@ -824,7 +867,7 @@ fn begin_pass<'e>(
         .forget_lifetime()
 }
 
-fn create_pipeline(
+pub(crate) fn create_pipeline(
     device: &wgpu::Device,
     label: &str,
     bind_group_layout: &wgpu::BindGroupLayout,

@@ -106,7 +106,7 @@ impl Run {
     fn update(&mut self) {
         self.show.update(self.start.elapsed().as_secs_f64());
         if self.still && !self.show.is_paused() && self.show.position(0).current.is_some() {
-            self.show.pause();
+            self.show.pause_at_once();
         }
     }
 }

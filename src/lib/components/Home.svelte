@@ -3,6 +3,7 @@
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
   import * as api from "$lib/api";
   import type { ProjectSummary } from "$lib/bindings/ProjectSummary";
+  import { appear } from "$lib/motion";
   import { open } from "$lib/show.svelte";
   import AboutDialog from "./AboutDialog.svelte";
   import DropZone from "./DropZone.svelte";
@@ -60,7 +61,7 @@
     new Date(ms).toLocaleString("ja-JP", { dateStyle: "medium", timeStyle: "short" });
 </script>
 
-<main>
+<main in:appear|global>
   <section class="start">
     <div class="brand">
       <Mark size={56} />

@@ -86,6 +86,7 @@ fn transitions(
                     progress,
                 }),
                 overlays: Vec::new(),
+                from_overlays: Vec::new(),
             };
             let pixels = render(renderer, &mut target, frame)?;
             let tile = image::RgbaImage::from_raw(640, 360, pixels).unwrap();
@@ -121,13 +122,16 @@ fn captions(
     bright: &MediaTexture,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut target = OffscreenTarget::new(renderer, SIZE.0, SIZE.1)?;
-    for (design, name) in [
-        (CaptionDesign::Band, "band"),
-        (CaptionDesign::Simple, "simple"),
-        (CaptionDesign::Card, "card"),
+    for (design, name, outline) in [
+        (CaptionDesign::Band, "band", 0.0),
+        (CaptionDesign::Simple, "simple", 0.0),
+        (CaptionDesign::Plain, "plain", 0.0),
+        (CaptionDesign::Plain, "plain-outline", 3.0),
+        (CaptionDesign::Card, "card", 0.0),
     ] {
         let style = CaptionStyle {
             design,
+            outline,
             ..Default::default()
         };
         let overlay = Overlay::caption(renderer, &caption(), &style, SIZE)?.unwrap();
@@ -137,6 +141,7 @@ fn captions(
                 overlays: vec![OverlayRef {
                     overlay: &overlay,
                     opacity: 1.0,
+                    reveal: None,
                 }],
                 ..Default::default()
             };
@@ -148,6 +153,49 @@ fn captions(
             )?;
         }
     }
+
+    // The caption floating in, line after line, and leaving with its
+    // picture in a wipe.
+    let style = CaptionStyle {
+        design: CaptionDesign::Plain,
+        outline: 2.0,
+        ..Default::default()
+    };
+    let overlay = Overlay::caption(renderer, &caption(), &style, SIZE)?.unwrap();
+    for ms in [0, 150, 300, 450, 900] {
+        let frame = Frame {
+            to: Some(Layer::new(dark)),
+            overlays: vec![OverlayRef {
+                overlay: &overlay,
+                opacity: 1.0,
+                reveal: Some(ms as f32 / 1000.0),
+            }],
+            ..Default::default()
+        };
+        let pixels = render(renderer, &mut target, frame)?;
+        save(
+            &out_dir.join(format!("caption-float-{ms:03}.png")),
+            SIZE,
+            pixels,
+        )?;
+    }
+    let wipe = Transition::wipe(Direction::Left);
+    let frame = Frame {
+        from: Some(Layer::new(dark)),
+        to: Some(Layer::new(bright)),
+        transition: Some(TransitionRun {
+            transition: &wipe,
+            progress: 0.5,
+        }),
+        from_overlays: vec![OverlayRef {
+            overlay: &overlay,
+            opacity: 1.0,
+            reveal: None,
+        }],
+        ..Default::default()
+    };
+    let pixels = render(renderer, &mut target, frame)?;
+    save(&out_dir.join("caption-leaving-wipe.png"), SIZE, pixels)?;
 
     // Short caption, English and Japanese mixed.
     let short = Caption {
@@ -161,6 +209,7 @@ fn captions(
         overlays: vec![OverlayRef {
             overlay: &overlay,
             opacity: 1.0,
+            reveal: None,
         }],
         ..Default::default()
     };
@@ -183,6 +232,7 @@ fn captions(
             overlays: vec![OverlayRef {
                 overlay: &overlay,
                 opacity: 1.0,
+                reveal: None,
             }],
             ..Default::default()
         };
@@ -222,6 +272,7 @@ fn watermarks(
                 overlays: vec![OverlayRef {
                     overlay: &overlay,
                     opacity: 1.0,
+                    reveal: None,
                 }],
                 ..Default::default()
             };
@@ -239,6 +290,7 @@ fn watermarks(
             overlays: vec![OverlayRef {
                 overlay: &overlay,
                 opacity: 1.0,
+                reveal: None,
             }],
             ..Default::default()
         };
@@ -269,12 +321,15 @@ fn watermarks(
             OverlayRef {
                 overlay: &note,
                 opacity: 1.0,
+                reveal: None,
             },
             OverlayRef {
                 overlay: &mark,
                 opacity: 1.0,
+                reveal: None,
             },
         ],
+        from_overlays: Vec::new(),
     };
     let pixels = render(renderer, &mut target, frame)?;
     save(&out_dir.join("watermark-during-slide.png"), SIZE, pixels)?;
@@ -343,7 +398,9 @@ fn title_card(renderer: &Renderer, out_dir: &Path) -> Result<(), Box<dyn std::er
         overlays: vec![OverlayRef {
             overlay: &card,
             opacity: 1.0,
+            reveal: None,
         }],
+        from_overlays: Vec::new(),
     };
     let pixels = render(renderer, &mut target, frame)?;
     save(&out_dir.join("title-card.png"), SIZE, pixels)?;

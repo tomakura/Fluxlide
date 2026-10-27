@@ -7,6 +7,7 @@
   import type { Playback } from "$lib/bindings/Playback";
   import { screenName } from "$lib/format";
   import { modal } from "$lib/modal";
+  import { appear, pop } from "$lib/motion";
   import { open } from "$lib/show.svelte";
 
   let {
@@ -54,10 +55,11 @@
   }
 </script>
 
-<div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && oncancel()}>
+<div class="backdrop" role="presentation" transition:appear|global onclick={(e) => e.target === e.currentTarget && oncancel()}>
   <div
     class="dialog"
     role="dialog"
+    transition:pop|global
     aria-modal="true"
     aria-labelledby="output-title"
     tabindex="-1"

@@ -11,6 +11,7 @@
   import { exporting } from "$lib/exporting.svelte";
   import { clock, fileSize, roughly } from "$lib/format";
   import { modal } from "$lib/modal";
+  import { appear, pop } from "$lib/motion";
   import { open } from "$lib/show.svelte";
 
   let { onclose: close }: { onclose: () => void } = $props();
@@ -78,10 +79,11 @@
   const finished = $derived(exporting.finished);
 </script>
 
-<div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
+<div class="backdrop" role="presentation" transition:appear|global onclick={(e) => e.target === e.currentTarget && onclose()}>
   <div
     class="dialog"
     role="dialog"
+    transition:pop|global
     aria-modal="true"
     aria-labelledby="export-title"
     tabindex="-1"

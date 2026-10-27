@@ -5,4 +5,9 @@ export type CaptionLook = { design: CaptionDesign,
 /**
  * Multiplies every text size; 1 is the standard size.
  */
-textScale: number, };
+textScale: number, 
+/**
+ * Width of the outline around the text, in pixels at a height of
+ * 1080; 0 for none.
+ */
+outline: number, };

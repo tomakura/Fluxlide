@@ -3,4 +3,4 @@
 /**
  * How a caption is laid out and decorated.
  */
-export type CaptionDesign = "band" | "simple" | "card" | "none";
+export type CaptionDesign = "band" | "simple" | "plain" | "card" | "none";
