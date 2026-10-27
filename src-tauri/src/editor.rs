@@ -346,10 +346,16 @@ mod tests {
     #[test]
     fn only_a_folder_made_directly_in_the_app_folder_is_removed() {
         let root = Path::new("/data/projects");
-        assert!(is_project_folder_of(root, Path::new("/data/projects/show-1")));
+        assert!(is_project_folder_of(
+            root,
+            Path::new("/data/projects/show-1")
+        ));
         assert!(!is_project_folder_of(root, Path::new("/data/projects/..")));
         assert!(!is_project_folder_of(root, Path::new("/data/projects")));
-        assert!(!is_project_folder_of(root, Path::new("/data/projects/show-1/media")));
+        assert!(!is_project_folder_of(
+            root,
+            Path::new("/data/projects/show-1/media")
+        ));
         assert!(!is_project_folder_of(root, Path::new("/elsewhere/show-1")));
     }
 }
