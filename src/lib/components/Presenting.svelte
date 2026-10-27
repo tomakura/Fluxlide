@@ -18,6 +18,9 @@
   let status = $state<PresentationStatus | null>(null);
   let saveError = $state<string | null>(null);
   let confirming = $state(false);
+  // The question came from Esc on the presentation window, where Enter
+  // answers it too.
+  let askedOnScreen = $state(false);
   let offset = $state(untrack(() => syncOffsetMs));
   let volume = $state<number | null>(null);
 
@@ -61,7 +64,7 @@
     };
     poll();
     const ended = api.onPresentationEnded(onend);
-    const requested = api.onPresentationEndRequested(() => (confirming = true));
+    const requested = api.onPresentationEndRequested(() => ask(true));
     const cancelled = api.onPresentationEndCancelled(() => (confirming = false));
     return () => {
       stopped = true;
@@ -77,6 +80,11 @@
     confirming = false;
     await api.stopPresentation();
     onend();
+  }
+
+  function ask(onScreen: boolean) {
+    askedOnScreen = onScreen;
+    confirming = true;
   }
 
   function keepGoing() {
@@ -102,7 +110,7 @@
       B: { kind: "toggleBlackout" },
     };
     if (event.key === "Escape") {
-      confirming = true;
+      ask(false);
     } else if (controls[event.key]) {
       send(controls[event.key]);
     } else {
@@ -130,7 +138,7 @@
     <span class="live-tag"><span class="dot" class:still={position?.paused}>●</span> 上映中</span>
     {#if screen}<span>出力先: {screen}</span>{/if}
     <span class="time">経過 {clock(playback?.elapsedSecs ?? 0)}</span>
-    <button class="end" onclick={() => (confirming = true)}>■ 上映を終了</button>
+    <button class="end" onclick={() => ask(false)}>■ 上映を終了</button>
   </header>
 
   {#if status?.screenLost}
@@ -248,7 +256,9 @@
 {#if confirming}
   <Confirm
     title="上映を終了しますか？"
-    message="映している画面が閉じて、編集画面に戻ります。上映の画面で Enter を押しても終了します。"
+    message={askedOnScreen
+      ? "映している画面が閉じて、編集画面に戻ります。上映の画面で Enter を押しても終了します。"
+      : "映している画面が閉じて、編集画面に戻ります。"}
     confirmLabel="上映を終了"
     onconfirm={end}
     oncancel={keepGoing}

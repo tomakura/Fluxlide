@@ -87,6 +87,9 @@ const DESCRIPTION_MAX_LINES: usize = 3;
 /// Space under the title and under the author, as fractions of the height.
 const GAP_AFTER_TITLE: f32 = 0.0139;
 const GAP_AFTER_AUTHOR: f32 = 0.0046;
+/// Widest outline, in pixels at a height of 1080 (as far as the app lets it
+/// be set), whatever a project file or the text scale asks for.
+const MAX_OUTLINE: f32 = 20.0;
 /// Distance of the caption from the edges of the output.
 const MARGIN: f32 = 0.05;
 
@@ -151,7 +154,7 @@ pub(crate) fn plan_caption(
     // stands on the picture alone or has an outline.
     let outline = match style.design {
         CaptionDesign::Card => 0.0,
-        _ => height / 1080.0 * style.outline * style.text_scale,
+        _ => (style.outline.max(0.0) * style.text_scale).min(MAX_OUTLINE) * height / 1080.0,
     };
     let shadowed =
         outline > 0.0 || matches!(style.design, CaptionDesign::Simple | CaptionDesign::Plain);
@@ -473,6 +476,11 @@ mod tests {
         assert_eq!(
             outline_and_shadow(CaptionDesign::Plain, 3.0, (3840, 2160)),
             (6, 0.55)
+        );
+        // A project file cannot ask for more than the app offers.
+        assert_eq!(
+            outline_and_shadow(CaptionDesign::Plain, 1e9, hd),
+            (20, 0.55)
         );
         // Dark text on the light card gets neither.
         assert_eq!(outline_and_shadow(CaptionDesign::Card, 3.0, hd), (0, 0.0));

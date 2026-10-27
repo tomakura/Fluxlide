@@ -528,17 +528,16 @@ pub fn presentation_frame(state: State<'_, PresentationState>, after: u32) -> Re
         .unwrap()
         .as_ref()
         .map(|active| active.mirror.clone());
-    let frame = mirror.and_then(|mirror| {
-        mirror
-            .lock()
-            .unwrap()
-            .clone()
-            .filter(|frame| frame.number as u32 != after)
-    });
-    let Some(frame) = frame else {
+    let Some(mirror) = mirror else {
         return Response::new(Vec::new());
     };
-    let mut body = frame.rgba;
+    let frame = mirror.lock().unwrap();
+    // The same copy again is not copied out.
+    let Some(frame) = frame.as_ref().filter(|frame| frame.number as u32 != after) else {
+        return Response::new(Vec::new());
+    };
+    let mut body = Vec::with_capacity(frame.rgba.len() + 12);
+    body.extend_from_slice(&frame.rgba);
     body.extend_from_slice(&frame.width.to_le_bytes());
     body.extend_from_slice(&frame.height.to_le_bytes());
     body.extend_from_slice(&(frame.number as u32).to_le_bytes());
