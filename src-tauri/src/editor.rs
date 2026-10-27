@@ -79,12 +79,25 @@ pub struct ProjectSummary {
     updated_at: i64,
     /// The thumbnail of the first slide, if the show has slides.
     thumbnail: Option<PathBuf>,
+    /// Kept in the app's own folder, so that deleting it removes the files.
+    in_app: bool,
+}
+
+impl ProjectSummary {
+    fn new(summary: project::Summary, root: &std::path::Path) -> Self {
+        let in_app = summary.dir.parent() == Some(root);
+        Self {
+            in_app,
+            ..Self::from(summary)
+        }
+    }
 }
 
 impl From<project::Summary> for ProjectSummary {
     fn from(summary: project::Summary) -> Self {
         let media_dir = summary.dir.join(project::MEDIA_DIR);
         Self {
+            in_app: false,
             thumbnail: summary
                 .first_file
                 .map(|file| import::thumbnail_path(&media_dir, &file)),
@@ -113,6 +126,7 @@ pub async fn list_projects(
 ) -> Result<Vec<ProjectSummary>, String> {
     let root = projects_dir(&app)?;
     let elsewhere = settings.get(&app).recent_dirs;
+    let scope_root = root.clone();
     let summaries = tauri::async_runtime::spawn_blocking(move || {
         let mut found = project::list(&root);
         // A folder that was moved or deleted since is left out.
@@ -131,7 +145,7 @@ pub async fn list_projects(
     let scope = app.asset_protocol_scope();
     Ok(summaries
         .into_iter()
-        .map(ProjectSummary::from)
+        .map(|summary| ProjectSummary::new(summary, &scope_root))
         .inspect(|summary| {
             if let Some(thumbnail) = &summary.thumbnail {
                 let _ = scope.allow_file(thumbnail);
@@ -191,6 +205,58 @@ pub async fn open_project(
         let _ = settings.update(&app, |settings| settings.remember_dir(&dir));
     }
     opened
+}
+
+/// Deletes the project in `dir`. One in the app's folder is removed with
+/// its photos; one opened from elsewhere is only taken off the home screen,
+/// since its folder is the user's own.
+#[tauri::command]
+pub async fn delete_project(
+    app: AppHandle,
+    state: State<'_, EditorState>,
+    settings: State<'_, SettingsState>,
+    dir: PathBuf,
+) -> Result<(), String> {
+    let root = projects_dir(&app)?;
+    let session = state.session();
+    if !is_project_folder_of(&root, &dir) {
+        return settings
+            .update(&app, |settings| settings.forget_dir(&dir))
+            .map(|_| ());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        // Stops the imports of the open project, which may be this one, and
+        // waits for the one being copied to give up.
+        close(&session);
+        let importer = app.state::<import::Importer>();
+        let _idle = importer.pause();
+        if !dir.join(project::DATABASE_FILE).is_file() {
+            return Err(project::ProjectError::NotFound(dir).to_string());
+        }
+        remove_folder(&dir).map_err(|err| format!("スライドショーを削除できません: {err}"))
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+/// Whether `dir` is a folder made directly inside the app's folder `root`.
+/// A path ending in `..` has `root` as its parent too, but is not one.
+fn is_project_folder_of(root: &std::path::Path, dir: &std::path::Path) -> bool {
+    dir.parent() == Some(root) && dir.file_name().is_some()
+}
+
+/// Removes `dir` until it is gone, since a file in it may stay open for a
+/// moment (a thumbnail being shown, say).
+fn remove_folder(dir: &std::path::Path) -> std::io::Result<()> {
+    let mut last = Ok(());
+    for _ in 0..30 {
+        last = std::fs::remove_dir_all(dir);
+        if last.is_ok() && !dir.exists() {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    last.and_then(|()| Err(std::io::Error::other("フォルダーが残っています")))
 }
 
 fn close(slot: &Mutex<Option<Session>>) {
@@ -270,4 +336,26 @@ fn with_session(
     let session = guard.as_mut().ok_or("スライドショーが開かれていません。")?;
     change(session);
     Ok(ShowState::of(session))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn only_a_folder_made_directly_in_the_app_folder_is_removed() {
+        let root = Path::new("/data/projects");
+        assert!(is_project_folder_of(
+            root,
+            Path::new("/data/projects/show-1")
+        ));
+        assert!(!is_project_folder_of(root, Path::new("/data/projects/..")));
+        assert!(!is_project_folder_of(root, Path::new("/data/projects")));
+        assert!(!is_project_folder_of(
+            root,
+            Path::new("/data/projects/show-1/media")
+        ));
+        assert!(!is_project_folder_of(root, Path::new("/elsewhere/show-1")));
+    }
 }

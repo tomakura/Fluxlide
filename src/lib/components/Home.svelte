@@ -6,6 +6,7 @@
   import { appear } from "$lib/motion";
   import { open } from "$lib/show.svelte";
   import AboutDialog from "./AboutDialog.svelte";
+  import Confirm from "./Confirm.svelte";
   import DropZone from "./DropZone.svelte";
   import Mark from "./Mark.svelte";
 
@@ -57,6 +58,27 @@
     if (typeof dir === "string") openDir(dir);
   }
 
+  // Deleting a project in the app's folder removes it with its photos; one
+  // opened from elsewhere is only taken off the list.
+  let doomed = $state<ProjectSummary | null>(null);
+
+  async function remove() {
+    const project = doomed;
+    doomed = null;
+    if (!project || busy) return;
+    // Opening it while it is deleted would open a folder that is going.
+    busy = true;
+    error = null;
+    try {
+      await api.deleteProject(project.dir);
+      projects = (projects ?? []).filter((p) => p.dir !== project.dir);
+    } catch (err) {
+      error = String(err);
+    } finally {
+      busy = false;
+    }
+  }
+
   const date = (ms: number) =>
     new Date(ms).toLocaleString("ja-JP", { dateStyle: "medium", timeStyle: "short" });
 </script>
@@ -93,6 +115,13 @@
       <ul>
         {#each projects as project (project.dir)}
           <li>
+            <button
+              class="delete quiet"
+              title={project.inApp ? "このスライドショーを削除" : "一覧から外す"}
+              aria-label={project.inApp ? "このスライドショーを削除" : "一覧から外す"}
+              disabled={busy}
+              onclick={() => (doomed = project)}>✕</button
+            >
             <button class="project" disabled={busy} onclick={() => openDir(project.dir)}>
               <span class="thumb">
                 {#if project.thumbnail}
@@ -110,6 +139,18 @@
     {/if}
   </section>
 </main>
+
+{#if doomed}
+  <Confirm
+    title={doomed.inApp ? "このスライドショーを削除しますか？" : "一覧から外しますか？"}
+    message={doomed.inApp
+      ? `「${doomed.title || "無題のスライドショー"}」を、取り込んだ写真や動画の写しごと削除します。元の写真や動画は消えませんが、このスライドショーは元に戻せません。`
+      : "一覧から外すだけで、フォルダや中身は消えません。「ほかの場所から開く」でまた開けます。"}
+    confirmLabel={doomed.inApp ? "削除する" : "外す"}
+    onconfirm={remove}
+    oncancel={() => (doomed = null)}
+  />
+{/if}
 
 {#if about}
   <AboutDialog onclose={() => (about = false)} />
@@ -184,6 +225,27 @@
     gap: 14px;
     align-content: start;
     flex: 1;
+  }
+
+  li {
+    position: relative;
+  }
+
+  /* Over the thumbnail's corner; shown on hover or keyboard focus. */
+  button.delete {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    z-index: 1;
+    padding: 2px 8px;
+    background: rgb(0 0 0 / 60%);
+    color: #fff;
+    opacity: 0;
+  }
+
+  li:hover button.delete,
+  button.delete:focus-visible {
+    opacity: 1;
   }
 
   .project {

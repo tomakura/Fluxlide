@@ -34,6 +34,11 @@ impl Settings {
         self.recent_dirs.insert(0, dir.to_path_buf());
         self.recent_dirs.truncate(RECENT_LIMIT);
     }
+
+    /// Takes `dir` off the recent projects.
+    pub fn forget_dir(&mut self, dir: &Path) {
+        self.recent_dirs.retain(|known| known != dir);
+    }
 }
 
 #[derive(Default)]
@@ -131,6 +136,16 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn a_forgotten_project_leaves_the_recent_ones_and_others_stay() {
+        let mut settings = Settings::default();
+        settings.remember_dir(Path::new("/shows/1"));
+        settings.remember_dir(Path::new("/shows/2"));
+        settings.forget_dir(Path::new("/shows/1"));
+        settings.forget_dir(Path::new("/shows/3"));
+        assert_eq!(settings.recent_dirs, [Path::new("/shows/2")]);
     }
 
     #[test]

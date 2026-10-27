@@ -1,6 +1,6 @@
 <script lang="ts">
-  // 写真・動画 tab: the settings of the selected slide and its photo or video.
-  // Settings left empty follow the 見た目 tab.
+  // The settings of one photo or video (ファイルごとの設定 screen). Settings
+  // left empty follow the 見た目 tab of the editor.
   import type { Fit } from "$lib/bindings/Fit";
   import type { Motion } from "$lib/bindings/Motion";
   import type { ShowDefinition } from "$lib/bindings/ShowDefinition";
@@ -283,6 +283,10 @@
     font-size: 15px;
   }
 
+  fieldset .hint {
+    margin: 0;
+  }
+
   .file {
     margin: -10px 0 0;
     overflow-wrap: anywhere;
@@ -301,10 +305,6 @@
   legend {
     font-size: 13px;
     padding: 0 4px;
-  }
-
-  fieldset .hint {
-    margin: 0;
   }
 
   .pair {

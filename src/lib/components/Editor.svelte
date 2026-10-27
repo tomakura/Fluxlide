@@ -7,11 +7,11 @@
   import { appear, rise } from "$lib/motion";
   import { open } from "$lib/show.svelte";
   import ExportDialog from "./ExportDialog.svelte";
+  import FileSettings from "./FileSettings.svelte";
   import LookPanel from "./LookPanel.svelte";
   import MusicPanel from "./MusicPanel.svelte";
   import Preview from "./Preview.svelte";
   import SlideList from "./SlideList.svelte";
-  import SlidePanel from "./SlidePanel.svelte";
 
   let {
     onhome,
@@ -22,14 +22,23 @@
     onpresent: (choose: boolean) => void;
   } = $props();
 
-  type Tab = "slides" | "look" | "music";
+  // The settings here are the slideshow's as a whole; those of one photo or
+  // video are on their own screen (FileSettings).
+  type Tab = "look" | "music";
   const TABS: [Tab, string][] = [
-    ["slides", "写真・動画"],
     ["look", "見た目"],
     ["music", "音楽"],
   ];
 
-  let tab = $state<Tab>("slides");
+  let tab = $state<Tab>("look");
+  let files = $state(false);
+  // The preview of this screen is gone while the file settings are open, so
+  // a playback is over, and must not start again on coming back.
+  function openFiles() {
+    playing = false;
+    playingSlide = null;
+    files = true;
+  }
   let exportOpen = $state(false);
   // An export that ends while its dialog is closed says so there (once:
   // not again when the editor is opened later).
@@ -101,7 +110,9 @@
   </svg>
 {/snippet}
 
-{#if show}
+{#if show && files}
+  <FileSettings bind:selected onback={() => (files = false)} />
+{:else if show}
   <div class="editor" in:appear|global>
     <header>
       <button class="quiet" onclick={onhome} title="ホームに戻る">← ホーム</button>
@@ -125,6 +136,9 @@
           {@render arrow()}やり直す
         </button>
       </div>
+      <button class="quiet files" disabled={show.slides.length === 0} onclick={openFiles}>
+        ファイルごとの設定
+      </button>
       <button class="quiet export" disabled={show.slides.length === 0 && !exporting.running} onclick={() => (exportOpen = true)}>
         {exporting.running ? `書き出し中 ${Math.round(exporting.fraction * 100)}%` : "動画に書き出す"}
       </button>
@@ -147,7 +161,7 @@
 
     <div class="columns">
       <aside class="left">
-        <SlideList bind:selected playing={playing ? playingSlide : null} />
+        <SlideList bind:selected playing={playing ? playingSlide : null} onopen={openFiles} />
       </aside>
 
       <section class="center">
@@ -178,9 +192,7 @@
         <div class="settings">
           {#key tab}
             <div in:appear>
-              {#if tab === "slides"}
-                <SlidePanel {selected} />
-              {:else if tab === "look"}
+              {#if tab === "look"}
                 <LookPanel />
               {:else}
                 <MusicPanel />
@@ -257,8 +269,12 @@
     transform: scaleX(-1);
   }
 
-  .export {
+  .files {
     margin-left: auto;
+  }
+
+  .files,
+  .export {
     white-space: nowrap;
   }
 
