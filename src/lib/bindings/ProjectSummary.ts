@@ -4,4 +4,8 @@ export type ProjectSummary = { dir: string, title: string, slideCount: number, u
 /**
  * The thumbnail of the first slide, if the show has slides.
  */
-thumbnail: string | null, };
+thumbnail: string | null, 
+/**
+ * Kept in the app's own folder, so that deleting it removes the files.
+ */
+inApp: boolean, };

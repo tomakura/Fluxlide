@@ -78,8 +78,9 @@
           setSlide((slide) => (slide.showCaption = on));
         }}
       />
-      キャプションを表示する
+      この写真にキャプションを出す
     </label>
+    <p class="hint caption-note">出す文字は上のタイトル・作者・説明。デザインは「全体の見た目」で選びます。</p>
 
     {#if asset.kind === "photo"}
       <label>
@@ -281,6 +282,10 @@
   h3 {
     margin: 0;
     font-size: 15px;
+  }
+
+  .caption-note {
+    margin: -8px 0 0;
   }
 
   .file {

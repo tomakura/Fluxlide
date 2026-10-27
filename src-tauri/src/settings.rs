@@ -34,6 +34,11 @@ impl Settings {
         self.recent_dirs.insert(0, dir.to_path_buf());
         self.recent_dirs.truncate(RECENT_LIMIT);
     }
+
+    /// Takes `dir` off the recent projects.
+    pub fn forget_dir(&mut self, dir: &Path) {
+        self.recent_dirs.retain(|known| known != dir);
+    }
 }
 
 #[derive(Default)]

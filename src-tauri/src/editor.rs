@@ -79,12 +79,25 @@ pub struct ProjectSummary {
     updated_at: i64,
     /// The thumbnail of the first slide, if the show has slides.
     thumbnail: Option<PathBuf>,
+    /// Kept in the app's own folder, so that deleting it removes the files.
+    in_app: bool,
+}
+
+impl ProjectSummary {
+    fn new(summary: project::Summary, root: &std::path::Path) -> Self {
+        let in_app = summary.dir.parent() == Some(root);
+        Self {
+            in_app,
+            ..Self::from(summary)
+        }
+    }
 }
 
 impl From<project::Summary> for ProjectSummary {
     fn from(summary: project::Summary) -> Self {
         let media_dir = summary.dir.join(project::MEDIA_DIR);
         Self {
+            in_app: false,
             thumbnail: summary
                 .first_file
                 .map(|file| import::thumbnail_path(&media_dir, &file)),
@@ -113,6 +126,7 @@ pub async fn list_projects(
 ) -> Result<Vec<ProjectSummary>, String> {
     let root = projects_dir(&app)?;
     let elsewhere = settings.get(&app).recent_dirs;
+    let scope_root = root.clone();
     let summaries = tauri::async_runtime::spawn_blocking(move || {
         let mut found = project::list(&root);
         // A folder that was moved or deleted since is left out.
@@ -131,7 +145,7 @@ pub async fn list_projects(
     let scope = app.asset_protocol_scope();
     Ok(summaries
         .into_iter()
-        .map(ProjectSummary::from)
+        .map(|summary| ProjectSummary::new(summary, &scope_root))
         .inspect(|summary| {
             if let Some(thumbnail) = &summary.thumbnail {
                 let _ = scope.allow_file(thumbnail);
@@ -191,6 +205,38 @@ pub async fn open_project(
         let _ = settings.update(&app, |settings| settings.remember_dir(&dir));
     }
     opened
+}
+
+/// Deletes the project in `dir`. One in the app's folder is removed with
+/// its photos; one opened from elsewhere is only taken off the home screen,
+/// since its folder is the user's own.
+#[tauri::command]
+pub async fn delete_project(
+    app: AppHandle,
+    state: State<'_, EditorState>,
+    settings: State<'_, SettingsState>,
+    dir: PathBuf,
+) -> Result<(), String> {
+    let root = projects_dir(&app)?;
+    let session = state.session();
+    let inside = dir.parent() == Some(root.as_path());
+    if inside {
+        let dir = dir.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            // Stops the imports of the open project, which may be this one.
+            close(&session);
+            if !dir.join(project::DATABASE_FILE).is_file() {
+                return Err(project::ProjectError::NotFound(dir).to_string());
+            }
+            std::fs::remove_dir_all(&dir)
+                .map_err(|err| format!("スライドショーを削除できません: {err}"))
+        })
+        .await
+        .map_err(|err| err.to_string())??;
+    }
+    settings
+        .update(&app, |settings| settings.forget_dir(&dir))
+        .map(|_| ())
 }
 
 fn close(slot: &Mutex<Option<Session>>) {

@@ -23,11 +23,18 @@
   } = $props();
 
   type Tab = "slides" | "look" | "music";
+  // The tabs say how far their settings reach: `slides` only the chosen
+  // photo or video, the others the whole slideshow.
   const TABS: [Tab, string][] = [
-    ["slides", "写真・動画"],
-    ["look", "見た目"],
-    ["music", "音楽"],
+    ["slides", "選んだ写真"],
+    ["look", "全体の見た目"],
+    ["music", "全体の音楽"],
   ];
+  const SCOPES: Record<Tab, string> = {
+    slides: "左で選んだ1枚だけの設定です",
+    look: "すべてのスライドに共通の設定です",
+    music: "スライドショー全体に流れる音楽です",
+  };
 
   let tab = $state<Tab>("slides");
   let exportOpen = $state(false);
@@ -175,6 +182,7 @@
             <button class="tab" class:current={tab === key} aria-pressed={tab === key} onclick={() => (tab = key)}>{name}</button>
           {/each}
         </nav>
+        <p class="scope" class:whole={tab !== "slides"}>{SCOPES[tab]}</p>
         <div class="settings">
           {#key tab}
             <div in:appear>
@@ -271,8 +279,23 @@
     border-radius: 9px;
   }
 
+  .scope {
+    margin: 10px 14px 0;
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  .scope.whole {
+    background: var(--surface-2);
+    color: var(--muted);
+  }
+
   .tab {
     flex: 1;
+    white-space: nowrap;
     border: none;
     background: transparent;
     padding: 6px 8px;

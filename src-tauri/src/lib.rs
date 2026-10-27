@@ -130,6 +130,7 @@ pub fn run() {
             editor::create_project,
             editor::open_project,
             editor::close_project,
+            editor::delete_project,
             editor::show_state,
             editor::edit_show,
             editor::undo_show,
