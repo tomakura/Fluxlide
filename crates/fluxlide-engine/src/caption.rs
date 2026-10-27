@@ -58,26 +58,29 @@ impl Default for CaptionStyle {
     }
 }
 
-/// Sizes as fractions of the output's height (44, 20 and 22 pixels at 1080).
-const TITLE_SIZE: f32 = 0.0407;
-const AUTHOR_SIZE: f32 = 0.0185;
-const DESCRIPTION_SIZE: f32 = 0.0204;
-/// Medium for the title, Regular for the smaller supporting text.
-const TITLE_WEIGHT: u16 = 500;
-const BODY_WEIGHT: u16 = 400;
+/// Sizes as fractions of the output's height (72, 29 and 32 pixels at 1080).
+const TITLE_SIZE: f32 = 0.0667;
+const AUTHOR_SIZE: f32 = 0.0267;
+const DESCRIPTION_SIZE: f32 = 0.0296;
+/// Bold for the title, Light for the smaller supporting text.
+const TITLE_WEIGHT: u16 = 700;
+const AUTHOR_WEIGHT: u16 = 300;
+const DESCRIPTION_WEIGHT: u16 = 300;
 /// Letter spacing in em.
-const TITLE_TRACKING: f32 = 0.04;
-const BODY_TRACKING: f32 = 0.025;
+const TITLE_TRACKING: f32 = 0.01;
+const AUTHOR_TRACKING: f32 = 0.025;
+const DESCRIPTION_TRACKING: f32 = 0.0;
 /// Space between baselines in multiples of the text size.
-const TITLE_LINE_HEIGHT: f32 = 1.3;
-const BODY_LINE_HEIGHT: f32 = 1.55;
+const TITLE_LINE_HEIGHT: f32 = 1.2;
+const AUTHOR_LINE_HEIGHT: f32 = 1.2;
+const DESCRIPTION_LINE_HEIGHT: f32 = 1.3;
 /// Longest each part may get before it is cut with "…".
 const TITLE_MAX_LINES: usize = 2;
 const AUTHOR_MAX_LINES: usize = 1;
 const DESCRIPTION_MAX_LINES: usize = 3;
 /// Space under the title and under the author, as fractions of the height.
-const GAP_AFTER_TITLE: f32 = 0.01;
-const GAP_AFTER_AUTHOR: f32 = 0.016;
+const GAP_AFTER_TITLE: f32 = 0.0139;
+const GAP_AFTER_AUTHOR: f32 = 0.0046;
 /// Distance of the caption from the edges of the output.
 const MARGIN: f32 = 0.05;
 
@@ -264,12 +267,17 @@ pub(crate) fn plan_caption(
 fn part_style(part: Part, output_height: f32, text_scale: f32) -> TextStyle {
     let (size, weight, tracking, line_height) = match part {
         Part::Title => (TITLE_SIZE, TITLE_WEIGHT, TITLE_TRACKING, TITLE_LINE_HEIGHT),
-        Part::Author => (AUTHOR_SIZE, BODY_WEIGHT, BODY_TRACKING, BODY_LINE_HEIGHT),
+        Part::Author => (
+            AUTHOR_SIZE,
+            AUTHOR_WEIGHT,
+            AUTHOR_TRACKING,
+            AUTHOR_LINE_HEIGHT,
+        ),
         Part::Description => (
             DESCRIPTION_SIZE,
-            BODY_WEIGHT,
-            BODY_TRACKING,
-            BODY_LINE_HEIGHT,
+            DESCRIPTION_WEIGHT,
+            DESCRIPTION_TRACKING,
+            DESCRIPTION_LINE_HEIGHT,
         ),
     };
     TextStyle {

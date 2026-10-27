@@ -1,7 +1,7 @@
 //! Japanese (and Latin) text turned into coverage masks on the CPU.
 //!
 //! Shaping, line breaking and rasterizing are done by `cosmic-text` (with
-//! `swash` for the glyphs) using only the bundled Noto Sans JP, so a caption
+//! `swash` for the glyphs) using only the bundled IBM Plex Sans JP, so a caption
 //! has the same pixels on every OS and in live playback and export alike.
 //! The GPU only blends the finished masks.
 
@@ -13,11 +13,17 @@ use cosmic_text::{
     Wrap,
 };
 
-/// Noto Sans JP, a variable font with a weight axis from 100 to 900.
+/// IBM Plex Sans JP in the three weights the app draws with: Light (300)
+/// for caption text, Medium (500) for the title card and the watermark,
+/// Bold (700) for caption titles. Other weights get the nearest of these.
 /// Embedded so that the app never depends on installed fonts or on the
 /// location of resource files.
-const FONT: &[u8] = include_bytes!("../../../assets/fonts/NotoSansJP-VariableFont_wght.ttf");
-const FONT_FAMILY: &str = "Noto Sans JP";
+const FONTS: [&[u8]; 3] = [
+    include_bytes!("../../../assets/fonts/IBMPlexSansJP-Light.ttf"),
+    include_bytes!("../../../assets/fonts/IBMPlexSansJP-Medium.ttf"),
+    include_bytes!("../../../assets/fonts/IBMPlexSansJP-Bold.ttf"),
+];
+const FONT_FAMILY: &str = "IBM Plex Sans JP";
 
 /// How much a blurred shadow is strengthened before it is clamped.
 const SHADOW_GAIN: f32 = 4.0;
@@ -35,7 +41,9 @@ fn engine() -> MutexGuard<'static, TextEngine> {
     ENGINE
         .get_or_init(|| {
             let mut db = fontdb::Database::new();
-            db.load_font_source(Source::Binary(Arc::new(FONT)));
+            for font in FONTS {
+                db.load_font_source(Source::Binary(Arc::new(font)));
+            }
             // The locale only steers font fallback, which has nothing to
             // choose from here. A fixed one keeps results identical everywhere.
             let fonts = FontSystem::new_with_locale_and_db("ja-JP".into(), db);
@@ -52,7 +60,7 @@ fn engine() -> MutexGuard<'static, TextEngine> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct TextStyle {
     pub size: f32,
-    /// Weight on the font's wght axis (300 Light, 500 Medium).
+    /// 300 Light, 500 Medium or 700 Bold.
     pub weight: u16,
     /// Extra space after every character, in em.
     pub tracking: f32,
@@ -337,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn the_weight_axis_of_the_variable_font_changes_the_strokes() {
+    fn each_weight_has_its_own_strokes() {
         let total = |block: &TextBlock| block.coverage.iter().map(|&c| u64::from(c)).sum::<u64>();
         let (light, medium, bold) = (
             total(&ink("田", 300)),

@@ -43,17 +43,18 @@ in some countries. Neither Fluxlide nor this license file grants any patent
 license; anyone using Fluxlide in a business should check which licenses
 they need.
 
-## Noto Sans JP
+## IBM Plex Sans JP
 
-Fluxlide draws captions and text watermarks with Noto Sans JP, which is
-embedded in the application's executable. The font file is unmodified.
+Fluxlide draws captions, text watermarks and the title card with IBM Plex
+Sans JP, which is embedded in the application's executable. The font files
+are unmodified.
 
-- Project: Noto Sans JP, <https://fonts.google.com/noto/specimen/Noto+Sans+JP>
-- File: `NotoSansJP-VariableFont_wght.ttf` (variable font, weight axis)
-- Copyright 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name
-  'Source'.
+- Project: IBM Plex, <https://github.com/IBM/plex>
+- Files: `IBMPlexSansJP-Light.ttf`, `IBMPlexSansJP-Medium.ttf`,
+  `IBMPlexSansJP-Bold.ttf`
+- Copyright © 2017 IBM Corp. with Reserved Font Name "Plex".
 - License: SIL Open Font License, Version 1.1. The license text is in
-  `licenses/noto-sans-jp/OFL.txt` next to the application (from
+  `licenses/ibm-plex-sans-jp/OFL.txt` next to the application (from
   `assets/fonts/OFL.txt` in the Fluxlide repository).
 
 ## Jost
