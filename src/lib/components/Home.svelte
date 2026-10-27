@@ -227,7 +227,7 @@
   }
 
   /* Over the thumbnail's corner; shown on hover or keyboard focus. */
-  .delete {
+  button.delete {
     position: absolute;
     top: 6px;
     right: 6px;
@@ -238,8 +238,8 @@
     opacity: 0;
   }
 
-  li:hover .delete,
-  .delete:focus-visible {
+  li:hover button.delete,
+  button.delete:focus-visible {
     opacity: 1;
   }
 
