@@ -225,8 +225,11 @@ pub async fn delete_project(
             .map(|_| ());
     }
     tauri::async_runtime::spawn_blocking(move || {
-        // Stops the imports of the open project, which may be this one.
+        // Stops the imports of the open project, which may be this one, and
+        // waits for the one being copied to give up.
         close(&session);
+        let importer = app.state::<import::Importer>();
+        let _idle = importer.pause();
         if !dir.join(project::DATABASE_FILE).is_file() {
             return Err(project::ProjectError::NotFound(dir).to_string());
         }
@@ -236,9 +239,8 @@ pub async fn delete_project(
     .map_err(|err| err.to_string())?
 }
 
-/// Removes `dir` until it is gone. An import that was stopping when the
-/// project closed may still make its thumbnail folder again, or hold a file
-/// open for a moment.
+/// Removes `dir` until it is gone, since a file in it may stay open for a
+/// moment (a thumbnail being shown, say).
 fn remove_folder(dir: &std::path::Path) -> std::io::Result<()> {
     let mut last = Ok(());
     for _ in 0..30 {

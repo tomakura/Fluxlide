@@ -54,18 +54,31 @@ struct Job {
 /// The worker that copies files, one at a time.
 pub struct Importer {
     jobs: Mutex<Sender<Job>>,
+    /// Held by the worker while it handles a job.
+    working: Arc<Mutex<()>>,
 }
 
 impl Importer {
     pub fn start(app: AppHandle, session: Arc<Mutex<Option<Session>>>) -> Self {
         let (tx, rx) = mpsc::channel();
+        let working = Arc::new(Mutex::new(()));
+        let worker = working.clone();
         std::thread::Builder::new()
             .name("fluxlide-import".into())
-            .spawn(move || run(app, session, rx))
+            .spawn(move || run(app, session, rx, worker))
             .expect("the import thread starts");
         Self {
             jobs: Mutex::new(tx),
+            working,
         }
+    }
+
+    /// Waits for the job being handled to end, and keeps the worker from
+    /// starting another while the result is held. Closing the session first
+    /// makes the job give up, and any later one is skipped, so a folder
+    /// removed under this hold is not made again.
+    pub fn pause(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.working.lock().unwrap_or_else(|err| err.into_inner())
     }
 
     fn queue(&self, job: Job) {
@@ -73,7 +86,12 @@ impl Importer {
     }
 }
 
-fn run(app: AppHandle, session: Arc<Mutex<Option<Session>>>, jobs: Receiver<Job>) {
+fn run(
+    app: AppHandle,
+    session: Arc<Mutex<Option<Session>>>,
+    jobs: Receiver<Job>,
+    working: Arc<Mutex<()>>,
+) {
     let ffmpeg = Ffmpeg::locate().ok();
     // A job belongs to the session that was open when it was queued.
     let still_open = |epoch: u64| {
@@ -84,6 +102,9 @@ fn run(app: AppHandle, session: Arc<Mutex<Option<Session>>>, jobs: Receiver<Job>
             .is_some_and(|session| session.epoch() == epoch)
     };
     for job in jobs {
+        // Taken before the check, so that a job is either skipped for a
+        // project that was closed or finished before it is deleted.
+        let _working = working.lock().unwrap_or_else(|err| err.into_inner());
         if !still_open(job.epoch) {
             continue;
         }
