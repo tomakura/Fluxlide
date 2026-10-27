@@ -7,11 +7,11 @@
   import { appear, rise } from "$lib/motion";
   import { open } from "$lib/show.svelte";
   import ExportDialog from "./ExportDialog.svelte";
+  import FileSettings from "./FileSettings.svelte";
   import LookPanel from "./LookPanel.svelte";
   import MusicPanel from "./MusicPanel.svelte";
   import Preview from "./Preview.svelte";
   import SlideList from "./SlideList.svelte";
-  import SlidePanel from "./SlidePanel.svelte";
 
   let {
     onhome,
@@ -22,24 +22,16 @@
     onpresent: (choose: boolean) => void;
   } = $props();
 
-  type Tab = "file" | "slide" | "look" | "music";
-  // The tabs say how far their settings reach: `file` the chosen photo or
-  // video itself, `slide` how its slide shows it, the others the whole
-  // slideshow.
+  // The settings here are the slideshow's as a whole; those of one photo or
+  // video are on their own screen (FileSettings).
+  type Tab = "look" | "music";
   const TABS: [Tab, string][] = [
-    ["file", "ファイル"],
-    ["slide", "スライド"],
-    ["look", "全体の見た目"],
-    ["music", "全体の音楽"],
+    ["look", "見た目"],
+    ["music", "音楽"],
   ];
-  const SCOPES: Record<Tab, string> = {
-    file: "左で選んだ写真・動画そのものの情報です",
-    slide: "左で選んだ1枚の見せ方だけの設定です",
-    look: "すべてのスライドに共通の設定です",
-    music: "スライドショー全体に流れる音楽です",
-  };
 
-  let tab = $state<Tab>("slide");
+  let tab = $state<Tab>("look");
+  let files = $state(false);
   let exportOpen = $state(false);
   // An export that ends while its dialog is closed says so there (once:
   // not again when the editor is opened later).
@@ -111,7 +103,9 @@
   </svg>
 {/snippet}
 
-{#if show}
+{#if show && files}
+  <FileSettings bind:selected onback={() => (files = false)} />
+{:else if show}
   <div class="editor" in:appear|global>
     <header>
       <button class="quiet" onclick={onhome} title="ホームに戻る">← ホーム</button>
@@ -135,6 +129,9 @@
           {@render arrow()}やり直す
         </button>
       </div>
+      <button class="quiet files" disabled={show.slides.length === 0} onclick={() => (files = true)}>
+        ファイルごとの設定
+      </button>
       <button class="quiet export" disabled={show.slides.length === 0 && !exporting.running} onclick={() => (exportOpen = true)}>
         {exporting.running ? `書き出し中 ${Math.round(exporting.fraction * 100)}%` : "動画に書き出す"}
       </button>
@@ -157,7 +154,7 @@
 
     <div class="columns">
       <aside class="left">
-        <SlideList bind:selected playing={playing ? playingSlide : null} />
+        <SlideList bind:selected playing={playing ? playingSlide : null} onopen={() => (files = true)} />
       </aside>
 
       <section class="center">
@@ -185,13 +182,10 @@
             <button class="tab" class:current={tab === key} aria-pressed={tab === key} onclick={() => (tab = key)}>{name}</button>
           {/each}
         </nav>
-        <p class="scope" class:whole={tab === "look" || tab === "music"}>{SCOPES[tab]}</p>
         <div class="settings">
           {#key tab}
             <div in:appear>
-              {#if tab === "file" || tab === "slide"}
-                <SlidePanel {selected} part={tab} />
-              {:else if tab === "look"}
+              {#if tab === "look"}
                 <LookPanel />
               {:else}
                 <MusicPanel />
@@ -268,8 +262,12 @@
     transform: scaleX(-1);
   }
 
-  .export {
+  .files {
     margin-left: auto;
+  }
+
+  .files,
+  .export {
     white-space: nowrap;
   }
 
@@ -282,28 +280,11 @@
     border-radius: 9px;
   }
 
-  .scope {
-    margin: 10px 14px 0;
-    padding: 6px 10px;
-    border-radius: 6px;
-    font-size: 12px;
-    background: var(--accent-soft);
-    color: var(--accent);
-  }
-
-  .scope.whole {
-    background: var(--surface-2);
-    color: var(--muted);
-  }
-
   .tab {
     flex: 1;
-    min-width: 0;
-    font-size: 12px;
-    white-space: nowrap;
     border: none;
     background: transparent;
-    padding: 6px 4px;
+    padding: 6px 8px;
   }
 
   .tab.current {

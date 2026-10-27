@@ -15,7 +15,13 @@
   let {
     selected = $bindable(),
     playing = null,
-  }: { selected: SlideId | null; playing?: SlideId | null } = $props();
+    onopen,
+  }: {
+    selected: SlideId | null;
+    playing?: SlideId | null;
+    /// A slide was double-clicked: its file settings are wanted.
+    onopen?: () => void;
+  } = $props();
 
   const show = $derived(open.show);
   const mediaDir = $derived(open.state?.mediaDir ?? "");
@@ -129,7 +135,14 @@
           class:drop-before={dragging && dragging.to === index && dragging.id !== slide.id}
           class:drop-after={dragging && dragging.to === show.slides.length && index === show.slides.length - 1}
         >
-          <button class="row quiet" onclick={() => (selected = slide.id)}>
+          <button
+            class="row quiet"
+            onclick={() => (selected = slide.id)}
+            ondblclick={() => {
+              selected = slide.id;
+              onopen?.();
+            }}
+          >
             <span
               class="handle"
               role="presentation"

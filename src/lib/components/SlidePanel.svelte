@@ -1,6 +1,6 @@
 <script lang="ts">
-  // ファイル and スライド tabs: the photo or video of the selected slide, and
-  // how that slide shows it. Settings left empty follow the 全体の見た目 tab.
+  // The settings of one photo or video (ファイルごとの設定 screen). Settings
+  // left empty follow the 見た目 tab of the editor.
   import type { Fit } from "$lib/bindings/Fit";
   import type { Motion } from "$lib/bindings/Motion";
   import type { ShowDefinition } from "$lib/bindings/ShowDefinition";
@@ -10,9 +10,7 @@
   import { open } from "$lib/show.svelte";
   import TransitionSelect from "./TransitionSelect.svelte";
 
-  // `file`: what belongs to the photo or video itself, wherever it is shown.
-  // `slide`: how the selected slide shows it.
-  let { selected, part }: { selected: SlideId | null; part: "file" | "slide" } = $props();
+  let { selected }: { selected: SlideId | null } = $props();
 
   const show = $derived(open.show);
   const slide = $derived(selected === null ? undefined : open.slide(selected));
@@ -52,34 +50,25 @@
 {#if show && slide && asset}
   {@const uses = effective(slide, show)}
   <div class="panel">
-    {#if part === "file"}
-      <h3>{asset.kind === "video" ? "動画" : "写真"}の情報</h3>
-      <p class="hint file">{asset.originalName}</p>
-      {#if asset.kind === "video"}
-        <p class="hint file">動画の長さ: {asset.durationMs === null ? "不明" : seconds(asset.durationMs)}</p>
-      {/if}
-
-      <label>
-        タイトル
-        <input value={asset.meta.title} oninput={(e) => setMeta("title", e.currentTarget.value)} />
-      </label>
-      <label>
-        作者
-        <input value={asset.meta.author} oninput={(e) => setMeta("author", e.currentTarget.value)} />
-      </label>
-      <label>
-        説明
-        <textarea
-          rows="3"
-          value={asset.meta.description}
-          oninput={(e) => setMeta("description", e.currentTarget.value)}
-        ></textarea>
-      </label>
-      <p class="hint">キャプションに出す文字です。出すかどうかは「スライド」タブで決めます。</p>
-    {:else}
-    <h3>このスライドの見せ方</h3>
+    <h3>{asset.kind === "video" ? "動画" : "写真"}</h3>
     <p class="hint file">{asset.originalName}</p>
 
+    <label>
+      タイトル
+      <input value={asset.meta.title} oninput={(e) => setMeta("title", e.currentTarget.value)} />
+    </label>
+    <label>
+      作者
+      <input value={asset.meta.author} oninput={(e) => setMeta("author", e.currentTarget.value)} />
+    </label>
+    <label>
+      説明
+      <textarea
+        rows="3"
+        value={asset.meta.description}
+        oninput={(e) => setMeta("description", e.currentTarget.value)}
+      ></textarea>
+    </label>
     <label class="inline">
       <input
         type="checkbox"
@@ -89,9 +78,8 @@
           setSlide((slide) => (slide.showCaption = on));
         }}
       />
-      このスライドにキャプションを出す
+      キャプションを表示する
     </label>
-    <p class="hint caption-note">出す文字は「ファイル」タブ、デザインは「全体の見た目」で決めます。</p>
 
     {#if asset.kind === "photo"}
       <label>
@@ -123,6 +111,7 @@
     {#if asset.kind === "video"}
       <fieldset>
         <legend>再生する範囲</legend>
+        <p class="hint">動画の長さ: {asset.durationMs === null ? "不明" : seconds(asset.durationMs)}</p>
         <div class="pair">
           <label>
             開始（秒）
@@ -277,7 +266,6 @@
         >
       </div>
     </details>
-    {/if}
   </div>
 {:else}
   <p class="hint empty">左の並びからスライドを選ぶと、ここで設定できます。</p>
@@ -295,8 +283,8 @@
     font-size: 15px;
   }
 
-  .caption-note {
-    margin: -8px 0 0;
+  fieldset .hint {
+    margin: 0;
   }
 
   .file {

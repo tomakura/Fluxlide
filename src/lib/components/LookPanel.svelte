@@ -115,7 +115,7 @@
 {#if show && look}
   <div class="panel">
     <fieldset>
-      <legend>キャプションのデザイン（全スライド共通）</legend>
+      <legend>キャプションのデザイン</legend>
       <div class="designs">
         {#each DESIGNS as [design, name] (design)}
           <button
