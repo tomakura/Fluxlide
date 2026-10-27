@@ -22,21 +22,24 @@
     onpresent: (choose: boolean) => void;
   } = $props();
 
-  type Tab = "slides" | "look" | "music";
-  // The tabs say how far their settings reach: `slides` only the chosen
-  // photo or video, the others the whole slideshow.
+  type Tab = "file" | "slide" | "look" | "music";
+  // The tabs say how far their settings reach: `file` the chosen photo or
+  // video itself, `slide` how its slide shows it, the others the whole
+  // slideshow.
   const TABS: [Tab, string][] = [
-    ["slides", "選んだ写真"],
+    ["file", "ファイル"],
+    ["slide", "スライド"],
     ["look", "全体の見た目"],
     ["music", "全体の音楽"],
   ];
   const SCOPES: Record<Tab, string> = {
-    slides: "左で選んだ1枚だけの設定です",
+    file: "左で選んだ写真・動画そのものの情報です",
+    slide: "左で選んだ1枚の見せ方だけの設定です",
     look: "すべてのスライドに共通の設定です",
     music: "スライドショー全体に流れる音楽です",
   };
 
-  let tab = $state<Tab>("slides");
+  let tab = $state<Tab>("slide");
   let exportOpen = $state(false);
   // An export that ends while its dialog is closed says so there (once:
   // not again when the editor is opened later).
@@ -182,12 +185,12 @@
             <button class="tab" class:current={tab === key} aria-pressed={tab === key} onclick={() => (tab = key)}>{name}</button>
           {/each}
         </nav>
-        <p class="scope" class:whole={tab !== "slides"}>{SCOPES[tab]}</p>
+        <p class="scope" class:whole={tab === "look" || tab === "music"}>{SCOPES[tab]}</p>
         <div class="settings">
           {#key tab}
             <div in:appear>
-              {#if tab === "slides"}
-                <SlidePanel {selected} />
+              {#if tab === "file" || tab === "slide"}
+                <SlidePanel {selected} part={tab} />
               {:else if tab === "look"}
                 <LookPanel />
               {:else}
@@ -295,10 +298,12 @@
 
   .tab {
     flex: 1;
+    min-width: 0;
+    font-size: 12px;
     white-space: nowrap;
     border: none;
     background: transparent;
-    padding: 6px 8px;
+    padding: 6px 4px;
   }
 
   .tab.current {
