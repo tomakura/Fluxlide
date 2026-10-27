@@ -9,6 +9,7 @@
   import type { WatermarkSpec } from "$lib/bindings/WatermarkSpec";
   import { CORNERS, FITS, PHOTO_EXTENSIONS, ZOOMS, ownLength, zoomOf } from "$lib/format";
   import { dropUnusedAsset, removeCustomTransition } from "$lib/edits";
+  import { rise } from "$lib/motion";
   import { open } from "$lib/show.svelte";
   import TransitionSelect from "./TransitionSelect.svelte";
 
@@ -23,9 +24,17 @@
     open.edit((show) => change(show.look), group && `look:${group}`);
   }
 
+  // Width in pixels at a height of 1080; 0 turns the outline off.
+  function setOutline(width: number) {
+    if (Number.isFinite(width) && width >= 0 && width <= 20) {
+      setLook((look) => (look.caption.outline = width), "outline");
+    }
+  }
+
   const DESIGNS: [CaptionDesign, string][] = [
     ["band", "下帯"],
     ["simple", "シンプル"],
+    ["plain", "文字だけ"],
     ["card", "カード"],
     ["none", "なし"],
   ];
@@ -119,6 +128,29 @@
           </button>
         {/each}
       </div>
+      {#if look.caption.design !== "card" && look.caption.design !== "none"}
+        <label transition:rise>
+          縁どり（px）
+          <span class="outline">
+            <input
+              type="range"
+              min="0"
+              max="10"
+              step="0.5"
+              value={look.caption.outline}
+              oninput={(e) => setOutline(Number(e.currentTarget.value))}
+            />
+            <input
+              type="number"
+              min="0"
+              max="20"
+              step="0.5"
+              value={look.caption.outline}
+              oninput={(e) => setOutline(Number(e.currentTarget.value))}
+            />
+          </span>
+        </label>
+      {/if}
     </fieldset>
 
     <fieldset>
@@ -339,6 +371,13 @@
   .design.current {
     border-color: var(--accent);
     background: var(--accent-soft);
+  }
+
+  .outline {
+    display: grid;
+    grid-template-columns: 1fr 64px;
+    gap: 8px;
+    align-items: center;
   }
 
   .pair {

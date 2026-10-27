@@ -107,7 +107,7 @@ mkdirSync(out, { recursive: true });
 writeFileSync(
   join(out, "THIRD_PARTY_NOTICES.txt"),
   "Fluxlide includes the following third-party software. FFmpeg and the\n" +
-    "Noto Sans JP font are described in THIRD_PARTY_LICENSES.md.\n\n" +
+    "IBM Plex Sans JP font are described in THIRD_PARTY_LICENSES.md.\n\n" +
     "Every package is unmodified; its source code is at the address after its\n" +
     "name. The standard texts of the licenses named for packages that ship no\n" +
     "license file are at https://spdx.org/licenses/.\n\n" +

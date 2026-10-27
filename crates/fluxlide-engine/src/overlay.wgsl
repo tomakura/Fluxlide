@@ -16,9 +16,10 @@ struct Draw {
     // 0 fills a shape; above 0 draws only an outline of this width.
     border: f32,
     opacity: f32,
-    // Alpha of the black shadow under text; text has its shadow in the green channel.
+    // Alpha of the black shadow under text; text has its shadow in the
+    // green channel and its outline, always opaque, in the blue one.
     shadow: f32,
-    // 0: shape. 1: text mask (red: coverage, green: shadow). 2: picture.
+    // 0: shape. 1: text mask (red: coverage, green: shadow, blue: outline). 2: picture.
     kind: u32,
     // Text coverage is raised to this power before blending. Blending in
     // linear light makes the anti-aliased edges of light text look heavier,
@@ -78,8 +79,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let texel = vec2<i32>(in.pos.xy - draw.origin);
         let mask = textureLoad(overlay_tex, texel, 0);
         let text = pow(mask.r, draw.text_power) * draw.color.a;
-        let shadow = mask.g * draw.shadow * (1.0 - text);
-        alpha = text + shadow;
+        let outline = mask.b;
+        let dark = outline + mask.g * draw.shadow * (1.0 - outline);
+        alpha = text + dark * (1.0 - text);
         rgb = draw.color.rgb * text;
     } else {
         // Pictures are uploaded premultiplied (`media::load_image`).

@@ -1,7 +1,7 @@
 //! Japanese (and Latin) text turned into coverage masks on the CPU.
 //!
 //! Shaping, line breaking and rasterizing are done by `cosmic-text` (with
-//! `swash` for the glyphs) using only the bundled Noto Sans JP, so a caption
+//! `swash` for the glyphs) using only the bundled IBM Plex Sans JP, so a caption
 //! has the same pixels on every OS and in live playback and export alike.
 //! The GPU only blends the finished masks.
 
@@ -13,11 +13,17 @@ use cosmic_text::{
     Wrap,
 };
 
-/// Noto Sans JP, a variable font with a weight axis from 100 to 900.
+/// IBM Plex Sans JP in the three weights the app draws with: Light (300)
+/// for caption text, Medium (500) for the title card and the watermark,
+/// Bold (700) for caption titles. Other weights get the nearest of these.
 /// Embedded so that the app never depends on installed fonts or on the
 /// location of resource files.
-const FONT: &[u8] = include_bytes!("../../../assets/fonts/NotoSansJP-VariableFont_wght.ttf");
-const FONT_FAMILY: &str = "Noto Sans JP";
+const FONTS: [&[u8]; 3] = [
+    include_bytes!("../../../assets/fonts/IBMPlexSansJP-Light.ttf"),
+    include_bytes!("../../../assets/fonts/IBMPlexSansJP-Medium.ttf"),
+    include_bytes!("../../../assets/fonts/IBMPlexSansJP-Bold.ttf"),
+];
+const FONT_FAMILY: &str = "IBM Plex Sans JP";
 
 /// How much a blurred shadow is strengthened before it is clamped.
 const SHADOW_GAIN: f32 = 4.0;
@@ -35,7 +41,9 @@ fn engine() -> MutexGuard<'static, TextEngine> {
     ENGINE
         .get_or_init(|| {
             let mut db = fontdb::Database::new();
-            db.load_font_source(Source::Binary(Arc::new(FONT)));
+            for font in FONTS {
+                db.load_font_source(Source::Binary(Arc::new(font)));
+            }
             // The locale only steers font fallback, which has nothing to
             // choose from here. A fixed one keeps results identical everywhere.
             let fonts = FontSystem::new_with_locale_and_db("ja-JP".into(), db);
@@ -52,7 +60,7 @@ fn engine() -> MutexGuard<'static, TextEngine> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct TextStyle {
     pub size: f32,
-    /// Weight on the font's wght axis (300 Light, 500 Medium).
+    /// 300 Light, 500 Medium or 700 Bold.
     pub weight: u16,
     /// Extra space after every character, in em.
     pub tracking: f32,
@@ -79,22 +87,43 @@ pub(crate) struct TextBlock {
     pub canvas: (u32, u32),
     /// One byte per pixel: how much of it the text covers.
     pub coverage: Vec<u8>,
-    /// The text's soft shadow, same size as `coverage`.
+    /// The text's soft shadow (of its outline, if it has one), same size
+    /// as `coverage`; empty for none.
     pub shadow: Vec<u8>,
+    /// The text's outline, same size as `coverage`; empty for none.
+    pub outline: Vec<u8>,
+}
+
+/// What is drawn in black around the text: an outline, a soft shadow
+/// under it, both or neither.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub(crate) struct Halo {
+    /// Width in pixels of an outline around every stroke; 0 for none.
+    pub outline: f32,
+    /// Blur radius and downward offset in pixels of a soft shadow.
+    pub shadow: Option<(u32, u32)>,
+}
+
+impl Halo {
+    pub const fn shadow(blur: u32, shift: u32) -> Self {
+        Self {
+            outline: 0.0,
+            shadow: Some((blur, shift)),
+        }
+    }
 }
 
 /// Lays out `text` in at most `max_lines` lines no wider than `max_width`
 /// pixels and rasterizes it. What does not fit is cut and ends with "…".
 /// Returns `None` when there is nothing to draw.
 ///
-/// `shadow` is `(blur radius, downward offset)` in pixels, or `None`; it
-/// only decides how much padding the masks get and how `shadow` is filled.
+/// `halo` decides how much padding the masks get and how `shadow` is filled.
 pub(crate) fn render_text(
     text: &str,
     style: &TextStyle,
     max_width: f32,
     max_lines: usize,
-    shadow: Option<(u32, u32)>,
+    halo: Halo,
 ) -> Option<TextBlock> {
     let text = text.trim();
     if text.is_empty() || max_lines == 0 || max_width < style.size {
@@ -168,13 +197,13 @@ pub(crate) fn render_text(
         return None;
     }
 
-    let (blur, shift) = shadow.unwrap_or((0, 0));
-    let pad = if shadow.is_some() {
-        blur * 2 + shift
+    let outline_pad = if halo.outline > 0.0 {
+        halo.outline.ceil() as u32 + 1
     } else {
         0
-    }
-    .max(2);
+    };
+    let shadow_pad = halo.shadow.map_or(0, |(blur, shift)| blur * 2 + shift);
+    let pad = (outline_pad + shadow_pad).max(2);
     let canvas = (
         width.ceil() as u32 + pad * 2,
         height.ceil() as u32 + pad * 2,
@@ -197,8 +226,15 @@ pub(crate) fn render_text(
             }
         },
     );
-    let shadow = match shadow {
-        Some((blur, shift)) => blurred(&coverage, canvas, blur, shift),
+    let outline = if halo.outline > 0.0 {
+        outlined(&coverage, canvas, halo.outline)
+    } else {
+        Vec::new()
+    };
+    // The shadow falls from the outline when there is one.
+    let shadow = match halo.shadow {
+        Some((blur, shift)) if outline.is_empty() => blurred(&coverage, canvas, blur, shift),
+        Some((blur, shift)) => blurred(&outline, canvas, blur, shift),
         None => Vec::new(),
     };
     Some(TextBlock {
@@ -210,6 +246,7 @@ pub(crate) fn render_text(
         canvas,
         coverage,
         shadow,
+        outline,
     })
 }
 
@@ -257,6 +294,50 @@ fn blurred(mask: &[u8], (width, height): (u32, u32), radius: u32, shift: u32) ->
     out
 }
 
+/// `mask` spread by `width` pixels in every direction (over a disc), so
+/// drawn under the text it outlines every stroke.
+fn outlined(mask: &[u8], (width, height): (u32, u32), outline: f32) -> Vec<u8> {
+    let (width, height) = (width as usize, height as usize);
+    let reach = outline.ceil() as usize;
+    // `spread[r]`: each pixel's maximum over the `r` pixels to its left and
+    // right. Each one is the one before spread by another pixel.
+    let mut spread = vec![mask.to_vec()];
+    for r in 1..=reach {
+        let last = &spread[r - 1];
+        let mut next = last.clone();
+        for y in 0..height {
+            let row = &last[y * width..(y + 1) * width];
+            for x in 0..width {
+                let left = row[x.saturating_sub(1)];
+                let right = row[(x + 1).min(width - 1)];
+                next[y * width + x] = row[x].max(left).max(right);
+            }
+        }
+        spread.push(next);
+    }
+    // Each row of the disc reaches as far as the circle allows.
+    let rows: Vec<(isize, usize)> = (-(reach as isize)..=reach as isize)
+        .filter_map(|dy| {
+            let half = outline * outline - (dy * dy) as f32;
+            (half >= 0.0).then(|| (dy, (half.sqrt().round() as usize).min(reach)))
+        })
+        .collect();
+    let mut out = vec![0u8; mask.len()];
+    for y in 0..height {
+        for &(dy, half) in &rows {
+            let sy = y as isize + dy;
+            if !(0..height as isize).contains(&sy) {
+                continue;
+            }
+            let from = &spread[half][sy as usize * width..(sy as usize + 1) * width];
+            for (value, &near) in out[y * width..(y + 1) * width].iter_mut().zip(from) {
+                *value = (*value).max(near);
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,12 +351,12 @@ mod tests {
 
     #[test]
     fn empty_text_draws_nothing() {
-        assert!(render_text("   ", &STYLE, 800.0, 3, None).is_none());
+        assert!(render_text("   ", &STYLE, 800.0, 3, Halo::default()).is_none());
     }
 
     #[test]
     fn short_text_stays_on_one_line_and_leaves_ink() {
-        let block = render_text("夕暮れの海", &STYLE, 800.0, 3, None).unwrap();
+        let block = render_text("夕暮れの海", &STYLE, 800.0, 3, Halo::default()).unwrap();
         assert_eq!(block.lines, 1);
         // Five characters of about one em plus tracking each.
         assert!((190.0..230.0).contains(&block.width), "{}", block.width);
@@ -287,7 +368,7 @@ mod tests {
     fn long_text_wraps_and_is_cut_at_the_line_limit_with_an_ellipsis() {
         let sentence =
             "朝の光が差し込む静かな港町で、漁を終えた船がゆっくりと戻ってくる様子を撮影しました。";
-        let block = render_text(sentence, &STYLE, 400.0, 2, None).unwrap();
+        let block = render_text(sentence, &STYLE, 400.0, 2, Halo::default()).unwrap();
         assert_eq!(block.lines, 2);
         assert!(block.width <= 400.0, "{}", block.width);
         assert!(
@@ -295,7 +376,7 @@ mod tests {
         );
         assert!(block.text.len() < sentence.len());
         // With more room, the whole sentence fits in fewer lines, uncut.
-        let roomy = render_text(sentence, &STYLE, 2400.0, 2, None).unwrap();
+        let roomy = render_text(sentence, &STYLE, 2400.0, 2, Halo::default()).unwrap();
         assert_eq!(roomy.lines, 1);
         assert_eq!(roomy.text, sentence);
     }
@@ -333,11 +414,11 @@ mod tests {
             tracking: 0.0,
             ..STYLE
         };
-        render_text(text, &style, 800.0, 1, None).unwrap()
+        render_text(text, &style, 800.0, 1, Halo::default()).unwrap()
     }
 
     #[test]
-    fn the_weight_axis_of_the_variable_font_changes_the_strokes() {
+    fn each_weight_has_its_own_strokes() {
         let total = |block: &TextBlock| block.coverage.iter().map(|&c| u64::from(c)).sum::<u64>();
         let (light, medium, bold) = (
             total(&ink("田", 300)),
@@ -373,10 +454,54 @@ mod tests {
 
     #[test]
     fn shadow_spreads_beyond_the_ink() {
-        let block = render_text("A", &STYLE, 800.0, 1, Some((6, 3))).unwrap();
+        let block = render_text("A", &STYLE, 800.0, 1, Halo::shadow(6, 3)).unwrap();
         assert_eq!(block.shadow.len(), block.coverage.len());
         let ink = block.coverage.iter().filter(|&&c| c > 0).count();
         let dark = block.shadow.iter().filter(|&&c| c > 0).count();
         assert!(dark > ink);
+    }
+
+    #[test]
+    fn an_outline_covers_the_ink_and_reaches_its_width_beyond_it() {
+        let plain = render_text("I", &STYLE, 800.0, 1, Halo::default()).unwrap();
+        let halo = Halo {
+            outline: 4.0,
+            ..Halo::default()
+        };
+        let block = render_text("I", &STYLE, 800.0, 1, halo).unwrap();
+        assert_eq!(block.outline.len(), block.coverage.len());
+        assert!(block.shadow.is_empty());
+        let (w, h) = (block.canvas.0 as usize, block.canvas.1 as usize);
+        // Wherever the text is, the outline is at least as strong.
+        assert!(
+            block
+                .coverage
+                .iter()
+                .zip(&block.outline)
+                .all(|(c, o)| o >= c)
+        );
+        // Across the middle row, the outline is 4 pixels wider on each side.
+        let row = h / 2;
+        let span = |mask: &[u8]| {
+            let solid: Vec<usize> = (0..w).filter(|&x| mask[row * w + x] > 127).collect();
+            (solid[0], *solid.last().unwrap())
+        };
+        let (ink_left, ink_right) = span(&block.coverage);
+        let (left, right) = span(&block.outline);
+        assert_eq!((ink_left - left, right - ink_right), (4, 4));
+        // The padding makes room for the outline.
+        assert!(block.pad > plain.pad);
+
+        // With a shadow too, the shadow spreads from the outline, so it
+        // reaches further out than a shadow of the bare text.
+        let both = Halo {
+            outline: 4.0,
+            shadow: Some((3, 0)),
+        };
+        let both = render_text("I", &STYLE, 800.0, 1, both).unwrap();
+        let bare = render_text("I", &STYLE, 800.0, 1, Halo::shadow(3, 0)).unwrap();
+        let reach = |block: &TextBlock| block.shadow.iter().filter(|&&s| s > 0).count();
+        assert!(reach(&both) > reach(&bare));
+        assert!(!both.outline.is_empty());
     }
 }

@@ -7,6 +7,7 @@
   import Home from "$lib/components/Home.svelte";
   import OutputDialog from "$lib/components/OutputDialog.svelte";
   import Presenting from "$lib/components/Presenting.svelte";
+  import { rise } from "$lib/motion";
   import { open } from "$lib/show.svelte";
 
   type Screen = "loading" | "home" | "editor" | "presenting";
@@ -87,7 +88,7 @@
 {/if}
 
 {#if notice || error}
-  <div class="toast" class:error={!!error} role="status">
+  <div class="toast" class:error={!!error} role="status" transition:rise|global={{ y: 16 }}>
     {notice ?? error}
     {#if error}<button class="quiet" onclick={() => (error = null)}>閉じる</button>{/if}
   </div>

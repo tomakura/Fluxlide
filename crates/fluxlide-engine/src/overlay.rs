@@ -106,6 +106,9 @@ pub(crate) struct OverlayPlan {
     pub size: (u32, u32),
     pub opacity: f32,
     pub pieces: Vec<PlanPiece>,
+    /// The caption part of each piece (see [`crate::caption::reveal`]);
+    /// empty when the overlay is not made of parts.
+    pub parts: Vec<u8>,
 }
 
 /// One uploaded piece.
@@ -140,8 +143,9 @@ impl OverlayDraw {
         }
     }
 
-    /// The `Draw` struct of `overlay.wgsl`.
-    pub(crate) fn uniform_bytes(&self, output: (u32, u32), opacity: f32) -> Vec<u8> {
+    /// The `Draw` struct of `overlay.wgsl`, for the piece moved down by
+    /// `shift` pixels.
+    pub(crate) fn uniform_bytes(&self, output: (u32, u32), opacity: f32, shift: f32) -> Vec<u8> {
         let (rect, color, radius, border, gradient, shadow, kind, power) = match self {
             Self::Shape {
                 rect,
@@ -158,6 +162,10 @@ impl OverlayDraw {
                 ..
             } => (*rect, *color, 0.0, 0.0, [1.0, 1.0], *shadow, 1, *power),
             Self::Image { rect, .. } => (*rect, [1.0; 4], 0.0, 0.0, [1.0, 1.0], 0.0, 2, 1.0),
+        };
+        let rect = Rect {
+            y: rect.y + shift,
+            ..rect
         };
         let mut bytes = Vec::with_capacity(OVERLAY_UNIFORM_SIZE as usize);
         let floats = rect
@@ -183,6 +191,7 @@ pub struct Overlay {
     size: (u32, u32),
     opacity: f32,
     draws: Vec<OverlayDraw>,
+    parts: Vec<u8>,
 }
 
 impl Overlay {
@@ -205,6 +214,7 @@ impl Overlay {
                     border: 0.0,
                     gradient: [1.0, 1.0],
                 }],
+                parts: Vec::new(),
             },
         )
     }
@@ -222,6 +232,11 @@ impl Overlay {
 
     pub(crate) fn draws(&self) -> &[OverlayDraw] {
         &self.draws
+    }
+
+    /// The caption part the draw at `index` belongs to.
+    pub(crate) fn part(&self, index: usize) -> u8 {
+        self.parts.get(index).copied().unwrap_or(0)
     }
 
     /// Uploads the masks of `plan` to the GPU.
@@ -251,11 +266,13 @@ impl Overlay {
                     shadow,
                 } => {
                     let (width, height) = block.canvas;
-                    // Red: the text. Green: its shadow.
-                    let mut texels = Vec::with_capacity(block.coverage.len() * 2);
+                    // Red: the text. Green: its shadow. Blue: its outline.
+                    let mut texels = Vec::with_capacity(block.coverage.len() * 4);
                     for (i, &coverage) in block.coverage.iter().enumerate() {
                         texels.push(coverage);
                         texels.push(block.shadow.get(i).copied().unwrap_or(0));
+                        texels.push(block.outline.get(i).copied().unwrap_or(0));
+                        texels.push(0);
                     }
                     OverlayDraw::Text {
                         rect: Rect {
@@ -277,6 +294,7 @@ impl Overlay {
             size: plan.size,
             opacity: plan.opacity,
             draws,
+            parts: plan.parts,
         }
     }
 }
@@ -293,7 +311,7 @@ fn upload_mask(renderer: &Renderer, width: u32, height: u32, texels: &[u8]) -> w
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rg8Unorm,
+        format: wgpu::TextureFormat::Rgba8Unorm,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
@@ -307,7 +325,7 @@ fn upload_mask(renderer: &Renderer, width: u32, height: u32, texels: &[u8]) -> w
         texels,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(width * 2),
+            bytes_per_row: Some(width * 4),
             rows_per_image: Some(height),
         },
         size,

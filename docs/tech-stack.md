@@ -85,7 +85,7 @@ Windows / Linux / macOSを初期の対象にしつつ、メモリ・配布容量
 | --- | --- | --- | --- |
 | 1. 連続再生 | 写真は `image` で読み、動画は `ffmpeg` で生のYUVに変換してパイプで受け取り、GPUでRGBに変換する。次の素材は裏で先読みする | macOSの上映ウィンドウ、Linuxの仮想ディスプレイで、写真と動画をつないで再生できた（[連続再生](spike-media-playback.md)、[Linux](check-linux.md)） | Windows。実際のGPUを持つLinux。HEVC・HDRなどの素材（段階6） |
 | 2. 上映ウィンドウ | webviewのないTauriのウィンドウに、wgpuの描画面を直接作る。winitの別プロセスは使わない | macOS（Sidecar）、Linux（X11の仮想ディスプレイ）で全画面表示とEscでの終了ができた（[上映ウィンドウ](spike-presentation-window.md)） | HDMIの外部ディスプレイ、Windows、Wayland（Escの代わり、GLES） |
-| 3. 演出 | 写真の配置、トランジション（利用者がWGSLで書ける）、キャプションとウォーターマークの重ね描きを `Compositor` にまとめる。文字はcosmic-textと同梱のNoto Sans JPでCPUで描き、GPUで合成する | 自動テストと見本画像で、トランジション、キャプション、ウォーターマーク、日本語の描画を確かめた（[演出](spike-captions-transitions.md)） | 実際のGPUでの速さと見た目 |
+| 3. 演出 | 写真の配置、トランジション（利用者がWGSLで書ける）、キャプションとウォーターマークの重ね描きを `Compositor` にまとめる。文字はcosmic-textと同梱のIBM Plex Sans JPでCPUで描き、GPUで合成する | 自動テストと見本画像で、トランジション、キャプション、ウォーターマーク、日本語の描画を確かめた（[演出](spike-captions-transitions.md)） | 実際のGPUでの速さと見た目 |
 | 4. 音声 | cpalで出力し、映像の時計に合わせて混ぜる。BGMはffmpegでデコードし、音のある動画の前に下げる。Bluetooth向けに、利用者が決めるミリ秒で音を早める | macOSで動画の音のずれが最大0.3ms（[音声同期](spike-audio-sync.md)）。BGMと補正は自動テストで確かめた（[BGM](spike-bgm.md)） | 実際の出力機器（特にBluetooth）での耳による確認。Windows・Linuxの出力 |
 | 5. 書き出し | 上映と同じ描画を画面外に描き、1フレームずつ進めて、RGBAを `ffmpeg` にパイプで渡す。音は書き出し用のミキサーで混ぜて最後にまとめる | 上映の画面との差はPSNR 42.8dB・SSIM 0.988（libx264）。読み込みが遅れても、ファイルに遅れが残らない（[書き出し](spike-export.md)） | 実際のGPUでの速さ。OSのH.264エンコーダ（VideoToolbox、Media Foundation）での画質。LinuxのH.264の方式 |
 | プレビュー | 管理画面のプレビューは、画面外に描いた画素をコマンドの結果として送り、`<canvas>` に描く | Linuxで640×360を約55fpsで表示できた（[プレビュー](spike-preview.md)） | 実際のGPUとWKWebView・WebView2での速さ |

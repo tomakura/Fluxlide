@@ -5,6 +5,7 @@
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
   import * as api from "$lib/api";
   import { modal } from "$lib/modal";
+  import { appear, pop } from "$lib/motion";
   import Mark from "./Mark.svelte";
 
   let { onclose }: { onclose: () => void } = $props();
@@ -18,10 +19,11 @@
   });
 </script>
 
-<div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
+<div class="backdrop" role="presentation" transition:appear|global onclick={(e) => e.target === e.currentTarget && onclose()}>
   <div
     class="dialog"
     role="dialog"
+    transition:pop|global
     aria-modal="true"
     aria-labelledby="about-title"
     tabindex="-1"
@@ -41,7 +43,7 @@
         <strong>FFmpeg</strong> 9.0.2（LGPL v2.1 以降）— 動画と音の読み込みと書き出しに使います。改変せずに、別のプログラム（fluxlide-ffmpeg、fluxlide-ffprobe）として同梱しています。ソースは
         ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz です。FFmpeg は Fabrice Bellard の商標です。
       </li>
-      <li><strong>Noto Sans JP</strong>（SIL Open Font License 1.1）— キャプションと文字のウォーターマークの書体です。</li>
+      <li><strong>IBM Plex Sans JP</strong>（SIL Open Font License 1.1）— キャプション、文字のウォーターマーク、開始と終了の画面の書体です。</li>
       <li>Tauri、wgpu、Svelte など、Rust と npm のライブラリ（MIT、Apache-2.0 など）。</li>
     </ul>
     <p class="hint">

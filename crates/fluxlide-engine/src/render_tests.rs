@@ -72,6 +72,7 @@ fn transition_frame<'a>(
             progress,
         }),
         overlays: Vec::new(),
+        from_overlays: Vec::new(),
     }
 }
 
@@ -629,6 +630,7 @@ fn captions_appear_where_their_design_puts_them() {
                 overlays: vec![OverlayRef {
                     overlay: &caption,
                     opacity: 1.0,
+                    reveal: None,
                 }],
                 ..Default::default()
             },
@@ -641,6 +643,13 @@ fn captions_appear_where_their_design_puts_them() {
     assert_eq!(x0, 27);
     assert!(
         x1 < 27 + 20 + 576 && y0 > 270 && y1 < 540 - 20,
+        "{x0} {y0} {x1} {y1}"
+    );
+
+    // Plain: the same corner without the line, so the text starts at the margin.
+    let (x0, y0, x1, y1) = ink_bounds(&draw(CaptionDesign::Plain), 960, [0, 0, 0]).unwrap();
+    assert!(
+        (27..27 + 8).contains(&x0) && x1 < 27 + 576 && y0 > 270 && y1 < 540 - 20,
         "{x0} {y0} {x1} {y1}"
     );
 
@@ -700,6 +709,7 @@ fn a_caption_fades_with_its_opacity_and_is_hidden_at_zero() {
                 overlays: vec![OverlayRef {
                     overlay: &caption,
                     opacity,
+                    reveal: None,
                 }],
                 ..Default::default()
             },
@@ -745,6 +755,7 @@ fn a_watermark_stays_put_while_pictures_move() {
             frame.overlays.push(OverlayRef {
                 overlay: &overlay,
                 opacity: 1.0,
+                reveal: None,
             });
             let pixels = render(&renderer, size, frame);
             let what = format!("{} at {progress}", transition.name());
@@ -789,6 +800,7 @@ fn a_watermark_keeps_its_opacity_during_a_transition() {
         frame.overlays.push(OverlayRef {
             overlay: &overlay,
             opacity: 1.0,
+            reveal: None,
         });
         let pixels = render(&renderer, size, frame);
         let inside = pixel(&pixels, size.0, 20, size.1 - 20);
@@ -819,6 +831,7 @@ fn a_text_watermark_is_drawn_in_its_corner() {
                 overlays: vec![OverlayRef {
                     overlay: &overlay,
                     opacity: 1.0,
+                    reveal: None,
                 }],
                 ..Default::default()
             },
@@ -861,6 +874,7 @@ fn an_overlay_made_for_another_size_is_refused() {
         overlays: vec![OverlayRef {
             overlay: &overlay,
             opacity: 1.0,
+            reveal: None,
         }],
         ..Default::default()
     };
@@ -1037,6 +1051,7 @@ fn the_same_scene_gives_the_same_pixels_every_time() {
         frame.overlays.push(OverlayRef {
             overlay: &caption,
             opacity: 0.8,
+            reveal: None,
         });
         render(&renderer, (480, 270), frame)
     };

@@ -56,6 +56,10 @@ export const startTestSound = (monitorIndex: number) =>
   invoke<PresentationStatus>("start_test_sound", { monitorIndex });
 export const stopTestSound = () => invoke<PresentationStatus>("stop_test_sound");
 export const presentationStatus = () => invoke<PresentationStatus>("presentation_status");
+/// The newest copy of what the presentation shows, if it is not copy number
+/// `after`: RGBA pixels followed by the width, the height and its number as
+/// little-endian u32; empty otherwise.
+export const presentationFrame = (after: number) => invoke<ArrayBuffer>("presentation_frame", { after });
 export const controlPresentation = (control: Control) =>
   invoke<void>("control_presentation", { control });
 
@@ -94,6 +98,12 @@ export const onImportProgress = (handler: (progress: ImportProgress) => void): P
 /// Esc was pressed in the presentation window; the operator confirms here.
 export const onPresentationEndRequested = (handler: () => void): Promise<UnlistenFn> =>
   listen("presentation-end-requested", () => handler());
+/// Esc was pressed again in the presentation window: the question goes away.
+export const onPresentationEndCancelled = (handler: () => void): Promise<UnlistenFn> =>
+  listen("presentation-end-cancelled", () => handler());
+/// The question to end was answered here, so Enter in the presentation
+/// window no longer ends it.
+export const endRequestAnswered = () => invoke<void>("end_request_answered");
 /// The presentation ended from its own window.
 export const onPresentationEnded = (handler: () => void): Promise<UnlistenFn> =>
   listen("presentation-ended", () => handler());

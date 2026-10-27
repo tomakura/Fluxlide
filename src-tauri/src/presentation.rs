@@ -20,10 +20,11 @@ use fluxlide_engine::calibration::{BeepSchedule, start_beeps};
 use fluxlide_engine::media::video::Ffmpeg;
 use fluxlide_engine::show::{MusicSource, ShowDefinition, SlideId};
 use fluxlide_engine::{
-    Fit, Frame, FrameOutcome, Layer, MediaTexture, Overlay, OverlayRef, Position, Presenter,
-    Renderer, Scene, Slideshow, SlideshowStats,
+    Fit, Frame, FrameOutcome, Layer, MediaTexture, MirrorFrame, Overlay, OverlayRef, Position,
+    Presenter, Renderer, Scene, Slideshow, SlideshowStats,
 };
 use serde::{Deserialize, Serialize};
+use tauri::ipc::Response;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tauri_plugin_global_shortcut::{
     Code, GlobalShortcutExt, Shortcut, ShortcutEvent, ShortcutState,
@@ -36,8 +37,11 @@ use crate::settings::SettingsState;
 const WINDOW_LABEL: &str = "presenter";
 
 /// Sent when Esc is pressed in the presentation window while the management
-/// window is on another screen: the operator confirms there.
+/// window is on another screen: the operator confirms there, or with Enter
+/// in the presentation window.
 pub const END_REQUESTED: &str = "presentation-end-requested";
+/// Sent when Esc is pressed again instead: the question goes away.
+pub const END_CANCELLED: &str = "presentation-end-cancelled";
 /// Sent when the presentation has ended other than by `stop_presentation`.
 pub const ENDED: &str = "presentation-ended";
 
@@ -71,19 +75,30 @@ pub enum Control {
 /// front: from the start of a presentation (macOS reports no focus event
 /// while the window moves into its fullscreen space) until it or the main
 /// window reports a focus change.
-fn presenter_keys() -> [(Shortcut, Option<Control>); 7] {
+fn presenter_keys() -> [(Shortcut, Key); 9] {
     let key = |code| Shortcut::new(None, code);
     [
-        // Ends the presentation (`None`).
-        (key(Code::Escape), None),
-        (key(Code::ArrowRight), Some(Control::Next)),
+        (key(Code::Escape), Key::End),
+        (key(Code::Enter), Key::ConfirmEnd),
+        (key(Code::NumpadEnter), Key::ConfirmEnd),
+        (key(Code::ArrowRight), Key::Control(Control::Next)),
         // Presentation remotes send Page Down and Page Up.
-        (key(Code::PageDown), Some(Control::Next)),
-        (key(Code::ArrowLeft), Some(Control::Previous)),
-        (key(Code::PageUp), Some(Control::Previous)),
-        (key(Code::Space), Some(Control::TogglePause)),
-        (key(Code::KeyB), Some(Control::ToggleBlackout)),
+        (key(Code::PageDown), Key::Control(Control::Next)),
+        (key(Code::ArrowLeft), Key::Control(Control::Previous)),
+        (key(Code::PageUp), Key::Control(Control::Previous)),
+        (key(Code::Space), Key::Control(Control::TogglePause)),
+        (key(Code::KeyB), Key::Control(Control::ToggleBlackout)),
     ]
+}
+
+/// What a key of the presentation window does.
+enum Key {
+    Control(Control),
+    /// Esc: ends the presentation, after asking when the management window
+    /// can be seen (or takes the question back when asked again).
+    End,
+    /// Enter: answers that question with yes.
+    ConfirmEnd,
 }
 
 pub fn set_presenter_keys_enabled(app: &AppHandle, enabled: bool) {
@@ -110,23 +125,37 @@ pub fn handle_shortcut(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEven
         return;
     };
     let state = app.state::<PresentationState>();
+    let end = |app: &AppHandle| {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Some(active) = app.state::<PresentationState>().take_active() {
+                shut_down(active).await;
+                let _ = app.emit(ENDED, ());
+            }
+        });
+    };
     match control {
-        Some(control) => state.send(control),
+        Key::Control(control) => state.send(control),
         // With the management window on another screen, ending is confirmed
-        // there. With one screen, the operator cannot see that window.
-        None if state.confirms_end() => {
-            let _ = app.emit(END_REQUESTED, ());
+        // there or with Enter. With one screen, the operator cannot see that
+        // window.
+        Key::End if state.confirms_end() => {
+            let asked = !state.end_requested.fetch_xor(true, Ordering::Relaxed);
+            let _ = app.emit(if asked { END_REQUESTED } else { END_CANCELLED }, ());
         }
-        None => {
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move {
-                if let Some(active) = app.state::<PresentationState>().take_active() {
-                    shut_down(active).await;
-                    let _ = app.emit(ENDED, ());
-                }
-            });
+        Key::End => end(app),
+        Key::ConfirmEnd => {
+            if state.end_requested.swap(false, Ordering::Relaxed) {
+                end(app);
+            }
         }
     }
+}
+
+/// The operator answered the question to end from the management window.
+#[tauri::command]
+pub fn end_request_answered(state: State<'_, PresentationState>) {
+    state.end_requested.store(false, Ordering::Relaxed);
 }
 
 #[derive(Serialize, TS)]
@@ -371,6 +400,8 @@ struct Active {
     stop: Arc<AtomicBool>,
     controls: mpsc::Sender<Control>,
     stats: Arc<Mutex<FrameStats>>,
+    /// The newest small copy of what the window shows.
+    mirror: Arc<Mutex<Option<MirrorFrame>>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -378,6 +409,8 @@ struct Active {
 pub struct PresentationState {
     renderer: Mutex<Option<Arc<Renderer>>>,
     active: Mutex<Option<Active>>,
+    /// Esc asked whether to end, and Enter has not answered yet.
+    end_requested: AtomicBool,
 }
 
 impl PresentationState {
@@ -395,6 +428,7 @@ impl PresentationState {
     }
 
     fn take_active(&self) -> Option<Active> {
+        self.end_requested.store(false, Ordering::Relaxed);
         self.active.lock().unwrap().take()
     }
 
@@ -479,6 +513,35 @@ pub fn list_monitors(app: AppHandle) -> Result<Vec<MonitorInfo>, String> {
 #[tauri::command]
 pub fn presentation_status(state: State<'_, PresentationState>) -> PresentationStatus {
     state.status()
+}
+
+/// The newest small copy of what the presentation window shows, if it is
+/// newer than copy number `after`: the RGBA pixels (sRGB, rows without
+/// padding) followed by the width, the height and the copy's number as
+/// little-endian `u32`s, as `preview_frame` sends them. Empty when there is
+/// nothing newer.
+#[tauri::command]
+pub fn presentation_frame(state: State<'_, PresentationState>, after: u32) -> Response {
+    let mirror = state
+        .active
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|active| active.mirror.clone());
+    let Some(mirror) = mirror else {
+        return Response::new(Vec::new());
+    };
+    let frame = mirror.lock().unwrap();
+    // The same copy again is not copied out.
+    let Some(frame) = frame.as_ref().filter(|frame| frame.number as u32 != after) else {
+        return Response::new(Vec::new());
+    };
+    let mut body = Vec::with_capacity(frame.rgba.len() + 12);
+    body.extend_from_slice(&frame.rgba);
+    body.extend_from_slice(&frame.width.to_le_bytes());
+    body.extend_from_slice(&frame.height.to_le_bytes());
+    body.extend_from_slice(&(frame.number as u32).to_le_bytes());
+    Response::new(body)
 }
 
 #[tauri::command]
@@ -566,7 +629,7 @@ async fn open_window(
     let test_sound = matches!(content, Content::TestSound { .. });
     let confirms_end = monitors.len() > 1 && !test_sound;
     match run_presentation(&app, &window, renderer, position, size, content).await {
-        Ok((stop, controls, stats, thread)) => {
+        Ok((stop, controls, stats, mirror, thread)) => {
             let screen_lost = Arc::new(AtomicBool::new(false));
             watch_screen(
                 app.clone(),
@@ -584,6 +647,7 @@ async fn open_window(
                 stop,
                 controls,
                 stats,
+                mirror,
                 thread: Some(thread),
             };
             // Closed from outside while it was being set up.
@@ -723,8 +787,12 @@ type RunningPresentation = (
     Arc<AtomicBool>,
     mpsc::Sender<Control>,
     Arc<Mutex<FrameStats>>,
+    Arc<Mutex<Option<MirrorFrame>>>,
     JoinHandle<()>,
 );
+
+/// Width of the copy of the presentation shown on the operator's screen.
+const MIRROR_WIDTH: u32 = 960;
 
 /// Makes `window` fullscreen, attaches a surface and starts the render thread.
 async fn run_presentation(
@@ -811,9 +879,11 @@ async fn run_presentation(
     set_presenter_keys_enabled(app, true);
 
     let (controls, control_rx) = mpsc::channel();
+    let mirror = Arc::new(Mutex::new(None));
     let thread = {
         let stop = stop.clone();
         let stats = stats.clone();
+        let mirror = mirror.clone();
         std::thread::Builder::new()
             .name("fluxlide-presenter".into())
             .spawn(move || match content {
@@ -824,6 +894,7 @@ async fn run_presentation(
                     control_rx,
                     stop,
                     stats,
+                    mirror,
                     pending_size,
                 ),
                 Content::TestSound { sync_offset_ms } => test_sound_loop(
@@ -838,7 +909,7 @@ async fn run_presentation(
             })
             .map_err(|err| err.to_string())?
     };
-    Ok((stop, controls, stats, thread))
+    Ok((stop, controls, stats, mirror, thread))
 }
 
 #[tauri::command]
@@ -883,6 +954,7 @@ async fn shut_down(mut active: Active) {
     let _ = active.window.destroy();
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_loop(
     renderer: Arc<Renderer>,
     mut presenter: Presenter,
@@ -890,9 +962,11 @@ fn render_loop(
     controls: mpsc::Receiver<Control>,
     stop: Arc<AtomicBool>,
     stats: Arc<Mutex<FrameStats>>,
+    mirror: Arc<Mutex<Option<MirrorFrame>>>,
     pending_size: Arc<Mutex<Option<(u32, u32)>>>,
 ) {
     let start = Instant::now();
+    presenter.enable_mirror(&renderer, MIRROR_WIDTH);
     let title = playing.show.title.clone();
     let music = playing.show.music.clone();
     // Photos and videos are loaded at the display's full resolution.
@@ -934,6 +1008,9 @@ fn render_loop(
         let time = start.elapsed().as_secs_f64();
         show.update(time);
         let outcome = presenter.render(&renderer, &Scene::Frame(show.frame()));
+        if let Some(frame) = presenter.take_mirror_frame() {
+            *mirror.lock().unwrap() = Some(frame);
+        }
         stats.lock().unwrap().playback = Some(PlaybackStats::from_slideshow(&show, &sound, time));
 
         match outcome {
@@ -1024,6 +1101,7 @@ fn test_sound_loop(
                 to: Some(layer),
                 transition: None,
                 overlays: Vec::new(),
+                from_overlays: Vec::new(),
             }
         } else {
             Frame {
@@ -1035,8 +1113,10 @@ fn test_sound_loop(
                     .map(|overlay| OverlayRef {
                         overlay,
                         opacity: 1.0,
+                        reveal: None,
                     })
                     .collect(),
+                from_overlays: Vec::new(),
             }
         };
         match presenter.render(&renderer, &Scene::Frame(frame)) {

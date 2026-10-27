@@ -118,6 +118,10 @@ struct Showing {
     transition: Transition,
     /// Playback time of the entry's `start_ms`.
     anchor: f64,
+    /// Playback time at which the caption starts to float in: when the
+    /// transition in has ended. Minus infinity for a slide shown fully
+    /// visible, whose caption is in place at once.
+    caption_from: f64,
     /// The slide's sound while it plays.
     voice: Option<VoiceHandle>,
     /// Keeps the BGM down while the slide's sound plays.
@@ -133,6 +137,29 @@ impl Showing {
     /// Playback time at which the next slide is due to come in.
     fn leave_at(&self) -> f64 {
         self.anchor + ms_to_secs(self.entry.leave_ms - self.entry.start_ms)
+    }
+
+    /// The caption at `now`, once the picture is in, floating in from
+    /// `caption_from`.
+    fn caption_ref(&self, now: f64) -> Option<OverlayRef<'_>> {
+        let since = now - self.caption_from;
+        if since < 0.0 {
+            return None;
+        }
+        Some(OverlayRef {
+            overlay: self.caption.as_ref()?,
+            opacity: 1.0,
+            reveal: since.is_finite().then_some(since as f32),
+        })
+    }
+
+    /// The caption drawn on the picture itself, as it leaves.
+    fn leaving_caption(&self) -> Option<OverlayRef<'_>> {
+        Some(OverlayRef {
+            overlay: self.caption.as_ref()?,
+            opacity: 1.0,
+            reveal: None,
+        })
     }
 
     /// How far the transition in has gone at `now`, from 0 to 1.
@@ -256,10 +283,10 @@ pub struct Slideshow {
     advance_mode: Advance,
     /// The time given to the last update, on the mixer's clock.
     real: f64,
-    /// Mixer time at which playback was paused.
-    paused_at: Option<f64>,
-    /// Mixer time spent paused so far: mixer time minus playback time.
-    paused_total: f64,
+    /// Whether the operator paused playback. The clock eases to a stop.
+    paused: bool,
+    /// Playback time against mixer time.
+    clock: Clock,
     /// The operator asked for the next slide: it comes in as soon as it is ready.
     advance_now: bool,
     /// Where the first slide starts, and whether it starts fully visible.
@@ -316,6 +343,7 @@ impl Slideshow {
         let caption_style = CaptionStyle {
             design: show.look.caption.design,
             text_scale: show.look.caption.text_scale,
+            outline: show.look.caption.outline,
         };
         let pass_end = match show.playback.at_end {
             AtEnd::Loop => PassEnd::Loop,
@@ -359,8 +387,8 @@ impl Slideshow {
             video_late: false,
             advance_mode: Advance::Auto,
             real: 0.0,
-            paused_at: None,
-            paused_total: 0.0,
+            paused: false,
+            clock: Clock::STEADY,
             advance_now: false,
             first_entered: false,
             card: None,
@@ -592,27 +620,49 @@ impl Slideshow {
         }
     }
 
-    /// Stops the playback clock. The sound of a video stops with it.
+    /// Stops the playback clock: the picture slows to a stop over
+    /// [`CLOCK_EASE_SECS`] and the sound of a video fades out with it.
     pub fn pause(&mut self) {
-        if self.paused_at.is_some() || self.held || self.finished {
+        self.stop_clock(true);
+    }
+
+    /// Stops the playback clock at once, as for a still preview.
+    pub fn pause_at_once(&mut self) {
+        self.stop_clock(false);
+    }
+
+    fn stop_clock(&mut self, eased: bool) {
+        if self.paused || self.held || self.finished {
             return;
         }
-        self.paused_at = Some(self.real);
+        self.paused = true;
+        self.clock = match eased {
+            true => self.clock.easing_to(self.real, 0.0),
+            false => Clock::stopped(self.real, self.clock.at(self.real)),
+        };
         for showing in self.current.iter_mut().chain(self.outgoing.iter_mut()) {
-            showing.voice = None;
+            if !eased {
+                showing.voice = None;
+            }
             showing._duck = None;
         }
         self.announced = None;
     }
 
-    /// Starts the playback clock again where it stopped. A video's sound
-    /// starts again from where its picture is.
+    /// Starts the playback clock again where it stopped: the picture speeds
+    /// up over [`CLOCK_EASE_SECS`], and a video's sound comes back from
+    /// where its picture is once it plays at full speed.
     pub fn resume(&mut self) {
-        let Some(at) = self.paused_at.take() else {
+        if !std::mem::take(&mut self.paused) {
             return;
-        };
-        self.paused_total += self.real - at;
-        let now = self.playback_time();
+        }
+        self.clock = self.clock.easing_to(self.real, 1.0);
+        // A sound still fading out is started again in step with the picture.
+        for showing in self.current.iter_mut().chain(self.outgoing.iter_mut()) {
+            showing.voice = None;
+        }
+        let at = self.real + CLOCK_EASE_SECS;
+        let now = self.clock.at(at);
         let Some(current) = &self.current else {
             return;
         };
@@ -659,7 +709,7 @@ impl Slideshow {
     }
 
     pub fn is_paused(&self) -> bool {
-        self.paused_at.is_some()
+        self.paused
     }
 
     /// Fades the entire output to black (or back) over 400 ms while playback
@@ -707,13 +757,14 @@ impl Slideshow {
         }
     }
 
-    /// Playback time now: mixer time less the time spent paused.
+    /// Playback time now.
     fn playback_time(&self) -> f64 {
-        self.paused_at.unwrap_or(self.real) - self.paused_total
+        self.clock.at(self.real)
     }
 
+    /// The mixer time at which playback reaches `playback`.
     fn mixer_time(&self, playback: f64) -> f64 {
-        playback + self.paused_total
+        self.clock.real_at(playback)
     }
 
     /// True when the last update could not show what is due at its time
@@ -750,16 +801,25 @@ impl Slideshow {
     pub fn update(&mut self, now: f64) {
         self.real = now;
         self.advance(self.playback_time());
+        // A video's sound fades out as the picture slows to a stop.
+        let rate = self.clock.rate(self.real) as f32;
+        if self.paused {
+            for showing in self.current.iter_mut().chain(self.outgoing.iter_mut()) {
+                if rate <= 0.0 {
+                    showing.voice = None;
+                }
+            }
+        }
         let progress = self.transition_progress();
         if let Some(showing) = &self.outgoing
             && let Some(voice) = &showing.voice
         {
-            voice.set_gain((1.0 - progress) * showing.volume());
+            voice.set_gain((1.0 - progress) * showing.volume() * rate);
         }
         if let Some(showing) = &self.current
             && let Some(voice) = &showing.voice
         {
-            voice.set_gain(progress * showing.volume());
+            voice.set_gain(progress * showing.volume() * rate);
         }
     }
 
@@ -782,7 +842,7 @@ impl Slideshow {
             }
         }
 
-        if self.paused_at.is_some() {
+        if self.paused {
             return;
         }
         if let Some(fade) = &self.fade_out {
@@ -883,6 +943,7 @@ impl Slideshow {
             frame.overlays.push(OverlayRef {
                 overlay: &self.blackout_overlay,
                 opacity,
+                reveal: None,
             });
         }
         frame
@@ -894,12 +955,17 @@ impl Slideshow {
             to: None,
             transition: None,
             overlays: Vec::new(),
+            from_overlays: Vec::new(),
         };
         let card = |opacity: f32| {
             self.card
                 .as_ref()
                 .filter(|_| opacity > 0.0)
-                .map(|overlay| OverlayRef { overlay, opacity })
+                .map(|overlay| OverlayRef {
+                    overlay,
+                    opacity,
+                    reveal: None,
+                })
         };
         if self.held {
             return Frame {
@@ -912,31 +978,22 @@ impl Slideshow {
         }
         let progress = self.transition_progress();
         let in_transition = progress < 1.0;
-        let mut overlays = Vec::with_capacity(3);
-        // While pictures change, the old caption fades out in the first
-        // half and the new one in during the second, so the two never overlap.
-        let (outgoing_opacity, incoming_opacity) = if in_transition {
-            (
-                (1.0 - 2.0 * progress).max(0.0),
-                (2.0 * progress - 1.0).max(0.0),
-            )
-        } else {
-            (0.0, 1.0)
-        };
         // The outgoing slide is kept until the update after its transition ends.
         let outgoing = self.outgoing.as_ref().filter(|_| in_transition);
-        for (showing, opacity) in [
-            (outgoing, outgoing_opacity),
-            (self.current.as_ref(), incoming_opacity),
-        ] {
-            if let Some(overlay) = showing.and_then(|s| s.caption.as_ref()) {
-                overlays.push(OverlayRef { overlay, opacity });
-            }
-        }
+        // The old caption leaves with its picture; the new one floats in
+        // once its picture is in.
+        let from_overlays = outgoing.and_then(Showing::leaving_caption);
+        let mut overlays = Vec::with_capacity(3);
+        overlays.extend(
+            self.current
+                .as_ref()
+                .and_then(|showing| showing.caption_ref(self.now)),
+        );
         if let Some((_, overlay)) = &self.watermark {
             overlays.push(OverlayRef {
                 overlay,
                 opacity: 1.0,
+                reveal: None,
             });
         }
         // Coming in from the title card, the card stays until the first
@@ -964,6 +1021,7 @@ impl Slideshow {
                     progress,
                 }),
             overlays,
+            from_overlays: from_overlays.into_iter().collect(),
         }
     }
 
@@ -981,18 +1039,12 @@ impl Slideshow {
             1.0
         };
         let current = self.current.as_ref().filter(|_| progress < 1.0);
-        let mut overlays: Vec<OverlayRef<'_>> = current
-            .and_then(|showing| showing.caption.as_ref())
-            .map(|overlay| OverlayRef {
-                overlay,
-                opacity: (1.0 - 2.0 * progress).max(0.0),
-            })
-            .into_iter()
-            .collect();
+        let mut overlays = Vec::with_capacity(2);
         if let Some((_, overlay)) = self.watermark.as_ref().filter(|_| progress < 1.0) {
             overlays.push(OverlayRef {
                 overlay,
                 opacity: 1.0 - progress,
+                reveal: None,
             });
         }
         overlays.extend(card((2.0 * progress - 1.0).max(0.0)));
@@ -1004,6 +1056,11 @@ impl Slideshow {
                 progress,
             }),
             overlays,
+            // The caption fades to black with its picture.
+            from_overlays: current
+                .and_then(Showing::leaving_caption)
+                .into_iter()
+                .collect(),
         }
     }
 
@@ -1035,9 +1092,11 @@ impl Slideshow {
             return;
         };
         self.advance_now = false;
+        let mut caption_from = anchor + ms_to_secs(u64::from(entry.enter_ms));
         if std::mem::take(&mut self.first_entered) && self.current.is_none() {
             // Already fully visible: as if it had come in just before.
             anchor -= ms_to_secs(u64::from(entry.enter_ms));
+            caption_from = f64::NEG_INFINITY;
         }
         // The sound starts when the video starts to play.
         let play_at = self.mixer_time(anchor + ms_to_secs(u64::from(entry.enter_ms)));
@@ -1079,6 +1138,7 @@ impl Slideshow {
             caption,
             transition,
             anchor,
+            caption_from,
             voice,
             _duck: duck.flatten(),
         });
@@ -1269,6 +1329,95 @@ impl Slideshow {
             ),
             None => Ok(None),
         }
+    }
+}
+
+/// How long the picture takes to slow to a stop when paused, and to come
+/// back to full speed when resumed.
+const CLOCK_EASE_SECS: f64 = 0.4;
+
+/// Playback time against mixer time. From `real` on, playback runs at a
+/// rate that changes evenly from `from` to `to` over [`CLOCK_EASE_SECS`],
+/// then stays at `to`: 1 plays, 0 is paused.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Clock {
+    real: f64,
+    playback: f64,
+    from: f64,
+    to: f64,
+}
+
+impl Clock {
+    /// Playing at full speed from the start.
+    const STEADY: Self = Self {
+        real: 0.0,
+        playback: 0.0,
+        from: 1.0,
+        to: 1.0,
+    };
+
+    fn stopped(real: f64, playback: f64) -> Self {
+        Self {
+            real,
+            playback,
+            from: 0.0,
+            to: 0.0,
+        }
+    }
+
+    /// The rate at mixer time `real`.
+    fn rate(&self, real: f64) -> f64 {
+        let t = ((real - self.real) / CLOCK_EASE_SECS).clamp(0.0, 1.0);
+        self.from + (self.to - self.from) * t
+    }
+
+    /// Playback time at mixer time `real`.
+    fn at(&self, real: f64) -> f64 {
+        let d = CLOCK_EASE_SECS;
+        let t = real - self.real;
+        if t <= 0.0 {
+            return self.playback + t * self.from;
+        }
+        if t < d {
+            return self.playback + self.from * t + (self.to - self.from) * t * t / (2.0 * d);
+        }
+        self.playback + (self.from + self.to) * d / 2.0 + self.to * (t - d)
+    }
+
+    /// The same playback from mixer time `real` on, easing to the rate `to`.
+    fn easing_to(&self, real: f64, to: f64) -> Self {
+        Self {
+            real,
+            playback: self.at(real),
+            from: self.rate(real),
+            to,
+        }
+    }
+
+    /// The mixer time at which playback reaches `playback`: infinitely
+    /// late when the clock stops before.
+    fn real_at(&self, playback: f64) -> f64 {
+        let d = CLOCK_EASE_SECS;
+        let p = playback - self.playback;
+        if p <= 0.0 {
+            // Before the change, as if playing at full speed.
+            return self.real + p;
+        }
+        let eased = (self.from + self.to) * d / 2.0;
+        if p < eased {
+            // Solves from * t + (to - from) * t² / 2d = p.
+            let a = (self.to - self.from) / (2.0 * d);
+            let t = if a.abs() < 1e-12 {
+                p / self.from
+            } else {
+                (-self.from + (self.from * self.from + 4.0 * a * p).max(0.0).sqrt()) / (2.0 * a)
+            };
+            return self.real + t;
+        }
+        if self.to <= 0.0 {
+            return f64::INFINITY;
+        }
+        self.real + d + (p - eased) / self.to
     }
 }
 
@@ -1543,19 +1692,28 @@ mod tests {
         });
         let mut show = Slideshow::new(renderer, definition, dir.clone(), (320, 180));
 
-        // Overlay opacities of the current frame, back to front.
+        // Overlays of the current frame, back to front: how long each has
+        // been floating in (0 for one drawn in place, rounded to ms).
         let overlays = |show: &Slideshow| -> Vec<f32> {
-            show.frame().overlays.iter().map(|o| o.opacity).collect()
+            let reveal =
+                |o: &OverlayRef<'_>| o.reveal.map_or(0.0, |s| (s * 1000.0).round() / 1000.0);
+            show.frame().overlays.iter().map(reveal).collect()
         };
+        // How many overlays leave with the outgoing picture.
+        let leaving = |show: &Slideshow| show.frame().from_overlays.len();
         update_exactly(&mut show, 0.0);
-        // Fading in: the caption waits for the second half, the watermark never moves.
+        // Coming in: the caption waits for the picture to be in, then floats
+        // in; the watermark is there all along and never moves.
         show.update(0.125);
-        assert_eq!(overlays(&show), [0.0, 1.0]);
+        assert_eq!(overlays(&show), [0.0]);
         show.update(0.375);
-        assert_eq!(overlays(&show), [0.5, 1.0]);
+        assert_eq!(overlays(&show), [0.0]);
+        show.update(0.7);
+        assert_eq!(overlays(&show), [0.2, 0.0]);
         update_until(&mut show, 1.0, |show| show.ready.is_some());
-        assert_eq!(overlays(&show), [1.0, 1.0]);
+        assert_eq!(overlays(&show), [0.5, 0.0]);
         assert_eq!(show.frame().overlays[1].overlay.opacity(), 0.5);
+        assert!(show.frame().overlays.iter().all(|o| o.opacity == 1.0));
 
         // Halfway through its time on screen, halfway through its zoom.
         let frame = show.frame();
@@ -1566,20 +1724,22 @@ mod tests {
         assert!((layer.transform.offset[1] - 0.1).abs() < 1e-6);
         drop(frame);
 
-        // The second slide slides in: the old caption fades out first, then
-        // the new one in.
+        // The second slide slides in: the old caption is drawn on the old
+        // picture and slides out with it; the new one floats in afterwards.
         show.update(1.5);
-        show.update(1.5 + 0.125);
-        assert_eq!(overlays(&show), [0.5, 0.0, 1.0]);
+        show.update(1.5 + 0.0625);
+        assert_eq!((overlays(&show), leaving(&show)), (vec![0.0], 1));
         show.update(1.5 + 0.375);
-        assert_eq!(overlays(&show), [0.0, 0.5, 1.0]);
+        assert_eq!((overlays(&show), leaving(&show)), (vec![0.0], 1));
         let frame = show.frame();
         assert_eq!(frame.transition.unwrap().transition.name(), "slide");
         assert_eq!(frame.to.as_ref().unwrap().fit, Fit::Blur);
         drop(frame);
         show.update(2.0);
-        assert_eq!(overlays(&show), [1.0, 1.0]);
+        assert_eq!((overlays(&show), leaving(&show)), (vec![0.0, 0.0], 0));
         assert!(show.frame().transition.is_none());
+        show.update(2.2);
+        assert_eq!(overlays(&show), [0.2, 0.0]);
 
         // A new output size lays the captions and the watermark out again,
         // including the caption of a slide that is still loading.
@@ -1598,7 +1758,7 @@ mod tests {
         // The third slide has its caption turned off.
         update_exactly(&mut show, 3.5);
         assert_eq!(show.stats().current, Some(SlideId(3)));
-        assert_eq!(overlays(&show), [1.0]);
+        assert_eq!(overlays(&show), [0.0]);
 
         update_until(&mut show, 3.5, |show| show.loading.is_none());
         std::fs::remove_dir_all(&dir).unwrap();
@@ -1789,20 +1949,25 @@ mod tests {
         let (dir, definition) = three_photos("pause", Playback::default());
         let mut show = Slideshow::new(renderer, definition, dir.clone(), (32, 32));
         update_exactly(&mut show, 0.0);
-        // Paused halfway through the first fade.
+        // Paused halfway through the first fade, it slows to a stop: half
+        // the easing time (0.2 s) further on, at 0.45 of the 0.5 s fade.
         show.update(0.25);
         show.pause();
+        show.update(0.45);
+        let slowing = opacities(&show)[0];
+        assert!(slowing > 0.5 && slowing < 0.9, "{slowing}");
         update_until(&mut show, 5.0, |show| show.ready.is_some());
         assert!(show.is_paused());
-        assert_eq!(opacities(&show), [0.5]);
+        assert!((opacities(&show)[0] - 0.9).abs() < 1e-5);
 
-        // 4.75 s paused: the second slide is due at 1.5 + 4.75.
+        // Resumed at 5.0, it is at full speed again at 5.4, at playback
+        // time 0.65; the second slide, due at 1.5, comes at 6.25.
         show.resume();
-        show.update(6.0);
+        show.update(6.2);
         assert_eq!(current(&show), Some(SlideId(1)));
-        show.update(6.25);
+        show.update(6.3);
         assert_eq!(current(&show), Some(SlideId(2)));
-        assert_eq!(opacities(&show), [1.0, 0.0]);
+        assert!((opacities(&show)[1] - 0.1).abs() < 1e-3);
 
         // Next works while paused, and resumes playback.
         update_until(&mut show, 6.5, |show| show.ready.is_some());
@@ -1814,6 +1979,35 @@ mod tests {
 
         update_until(&mut show, 7.0, |show| show.loading.is_none());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_clock_eases_to_a_stop_and_back() {
+        let clock = Clock::STEADY;
+        assert_eq!(clock.at(2.0), 2.0);
+        // Paused at 2.0: half the easing time more, then still.
+        let paused = clock.easing_to(2.0, 0.0);
+        // Halfway, at three quarters of full speed's distance.
+        assert!((paused.at(2.2) - 2.15).abs() < 1e-12);
+        assert!((paused.at(2.4) - 2.2).abs() < 1e-12);
+        assert!((paused.at(9.0) - 2.2).abs() < 1e-12);
+        assert_eq!(paused.real_at(2.3), f64::INFINITY);
+        // Resumed at 5.0: full speed from 5.4, half the easing time behind.
+        let resumed = paused.easing_to(5.0, 1.0);
+        assert!((resumed.at(5.4) - 2.4).abs() < 1e-12);
+        assert!((resumed.at(6.0) - 3.0).abs() < 1e-12);
+        // Mixer time for a playback time, also within the easing.
+        for real in [5.1, 5.3, 5.4, 7.0] {
+            assert!(
+                (resumed.real_at(resumed.at(real)) - real).abs() < 1e-9,
+                "{real}"
+            );
+        }
+        // Resumed halfway through slowing down, it speeds up from there.
+        let back = clock.easing_to(2.0, 0.0).easing_to(2.2, 1.0);
+        assert!((back.rate(2.2) - 0.5).abs() < 1e-12);
+        // From 2.15 at half speed up to full: 0.3 s of playback in 0.4 s.
+        assert!((back.at(2.6) - 2.45).abs() < 1e-12);
     }
 
     #[test]
@@ -2034,14 +2228,25 @@ mod tests {
         assert_eq!(probe.windows(), [(0.5, 2.5)]);
         show.update(1.0);
         show.pause();
-        assert!(show.current.as_ref().unwrap().voice.is_none());
+        // The sound fades out as the picture slows down, then stops.
+        assert!(show.current.as_ref().unwrap().voice.is_some());
         assert_eq!(probe.windows(), []);
+        show.update(1.5);
+        assert!(show.current.as_ref().unwrap().voice.is_none());
 
-        // After 3 s paused, the rest of the video (1.5 s) plays from now.
+        // Stopped at playback time 1.2. Resumed at 4.0, the picture is at
+        // full speed from 4.4, at 1.4; the rest of the video (1.1 s) plays
+        // from then.
         show.update(4.0);
         show.resume();
         assert!(show.current.as_ref().unwrap().voice.is_some());
-        assert_eq!(probe.windows(), [(4.0, 5.5)]);
+        let windows = probe.windows();
+        assert_eq!(windows.len(), 1);
+        let (start, end) = windows[0];
+        assert!(
+            (start - 4.4).abs() < 1e-9 && (end - 5.5).abs() < 1e-9,
+            "{windows:?}"
+        );
 
         drop(show);
         std::fs::remove_dir_all(&dir).unwrap();

@@ -101,7 +101,7 @@ impl OffscreenTarget {
 
 /// Bytes in one row of the readback buffer: `width * 4` rounded up to
 /// the alignment the GPU requires for texture-to-buffer copies.
-fn padded_row_bytes(width: u32) -> u64 {
+pub(crate) fn padded_row_bytes(width: u32) -> u64 {
     let align = u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
     (u64::from(width) * 4).div_ceil(align) * align
 }

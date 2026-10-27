@@ -72,6 +72,6 @@
 
 1. macOSの署名と公証、Windowsのコード署名
 2. `.github/workflows/release.yml` でのリリース作業を実際に通す（現在は未検証）
-3. FFmpeg、フォント（Noto Sans JP、Jost）などのライセンス表記
+3. FFmpeg、フォント（IBM Plex Sans JP、Jost）などのライセンス表記
 4. 使い方を兼ねたサンプルのスライドショーとREADMEの更新
 5. バージョンタグを付けてGitHub Releasesに公開する

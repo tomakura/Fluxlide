@@ -79,10 +79,14 @@ pub struct TransitionRun<'a> {
 pub struct OverlayRef<'a> {
     pub overlay: &'a Overlay,
     pub opacity: f32,
+    /// Seconds since a caption started to float in, its lines one after
+    /// another; `None` draws all of it in place.
+    pub reveal: Option<f32>,
 }
 
 /// One slideshow frame: a picture, or two pictures joined by a transition,
-/// with overlays drawn on top. Overlays are never part of the transition.
+/// with overlays drawn on top. Only `from_overlays` take part in the
+/// transition, leaving with the outgoing picture.
 #[derive(Default)]
 pub struct Frame<'a> {
     /// The picture that is leaving. `None` is black.
@@ -94,6 +98,9 @@ pub struct Frame<'a> {
     pub transition: Option<TransitionRun<'a>>,
     /// Drawn in order, back to front, over the picture.
     pub overlays: Vec<OverlayRef<'a>>,
+    /// Drawn over `from` while the transition runs, so they leave with it
+    /// (the caption of the outgoing slide).
+    pub from_overlays: Vec<OverlayRef<'a>>,
 }
 
 /// What one frame shows.

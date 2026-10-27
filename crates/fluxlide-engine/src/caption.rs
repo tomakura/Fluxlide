@@ -5,7 +5,7 @@
 //! The sizes below are for a 1080 pixel high output and scale from there.
 
 use crate::overlay::{Color, Overlay, OverlayPlan, PlanPiece, Rect, check_size};
-use crate::text::{TextBlock, TextStyle, render_text};
+use crate::text::{Halo, TextBlock, TextStyle, render_text};
 use crate::{EngineError, Renderer};
 
 /// Text of a caption. Any of the three may be empty.
@@ -36,6 +36,8 @@ pub enum CaptionDesign {
     Band,
     /// A thin vertical line and text at the bottom left, no background.
     Simple,
+    /// Only the text at the bottom left, with a soft shadow.
+    Plain,
     /// A light card at the bottom right with dark text.
     Card,
     /// No caption.
@@ -47,6 +49,9 @@ pub struct CaptionStyle {
     pub design: CaptionDesign,
     /// Multiplies every text size; 1 is the standard size.
     pub text_scale: f32,
+    /// Width of a black outline around light text, in pixels at a height
+    /// of 1080 (scaled with the text); 0 for none. The card has none.
+    pub outline: f32,
 }
 
 impl Default for CaptionStyle {
@@ -54,30 +59,37 @@ impl Default for CaptionStyle {
         Self {
             design: CaptionDesign::default(),
             text_scale: 1.0,
+            outline: 0.0,
         }
     }
 }
 
-/// Sizes as fractions of the output's height (44, 20 and 22 pixels at 1080).
-const TITLE_SIZE: f32 = 0.0407;
-const AUTHOR_SIZE: f32 = 0.0185;
-const DESCRIPTION_SIZE: f32 = 0.0204;
-/// Medium for the title, Regular for the smaller supporting text.
-const TITLE_WEIGHT: u16 = 500;
-const BODY_WEIGHT: u16 = 400;
+/// Sizes as fractions of the output's height (45, 18 and 20 pixels at 1080).
+const TITLE_SIZE: f32 = 0.0417;
+const AUTHOR_SIZE: f32 = 0.0167;
+const DESCRIPTION_SIZE: f32 = 0.0185;
+/// Bold for the title, Light for the smaller supporting text.
+const TITLE_WEIGHT: u16 = 700;
+const AUTHOR_WEIGHT: u16 = 300;
+const DESCRIPTION_WEIGHT: u16 = 300;
 /// Letter spacing in em.
-const TITLE_TRACKING: f32 = 0.04;
-const BODY_TRACKING: f32 = 0.025;
+const TITLE_TRACKING: f32 = 0.01;
+const AUTHOR_TRACKING: f32 = 0.025;
+const DESCRIPTION_TRACKING: f32 = 0.0;
 /// Space between baselines in multiples of the text size.
-const TITLE_LINE_HEIGHT: f32 = 1.3;
-const BODY_LINE_HEIGHT: f32 = 1.55;
+const TITLE_LINE_HEIGHT: f32 = 1.2;
+const AUTHOR_LINE_HEIGHT: f32 = 1.2;
+const DESCRIPTION_LINE_HEIGHT: f32 = 1.3;
 /// Longest each part may get before it is cut with "…".
 const TITLE_MAX_LINES: usize = 2;
 const AUTHOR_MAX_LINES: usize = 1;
 const DESCRIPTION_MAX_LINES: usize = 3;
 /// Space under the title and under the author, as fractions of the height.
-const GAP_AFTER_TITLE: f32 = 0.01;
-const GAP_AFTER_AUTHOR: f32 = 0.016;
+const GAP_AFTER_TITLE: f32 = 0.0139;
+const GAP_AFTER_AUTHOR: f32 = 0.0046;
+/// Widest outline, in pixels at a height of 1080 (as far as the app lets it
+/// be set), whatever a project file or the text scale asks for.
+const MAX_OUTLINE: f32 = 20.0;
 /// Distance of the caption from the edges of the output.
 const MARGIN: f32 = 0.05;
 
@@ -131,14 +143,25 @@ pub(crate) fn plan_caption(
     let max_text_width = match style.design {
         CaptionDesign::Band => (width * 0.58).min(width - 2.0 * margin),
         CaptionDesign::Simple => (width * 0.6).min(width - 2.0 * margin - height * 0.03),
+        CaptionDesign::Plain => (width * 0.6).min(width - 2.0 * margin),
         // Narrow outputs (portrait) get a wider card than 0.36 of the width.
         CaptionDesign::Card => (width * 0.36)
             .max(height * 0.3)
             .min(width - 2.0 * margin - 2.0 * card_padding),
         CaptionDesign::None => unreachable!("handled above"),
     };
-    let shadow = (style.design == CaptionDesign::Simple)
-        .then(|| ((height * 0.004).round().max(1.0) as u32, 0));
+    // Light text gets the outline it asks for, and a soft shadow when it
+    // stands on the picture alone or has an outline.
+    let outline = match style.design {
+        CaptionDesign::Card => 0.0,
+        _ => (style.outline.max(0.0) * style.text_scale).min(MAX_OUTLINE) * height / 1080.0,
+    };
+    let shadowed =
+        outline > 0.0 || matches!(style.design, CaptionDesign::Simple | CaptionDesign::Plain);
+    let halo = Halo {
+        outline,
+        shadow: shadowed.then(|| ((height * 0.004).round().max(1.0) as u32, 0)),
+    };
 
     let parts = [
         (Part::Title, &caption.title, TITLE_MAX_LINES),
@@ -153,7 +176,7 @@ pub(crate) fn plan_caption(
     let mut top = 0.0f32;
     for (part, text, max_lines) in parts {
         let text_style = part_style(part, height, style.text_scale);
-        let Some(block) = render_text(text, &text_style, max_text_width, max_lines, shadow) else {
+        let Some(block) = render_text(text, &text_style, max_text_width, max_lines, halo) else {
             continue;
         };
         let gap = match part {
@@ -214,6 +237,7 @@ pub(crate) fn plan_caption(
             });
             (margin + line_width + gap, top)
         }
+        CaptionDesign::Plain => (margin, height - margin - text_height),
         CaptionDesign::Card => {
             let card_width = text_width + 2.0 * card_padding;
             let card_height = text_height + 2.0 * card_padding;
@@ -251,25 +275,64 @@ pub(crate) fn plan_caption(
             y: (text_y + line.top).round() as i32,
             block: line.block,
             color: Color::new(text_color, alpha),
-            shadow: if shadow.is_some() { 0.55 } else { 0.0 },
+            shadow: if halo.shadow.is_some() { 0.55 } else { 0.0 },
         });
     }
+    // The band, line or card is part 0, the lines 1, 2, 3 from the top.
+    let mut line = 0;
+    let parts = pieces
+        .iter()
+        .map(|piece| match piece {
+            PlanPiece::Text { .. } => {
+                line += 1;
+                line
+            }
+            _ => 0,
+        })
+        .collect();
     Ok(Some(OverlayPlan {
         size,
         opacity: 1.0,
         pieces,
+        parts,
     }))
+}
+
+/// How long each line of a caption takes to float in, how long it waits
+/// after the line above it, and how far it rises (a fraction of the height).
+const FLOAT_SECS: f32 = 0.6;
+const FLOAT_STAGGER_SECS: f32 = 0.15;
+const FLOAT_RISE: f32 = 0.02;
+
+/// Opacity and downward shift in pixels of `part` of a caption, `secs`
+/// after it started to float in on an output `height` pixels high. Part 0
+/// (the band, line or card behind the text) fades in; the lines (1, 2 and
+/// 3 from the top) each rise into place a little after the one above.
+pub(crate) fn reveal(part: u8, secs: f32, height: f32) -> (f32, f32) {
+    let start = f32::from(part.saturating_sub(1)) * FLOAT_STAGGER_SECS;
+    let t = ((secs - start) / FLOAT_SECS).clamp(0.0, 1.0);
+    if part == 0 {
+        return (t, 0.0);
+    }
+    let eased = 1.0 - (1.0 - t).powi(3);
+    // Whole pixels, so the text stays sharp as it moves.
+    (eased, ((1.0 - eased) * FLOAT_RISE * height).round())
 }
 
 fn part_style(part: Part, output_height: f32, text_scale: f32) -> TextStyle {
     let (size, weight, tracking, line_height) = match part {
         Part::Title => (TITLE_SIZE, TITLE_WEIGHT, TITLE_TRACKING, TITLE_LINE_HEIGHT),
-        Part::Author => (AUTHOR_SIZE, BODY_WEIGHT, BODY_TRACKING, BODY_LINE_HEIGHT),
+        Part::Author => (
+            AUTHOR_SIZE,
+            AUTHOR_WEIGHT,
+            AUTHOR_TRACKING,
+            AUTHOR_LINE_HEIGHT,
+        ),
         Part::Description => (
             DESCRIPTION_SIZE,
-            BODY_WEIGHT,
-            BODY_TRACKING,
-            BODY_LINE_HEIGHT,
+            DESCRIPTION_WEIGHT,
+            DESCRIPTION_TRACKING,
+            DESCRIPTION_LINE_HEIGHT,
         ),
     };
     TextStyle {
@@ -326,7 +389,11 @@ mod tests {
     #[test]
     fn lines_are_stacked_in_order_inside_the_bottom_left_corner() {
         let size = (1920, 1080);
-        for design in [CaptionDesign::Band, CaptionDesign::Simple] {
+        for design in [
+            CaptionDesign::Band,
+            CaptionDesign::Simple,
+            CaptionDesign::Plain,
+        ] {
             let style = CaptionStyle {
                 design,
                 ..Default::default()
@@ -372,6 +439,76 @@ mod tests {
         for (x, y, w, h) in text_boxes(&plan) {
             assert!(x as f32 >= rect.x && (x as u32 + w) as f32 <= rect.x + rect.width);
             assert!(y as f32 >= rect.y && (y as u32 + h) as f32 <= rect.y + rect.height);
+        }
+    }
+
+    #[test]
+    fn an_outline_comes_with_a_shadow_and_scales_with_the_output() {
+        // Outline width (from the padding) and shadow alpha of the title.
+        let outline_and_shadow = |design, outline, size: (u32, u32)| {
+            let style = CaptionStyle {
+                design,
+                outline,
+                ..Default::default()
+            };
+            let plan = plan_caption(&caption(), &style, size).unwrap().unwrap();
+            plan.pieces
+                .iter()
+                .find_map(|piece| match piece {
+                    PlanPiece::Text { block, shadow, .. } => {
+                        let blur = (size.1 as f32 * 0.004).round() as u32;
+                        let width = match block.outline.is_empty() {
+                            true => 0,
+                            false => block.pad - 2 * blur - 1,
+                        };
+                        Some((width, *shadow))
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let hd = (1920, 1080);
+        assert_eq!(outline_and_shadow(CaptionDesign::Plain, 0.0, hd), (0, 0.55));
+        assert_eq!(outline_and_shadow(CaptionDesign::Band, 0.0, hd), (0, 0.0));
+        // An outline as wide as asked for at 1080 and twice as wide at
+        // 2160, with a shadow under it.
+        assert_eq!(outline_and_shadow(CaptionDesign::Band, 3.0, hd), (3, 0.55));
+        assert_eq!(
+            outline_and_shadow(CaptionDesign::Plain, 3.0, (3840, 2160)),
+            (6, 0.55)
+        );
+        // A project file cannot ask for more than the app offers.
+        assert_eq!(
+            outline_and_shadow(CaptionDesign::Plain, 1e9, hd),
+            (20, 0.55)
+        );
+        // Dark text on the light card gets neither.
+        assert_eq!(outline_and_shadow(CaptionDesign::Card, 3.0, hd), (0, 0.0));
+    }
+
+    #[test]
+    fn lines_float_in_one_after_another() {
+        let plan = plan_caption(&caption(), &CaptionStyle::default(), (1920, 1080))
+            .unwrap()
+            .unwrap();
+        // The band, then the title, the author and the description.
+        assert_eq!(plan.parts, [0, 1, 2, 3]);
+        // At the start nothing shows and the lines sit lower.
+        for part in 0..=3 {
+            assert_eq!(reveal(part, 0.0, 1080.0).0, 0.0);
+        }
+        assert!(reveal(1, 0.0, 1080.0).1 > 20.0);
+        // The title is on its way before the author starts, and so on.
+        let (title, author, description) = (
+            reveal(1, 0.2, 1080.0),
+            reveal(2, 0.2, 1080.0),
+            reveal(3, 0.2, 1080.0),
+        );
+        assert!(title.0 > author.0 && author.0 > description.0 && description.0 == 0.0);
+        assert!(title.1 < author.1);
+        // In the end every part is in place.
+        for part in 0..=3 {
+            assert_eq!(reveal(part, 2.0, 1080.0), (1.0, 0.0));
         }
     }
 

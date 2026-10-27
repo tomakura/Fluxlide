@@ -4,6 +4,7 @@
   import { untrack } from "svelte";
   import type { SlideId } from "$lib/bindings/SlideId";
   import { exporting } from "$lib/exporting.svelte";
+  import { appear, rise } from "$lib/motion";
   import { open } from "$lib/show.svelte";
   import ExportDialog from "./ExportDialog.svelte";
   import LookPanel from "./LookPanel.svelte";
@@ -101,7 +102,7 @@
 {/snippet}
 
 {#if show}
-  <div class="editor">
+  <div class="editor" in:appear|global>
     <header>
       <button class="quiet" onclick={onhome} title="ホームに戻る">← ホーム</button>
       <input
@@ -138,7 +139,7 @@
     {/if}
 
     {#if open.error}
-      <p class="banner error">
+      <p class="banner error" transition:rise>
         {open.error}
         <button class="quiet" onclick={() => (open.error = null)}>閉じる</button>
       </p>
@@ -160,7 +161,7 @@
             {/if}
           </div>
           {#if !hintClosed && hint}
-            <p class="next">
+            <p class="next" transition:rise>
               {hint}
               <button class="quiet" onclick={closeHint} title="案内を閉じる">✕</button>
             </p>
@@ -175,13 +176,17 @@
           {/each}
         </nav>
         <div class="settings">
-          {#if tab === "slides"}
-            <SlidePanel {selected} />
-          {:else if tab === "look"}
-            <LookPanel />
-          {:else}
-            <MusicPanel />
-          {/if}
+          {#key tab}
+            <div in:appear>
+              {#if tab === "slides"}
+                <SlidePanel {selected} />
+              {:else if tab === "look"}
+                <LookPanel />
+              {:else}
+                <MusicPanel />
+              {/if}
+            </div>
+          {/key}
         </div>
       </aside>
     </div>

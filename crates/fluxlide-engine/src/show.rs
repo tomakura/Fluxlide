@@ -381,6 +381,9 @@ pub struct CaptionLook {
     pub design: CaptionDesign,
     /// Multiplies every text size; 1 is the standard size.
     pub text_scale: f32,
+    /// Width of the outline around the text, in pixels at a height of
+    /// 1080; 0 for none.
+    pub outline: f32,
 }
 
 impl Default for CaptionLook {
@@ -388,6 +391,7 @@ impl Default for CaptionLook {
         Self {
             design: CaptionDesign::Band,
             text_scale: 1.0,
+            outline: 0.0,
         }
     }
 }
