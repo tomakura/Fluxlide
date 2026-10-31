@@ -1,0 +1,5 @@
+[advisories]
+# The version is deliberately unchanged. check-glib-patch.mjs verifies the
+# source and Cargo override, and Linux CI tests VariantStrIter with optimization.
+# Remove this exception with vendor/glib once Tauri no longer requires 0.18.
+ignore = ["RUSTSEC-2024-0429"]

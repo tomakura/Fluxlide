@@ -1,9 +1,14 @@
 [workspace]
 resolver = "3"
 members = ["src-tauri", "crates/fluxlide-engine"]
+exclude = ["vendor/glib"]
+
+[patch.crates-io]
+# Tauri 2 uses GTK3/glib 0.18. Backport gtk-rs/gtk-rs-core#1343.
+glib = { path = "vendor/glib" }
 
 [workspace.package]
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/tomakura/Fluxlide"

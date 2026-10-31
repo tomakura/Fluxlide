@@ -1,13 +1,13 @@
 <script lang="ts">
   // The settings of one photo or video (ファイルごとの設定 screen). Settings
   // left empty follow the 見た目 tab of the editor.
-  import type { Fit } from "$lib/bindings/Fit";
-  import type { Motion } from "$lib/bindings/Motion";
-  import type { ShowDefinition } from "$lib/bindings/ShowDefinition";
-  import type { Slide } from "$lib/bindings/Slide";
-  import type { SlideId } from "$lib/bindings/SlideId";
-  import { FITS, ZOOMS, effective, ownLength, seconds, transitionName, zoomOf } from "$lib/format";
-  import { open } from "$lib/show.svelte";
+  import type { Fit } from "#lib/bindings/Fit";
+  import type { Motion } from "#lib/bindings/Motion";
+  import type { ShowDefinition } from "#lib/bindings/ShowDefinition";
+  import type { Slide } from "#lib/bindings/Slide";
+  import type { SlideId } from "#lib/bindings/SlideId";
+  import { FITS, ZOOMS, effective, ownLength, seconds, transitionName, zoomOf } from "#lib/format";
+  import { open } from "#lib/show.svelte";
   import TransitionSelect from "./TransitionSelect.svelte";
 
   let { selected }: { selected: SlideId | null } = $props();

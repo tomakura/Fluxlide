@@ -47,10 +47,10 @@ pub struct SettingsState {
 }
 
 impl SettingsState {
-    /// The settings, read from disk the first time. Unreadable settings
-    /// are replaced by the defaults.
-    pub fn get(&self, app: &AppHandle) -> Settings {
-        loaded(&mut self.settings.lock().unwrap(), app).clone()
+    /// Only a missing file means first use. An unreadable or damaged file
+    /// stays untouched until the user explicitly asks to reset it.
+    pub fn get(&self, app: &AppHandle) -> Result<Settings, String> {
+        Ok(loaded(&mut self.settings.lock().unwrap(), app)?.clone())
     }
 
     /// Changes the settings and writes them to disk. The lock is held
@@ -61,40 +61,80 @@ impl SettingsState {
         change: impl FnOnce(&mut Settings),
     ) -> Result<Settings, String> {
         let mut slot = self.settings.lock().unwrap();
-        let mut settings = loaded(&mut slot, app).clone();
+        let mut settings = loaded(&mut slot, app)?.clone();
         change(&mut settings);
-        let path = path(app).ok_or("設定の保存先が見つかりません。")?;
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|err| err.to_string())?;
-        }
-        let json = serde_json::to_string_pretty(&settings).map_err(|err| err.to_string())?;
-        // Written beside and renamed, so a crash cannot leave half a file.
-        let part = path.with_extension("json.part");
-        std::fs::write(&part, json)
-            .and_then(|()| std::fs::rename(&part, &path))
-            .map_err(|err| format!("設定を保存できません: {err}"))?;
+        write_file(&path(app)?, &settings)?;
+        *slot = Some(settings.clone());
+        Ok(settings)
+    }
+
+    fn reset(&self, app: &AppHandle) -> Result<Settings, String> {
+        let mut slot = self.settings.lock().unwrap();
+        let settings = reset_file(&path(app)?)?;
         *slot = Some(settings.clone());
         Ok(settings)
     }
 }
 
 /// The settings, read from disk the first time.
-fn loaded<'a>(slot: &'a mut Option<Settings>, app: &AppHandle) -> &'a Settings {
-    slot.get_or_insert_with(|| {
-        path(app)
-            .and_then(|path| std::fs::read_to_string(path).ok())
-            .and_then(|json| serde_json::from_str(&json).ok())
-            .unwrap_or_default()
-    })
+fn loaded<'a>(slot: &'a mut Option<Settings>, app: &AppHandle) -> Result<&'a Settings, String> {
+    if slot.is_none() {
+        *slot = Some(read_file(&path(app)?)?);
+    }
+    Ok(slot.as_ref().expect("loaded above"))
 }
 
-fn path(app: &AppHandle) -> Option<PathBuf> {
-    app.path().app_config_dir().ok().map(|dir| dir.join(FILE))
+fn read_file(path: &Path) -> Result<Settings, String> {
+    match std::fs::read_to_string(path) {
+        Ok(json) => serde_json::from_str(&json)
+            .map_err(|err| format!("設定ファイルが壊れています（{}）: {err}", path.display())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
+        Err(err) => Err(format!("設定を読めません（{}）: {err}", path.display())),
+    }
+}
+
+fn write_file(path: &Path, settings: &Settings) -> Result<(), String> {
+    use std::io::Write;
+    let parent = path.parent().ok_or("設定の保存先が見つかりません。")?;
+    std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    let json = serde_json::to_vec_pretty(settings).map_err(|err| err.to_string())?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|err| err.to_string())?;
+    temp.write_all(&json).map_err(|err| err.to_string())?;
+    temp.persist(path)
+        .map_err(|err| format!("設定を保存できません: {err}"))?;
+    Ok(())
+}
+
+fn reset_file(path: &Path) -> Result<Settings, String> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|err| err.to_string())?
+        .as_nanos();
+    match std::fs::copy(path, path.with_extension(format!("json.backup-{stamp}"))) {
+        Ok(_) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(format!("元の設定を退避できません: {err}")),
+    }
+    let settings = Settings::default();
+    write_file(path, &settings)?;
+    Ok(settings)
+}
+
+fn path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_config_dir()
+        .map(|dir| dir.join(FILE))
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
-pub fn get_settings(app: AppHandle, state: State<'_, SettingsState>) -> Settings {
+pub fn get_settings(app: AppHandle, state: State<'_, SettingsState>) -> Result<Settings, String> {
     state.get(&app)
+}
+
+#[tauri::command]
+pub fn reset_settings(app: AppHandle, state: State<'_, SettingsState>) -> Result<Settings, String> {
+    state.reset(&app)
 }
 
 #[tauri::command]
@@ -118,6 +158,28 @@ pub fn set_output_screen(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn damaged_settings_are_reported_and_reset_keeps_the_original() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE);
+        assert_eq!(read_file(&path).unwrap(), Settings::default());
+        std::fs::write(&path, b"broken settings").unwrap();
+        assert!(read_file(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"broken settings");
+        reset_file(&path).unwrap();
+        assert_eq!(read_file(&path).unwrap(), Settings::default());
+        let backup = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p != &path)
+            .unwrap();
+        assert_eq!(std::fs::read(backup).unwrap(), b"broken settings");
+        assert!(
+            read_file(dir.path()).is_err(),
+            "an unreadable file is not first use"
+        );
+    }
 
     #[test]
     fn a_reopened_project_moves_to_the_front_and_the_list_is_capped() {

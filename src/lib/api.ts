@@ -27,7 +27,11 @@ export const listProjects = () => invoke<ProjectSummary[]>("list_projects");
 export const createProject = (title: string) => invoke<ShowState>("create_project", { title });
 export const openProject = (dir: string) => invoke<ShowState>("open_project", { dir });
 export const deleteProject = (dir: string) => invoke<void>("delete_project", { dir });
-export const closeProject = () => invoke<void>("close_project");
+export const closeProject = (discard = false) => invoke<void>("close_project", { discard });
+export const saveProject = (session: number) => invoke<ShowState>("save_project", { session });
+export const exitApp = (discard = false) => invoke<void>("exit_app", { discard });
+export const onAppCloseRequested = (handler: () => void): Promise<UnlistenFn> =>
+  listen("app-close-requested", handler);
 export const showState = () => invoke<ShowState | null>("show_state");
 
 /// `show` is a change made to the state of `revision`. `group` names the
@@ -87,6 +91,7 @@ export const cancelExport = () => invoke<void>("cancel_export");
 export const licensesDir = () => invoke<string | null>("licenses_dir");
 
 export const getSettings = () => invoke<Settings>("get_settings");
+export const resetSettings = () => invoke<Settings>("reset_settings");
 export const setSyncOffset = (offsetMs: number) => invoke<Settings>("set_sync_offset", { offsetMs });
 export const setOutputScreen = (name: string | null) =>
   invoke<Settings>("set_output_screen", { name });

@@ -653,6 +653,38 @@ mod tests {
     }
 
     #[test]
+    fn hevc_heic_files_grids_and_orientation_are_imported() {
+        let ffmpeg = Ffmpeg::locate().expect("HEIC regression tests require FFmpeg");
+        if let Some(dir) = std::env::var_os("FLUXLIDE_FFMPEG_DIR") {
+            let dir = PathBuf::from(dir);
+            assert!(ffmpeg.ffmpeg_path().starts_with(&dir));
+            assert!(ffmpeg.ffprobe_path().starts_with(&dir));
+        }
+        let root = TempDir::new("import-real-heic");
+        let media = root.0.join("media");
+        std::fs::create_dir(&media).unwrap();
+        for (index, (name, size)) in [
+            ("basic-8bit-srgb.heic", [1600, 1200]),
+            ("grid-12mp-512px-tiles.heic", [4032, 3024]),
+            ("orientation-6.heic", [1200, 800]),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("test-data/heic")
+                .join(name);
+            let asset = new_asset(AssetId(index as u64 + 1), &source);
+            let facts = import(&source, &media, &asset).unwrap().unwrap();
+            assert_eq!(facts.size, size, "{name}");
+            assert_eq!(
+                &std::fs::read(media.join(&asset.file)).unwrap()[..2],
+                &[0xff, 0xd8]
+            );
+        }
+    }
+
+    #[test]
     fn a_heic_photo_is_kept_as_a_jpeg() {
         let root = TempDir::new("import-heic");
         let media = root.0.join("media");

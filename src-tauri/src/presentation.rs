@@ -568,7 +568,7 @@ pub async fn start_presentation(
     let content = Content::Show(Box::new(Playing {
         show,
         media_dir,
-        sync_offset_ms: settings.get(&app).sync_offset_ms,
+        sync_offset_ms: settings.get(&app)?.sync_offset_ms,
     }));
     open_window(app, &state, monitor_index, content).await
 }
@@ -584,7 +584,7 @@ pub async fn start_test_sound(
     monitor_index: usize,
 ) -> Result<PresentationStatus, String> {
     let content = Content::TestSound {
-        sync_offset_ms: settings.get(&app).sync_offset_ms,
+        sync_offset_ms: settings.get(&app)?.sync_offset_ms,
     };
     open_window(app, &state, monitor_index, content).await
 }

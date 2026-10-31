@@ -1,9 +1,9 @@
 <script lang="ts">
   // Chooses a transition. With `followLabel`, it can also be left to the
   // 見た目 tab (`null`).
-  import type { ShowDefinition } from "$lib/bindings/ShowDefinition";
-  import type { TransitionChoice } from "$lib/bindings/TransitionChoice";
-  import { DIRECTIONS } from "$lib/format";
+  import type { ShowDefinition } from "#lib/bindings/ShowDefinition";
+  import type { TransitionChoice } from "#lib/bindings/TransitionChoice";
+  import { DIRECTIONS } from "#lib/format";
 
   let {
     value,

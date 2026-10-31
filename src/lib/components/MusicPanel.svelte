@@ -3,11 +3,11 @@
   // output (docs/ui-draft.md, B). Music is not copied: a folder is read
   // again each time a presentation starts.
   import { open as pick } from "@tauri-apps/plugin-dialog";
-  import * as api from "$lib/api";
-  import type { MonitorInfo } from "$lib/bindings/MonitorInfo";
-  import type { Music } from "$lib/bindings/Music";
-  import { MUSIC_FILTER, screenName } from "$lib/format";
-  import { open } from "$lib/show.svelte";
+  import * as api from "#lib/api";
+  import type { MonitorInfo } from "#lib/bindings/MonitorInfo";
+  import type { Music } from "#lib/bindings/Music";
+  import { MUSIC_FILTER, screenName } from "#lib/format";
+  import { open } from "#lib/show.svelte";
 
   const music = $derived(open.show?.music);
 

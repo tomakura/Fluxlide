@@ -27,11 +27,12 @@ Fluxlide（フラックスライド）は、写真・動画・キャプション
 | macOS（Apple Silicon / Intel） | `aarch64` / `x64` の `.dmg` |
 | Linux（x64） | `.AppImage`、`.deb`、`.rpm` |
 
-署名していない版では、初めて開くときに OS の警告が出ます。Windows は「詳細情報」→「実行」、macOS は Finder で右クリック →「開く」で開けます。
+現在の配布物は未署名です。初めて開くときにWindowsのSmartScreenやmacOSのGatekeeperが警告を出す場合があります。macOSでの警告解除の操作と、署名・公証した版の動作は実機未確認です。
 
 ## できないこと（v1.0）
 
 - HDR の動画は色を変換しないので、薄く見えます
+- Linux同梱版の動画書き出しはMPEG-4 Part 2・AACのMP4です。Windows/macOS同梱版はH.264・AACです。Linuxで書き出した動画は再生先の対応を確認してください
 - 写真の色プロファイル（Display P3 など）は読まず、sRGB として表示します
 - 本物の HEIC のファイル、各 OS の実機、画面と音の出口の抜き差しは、まだ一部しか確かめていません（[手動の確認項目](docs/manual-checks.md)）
 
@@ -46,6 +47,7 @@ H.264、HEVC、AAC などの形式は、国によって特許の対象になり�
 - [完成までの手順](docs/roadmap.md)、[進捗の記録](docs/progress.md)
 - [品質（機器の抜き差し、長時間の再生、素材の対応範囲）](docs/quality.md)、[手動の確認項目](docs/manual-checks.md)
 - [リリースの手順](docs/release.md)
+- [v1.0.1の変更と検証範囲](docs/releases/1.0.1.md)
 - [技術選定・アーキテクチャ](docs/tech-stack.md)、[データ構造](docs/scene-model.md)、[保存と取り込み](docs/project-storage.md)、[管理画面とのやり取り](docs/ipc.md)
 - 技術検証: [上映ウィンドウ](docs/spike-presentation-window.md)、[写真と動画の連続再生](docs/spike-media-playback.md)、[動画の音声と映像の同期](docs/spike-audio-sync.md)、[FFmpegの同梱とライセンス](docs/spike-ffmpeg-bundling.md)、[キャプションとトランジション](docs/spike-captions-transitions.md)、[BGM](docs/spike-bgm.md)、[動画への書き出し](docs/spike-export.md)、[プレビュー](docs/spike-preview.md)、[Linuxでの確認](docs/check-linux.md)
 - [第三者のライセンス表記](THIRD_PARTY_LICENSES.md)
@@ -81,6 +83,8 @@ npm run ffmpeg:build # 同梱用のFFmpegをビルド（初回と、スクリプ
 npm run tauri:release # FFmpegを同梱したインストーラーの作成
 npm run tauri build  # FFmpegなしのインストーラーの作成
 ```
+
+Rustのメディア試験にはFFmpegとffprobeが必須です。CIは同梱用のLGPL版9.0.2を使用し、指定先の実行ファイルを使ったことも試験します。`FLUXLIDE_FFMPEG_DIR`には、`ffmpeg` / `ffprobe`（Windowsは`.exe`）の両方があるフォルダーを指定してください。
 
 アプリアイコンは `assets/brand/fluxlide-app-icon.svg` から生成しています。ロゴを変えたときは `npx tauri icon assets/brand/fluxlide-app-icon.svg` で作り直し、モバイル用の `src-tauri/icons/android` と `src-tauri/icons/ios` は削除します。
 

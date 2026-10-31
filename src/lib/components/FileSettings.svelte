@@ -1,12 +1,13 @@
 <script lang="ts">
   // ファイルごとの設定: the settings of one photo or video at a time. The
   // list only chooses; slides are added, moved and removed in the editor.
-  import type { SlideId } from "$lib/bindings/SlideId";
-  import { thumbnailUrl } from "$lib/format";
-  import { appear } from "$lib/motion";
-  import { open } from "$lib/show.svelte";
+  import type { SlideId } from "#lib/bindings/SlideId";
+  import { thumbnailUrl } from "#lib/format";
+  import { appear } from "#lib/motion";
+  import { open } from "#lib/show.svelte";
   import Preview from "./Preview.svelte";
   import SlidePanel from "./SlidePanel.svelte";
+  import SaveStatus from "./SaveStatus.svelte";
 
   let { selected = $bindable(), onback }: { selected: SlideId | null; onback: () => void } = $props();
 
@@ -30,6 +31,7 @@
     <header>
       <button class="quiet" onclick={onback} title="編集に戻る">← 編集に戻る</button>
       <h1>ファイルごとの設定</h1>
+      <SaveStatus />
     </header>
 
     <div class="columns">

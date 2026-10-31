@@ -23,10 +23,13 @@ jobs:
         include:
           - name: Windows x64
             platform: windows-latest
+            ffmpeg_target: x86_64-pc-windows-msvc
           - name: Linux x64
             platform: ubuntu-22.04
+            ffmpeg_target: x86_64-unknown-linux-gnu
           - name: macOS
             platform: macos-latest
+            ffmpeg_target: aarch64-apple-darwin
 
     steps:
       - name: Checkout
@@ -57,11 +60,41 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Build the bundled FFmpeg for media tests
+        uses: ./.github/actions/build-ffmpeg
+        with:
+          target: ${{ matrix.ffmpeg_target }}
+
+      - name: Require the bundled media tools
+        shell: bash
+        env:
+          FFMPEG_TARGET: ${{ matrix.ffmpeg_target }}
+        run: |
+          tool_dir="$RUNNER_TEMP/fluxlide-test-tools"
+          mkdir -p "$tool_dir"
+          suffix=""
+          if [ "$RUNNER_OS" = Windows ]; then
+            suffix=.exe
+            tool_dir="$(cygpath -m "$tool_dir")"
+          fi
+          cp "src-tauri/binaries/fluxlide-ffmpeg-$FFMPEG_TARGET$suffix" "$tool_dir/ffmpeg$suffix"
+          cp "src-tauri/binaries/fluxlide-ffprobe-$FFMPEG_TARGET$suffix" "$tool_dir/ffprobe$suffix"
+          "$tool_dir/ffmpeg$suffix" -version
+          "$tool_dir/ffprobe$suffix" -version
+          echo "FLUXLIDE_FFMPEG_DIR=$tool_dir" >> "$GITHUB_ENV"
+
       - name: Check frontend
         run: npm run check
 
       - name: Test frontend
         run: npm test
+
+      - name: Check release version consistency
+        run: node scripts/check-release.mjs
+
+      - name: Audit frontend dependencies
+        if: runner.os == 'Linux'
+        run: npm audit --audit-level=moderate
 
       # tauri::generate_context! requires the built frontend to exist.
       - name: Build frontend
@@ -69,14 +102,25 @@ jobs:
 
       - name: Check formatting
         if: matrix.platform == 'ubuntu-22.04'
-        run: cargo fmt --all --check
+        run: cargo fmt -p fluxlide -p fluxlide-engine -- --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       # The GPU test skips itself on runners without a usable adapter.
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
+
+      - name: Test the GLib safety backport with optimization
+        if: runner.os == 'Linux'
+        run: cargo test -p fluxlide --test glib_variant --release --locked
+
+      - name: Audit Rust dependencies
+        if: runner.os == 'Linux'
+        run: |
+          cargo install cargo-audit --locked
+          node scripts/check-glib-patch.mjs
+          cargo audit --deny unsound
 
       # The tests also write the TypeScript types (docs/ipc.md); they must
       # match the ones committed.

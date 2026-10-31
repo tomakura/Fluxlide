@@ -125,7 +125,7 @@ pub async fn list_projects(
     settings: State<'_, SettingsState>,
 ) -> Result<Vec<ProjectSummary>, String> {
     let root = projects_dir(&app)?;
-    let elsewhere = settings.get(&app).recent_dirs;
+    let elsewhere = settings.get(&app)?.recent_dirs;
     let scope_root = root.clone();
     let summaries = tauri::async_runtime::spawn_blocking(move || {
         let mut found = project::list(&root);
@@ -167,7 +167,7 @@ pub async fn create_project(
     };
     let session = state.session();
     tauri::async_runtime::spawn_blocking(move || {
-        close(&session);
+        close(&session, false)?;
         let project = Project::create(&root, &show).map_err(|err| err.to_string())?;
         Ok(replace(&app, &session, Session::new(project, show)))
     })
@@ -192,7 +192,7 @@ pub async fn open_project(
         tauri::async_runtime::spawn_blocking(move || {
             // Imports of the session being closed stop before the media folder
             // is cleaned, even when it is the same project opened again.
-            close(&session);
+            close(&session, false)?;
             let (project, show) = Project::open(&dir).map_err(|err| err.to_string())?;
             Ok(replace(&app, &session, Session::new(project, show)))
         })
@@ -225,9 +225,11 @@ pub async fn delete_project(
             .map(|_| ());
     }
     tauri::async_runtime::spawn_blocking(move || {
+        let export = app.state::<crate::export::ExportState>();
+        let _source = export.deletion_guard(&dir)?;
         // Stops the imports of the open project, which may be this one, and
         // waits for the one being copied to give up.
-        close(&session);
+        close(&session, false)?;
         let importer = app.state::<import::Importer>();
         let _idle = importer.pause();
         if !dir.join(project::DATABASE_FILE).is_file() {
@@ -259,8 +261,13 @@ fn remove_folder(dir: &std::path::Path) -> std::io::Result<()> {
     last.and_then(|()| Err(std::io::Error::other("フォルダーが残っています")))
 }
 
-fn close(slot: &Mutex<Option<Session>>) {
-    slot.lock().unwrap().take();
+fn close(slot: &Mutex<Option<Session>>, discard: bool) -> Result<(), String> {
+    let mut guard = slot.lock().unwrap();
+    if !discard && let Some(reason) = guard.as_ref().and_then(Session::save_error) {
+        return Err(format!("変更が保存されていません: {reason}"));
+    }
+    guard.take();
+    Ok(())
 }
 
 /// Makes `session` the open one. The window may then show its media files.
@@ -274,8 +281,32 @@ fn replace(app: &AppHandle, slot: &Mutex<Option<Session>>, session: Session) -> 
 }
 
 #[tauri::command]
-pub fn close_project(state: State<'_, EditorState>) {
-    close(&state.session);
+pub fn close_project(state: State<'_, EditorState>, discard: bool) -> Result<(), String> {
+    close(&state.session, discard)
+}
+
+#[tauri::command]
+pub fn save_project(state: State<'_, EditorState>, session: u64) -> Result<ShowState, String> {
+    let mut guard = state.session.lock().unwrap();
+    let open = guard.as_mut().ok_or("スライドショーが開かれていません。")?;
+    if open.epoch() != session {
+        return Err("開いているスライドショーが変わりました。".into());
+    }
+    open.save();
+    Ok(ShowState::of(open))
+}
+
+#[tauri::command]
+pub fn exit_app(
+    app: AppHandle,
+    state: State<'_, EditorState>,
+    discard: bool,
+) -> Result<(), String> {
+    close(&state.session, discard)?;
+    crate::presentation::stop_blocking(&app.state::<crate::presentation::PresentationState>());
+    app.state::<crate::export::ExportState>().cancel_blocking();
+    app.exit(0);
+    Ok(())
 }
 
 #[tauri::command]
@@ -342,6 +373,29 @@ fn with_session(
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn an_unsaved_project_is_kept_until_discard_is_explicit() {
+        let dir = crate::project::tests::TempDir::new("close-unsaved");
+        let show = crate::project::tests::photo_show(1);
+        let project = Project::create(&dir.0, &show).unwrap();
+        let mut session = Session::new(project, show);
+        let lock = rusqlite::Connection::open(session.dir().join(project::DATABASE_FILE)).unwrap();
+        lock.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        let mut next = session.show().clone();
+        next.title = "unsaved".into();
+        session.edit(next, None);
+        let slot = Mutex::new(Some(session));
+        assert!(close(&slot, false).is_err());
+        assert_eq!(
+            slot.lock().unwrap().as_ref().unwrap().show().title,
+            "unsaved"
+        );
+        lock.execute_batch("ROLLBACK").unwrap();
+        slot.lock().unwrap().as_mut().unwrap().save();
+        close(&slot, false).unwrap();
+        assert!(slot.lock().unwrap().is_none());
+    }
 
     #[test]
     fn only_a_folder_made_directly_in_the_app_folder_is_removed() {

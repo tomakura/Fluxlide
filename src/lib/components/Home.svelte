@@ -1,10 +1,11 @@
 <script lang="ts">
   // A. ホーム: start a new slideshow or open a recent one (docs/ui-draft.md).
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
-  import * as api from "$lib/api";
-  import type { ProjectSummary } from "$lib/bindings/ProjectSummary";
-  import { appear } from "$lib/motion";
-  import { open } from "$lib/show.svelte";
+  import * as api from "#lib/api";
+  import type { ProjectSummary } from "#lib/bindings/ProjectSummary";
+  import { appear } from "#lib/motion";
+  import { open } from "#lib/show.svelte";
+  import { exporting } from "#lib/exporting.svelte";
   import AboutDialog from "./AboutDialog.svelte";
   import Confirm from "./Confirm.svelte";
   import DropZone from "./DropZone.svelte";
@@ -65,7 +66,7 @@
   async function remove() {
     const project = doomed;
     doomed = null;
-    if (!project || busy) return;
+    if (!project || busy || exporting.running) return;
     // Opening it while it is deleted would open a folder that is going.
     busy = true;
     error = null;
@@ -119,7 +120,7 @@
               class="delete quiet"
               title={project.inApp ? "このスライドショーを削除" : "一覧から外す"}
               aria-label={project.inApp ? "このスライドショーを削除" : "一覧から外す"}
-              disabled={busy}
+              disabled={busy || exporting.running}
               onclick={() => (doomed = project)}>✕</button
             >
             <button class="project" disabled={busy} onclick={() => openDir(project.dir)}>

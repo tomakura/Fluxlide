@@ -108,7 +108,8 @@ writeFileSync(
   join(out, "THIRD_PARTY_NOTICES.txt"),
   "Fluxlide includes the following third-party software. FFmpeg and the\n" +
     "IBM Plex Sans JP font are described in THIRD_PARTY_LICENSES.md.\n\n" +
-    "Every package is unmodified; its source code is at the address after its\n" +
+    "Packages are unmodified except for the GLib backport documented in\n" +
+    "THIRD_PARTY_LICENSES.md. Source code is at the address after each\n" +
     "name. The standard texts of the licenses named for packages that ship no\n" +
     "license file are at https://spdx.org/licenses/.\n\n" +
     render("Rust crates", rust) +

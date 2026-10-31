@@ -913,6 +913,13 @@ struct Handed {
     now_playing: NowPlaying,
     state: Arc<DecodeState>,
     failure_reported: bool,
+    track: MusicTrack,
+}
+
+impl Drop for Handed {
+    fn drop(&mut self) {
+        self.track.stop();
+    }
 }
 
 struct Controller {
@@ -982,12 +989,12 @@ impl Controller {
             let pending = self.pending.take().expect("checked above");
             self.track_failed(&pending.path, "decoding did not start in time".into());
         } else if finished || frames >= ready_frames {
-            let mut pending = self.pending.take().expect("checked above");
-            self.hand_over(&mut pending);
+            let pending = self.pending.take().expect("checked above");
+            self.hand_over(pending);
         }
     }
 
-    fn hand_over(&mut self, pending: &mut Pending) {
+    fn hand_over(&mut self, mut pending: Pending) {
         let Some((samples, finished)) = pending.track.take_samples() else {
             return;
         };
@@ -1009,6 +1016,7 @@ impl Controller {
             },
             state: pending.track.state(),
             failure_reported: false,
+            track: pending.track,
         });
         self.failures_in_row = 0;
         let _ = self.feeds.send(TrackFeed {

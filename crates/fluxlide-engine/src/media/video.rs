@@ -47,6 +47,10 @@ impl Ffmpeg {
         &self.ffmpeg
     }
 
+    pub fn ffprobe_path(&self) -> &Path {
+        &self.ffprobe
+    }
+
     /// First line of `ffmpeg -version`, e.g. "ffmpeg version 7.1 ...".
     pub fn version(&self) -> Result<String, EngineError> {
         let output = command(&self.ffmpeg)
@@ -91,9 +95,36 @@ impl Ffmpeg {
     /// Writes the picture in `path` (a HEIC photo, say, which the image
     /// decoder cannot read) to `out` as a JPEG, turned the way it is shown.
     pub fn picture_to_jpeg(&self, path: &Path, out: &Path) -> Result<(), EngineError> {
-        let output = command(&self.ffmpeg)
-            .args(["-v", "error", "-y", "-i"])
+        let probe = command(&self.ffprobe)
+            .args([
+                "-v",
+                "error",
+                "-show_stream_groups",
+                "-show_streams",
+                "-of",
+                "json",
+            ])
             .arg(path)
+            .output()
+            .map_err(|err| EngineError::Media(err.to_string()))?;
+        if !probe.status.success() {
+            return Err(EngineError::Media(
+                String::from_utf8_lossy(&probe.stderr).into_owned(),
+            ));
+        }
+        let metadata = serde_json::from_slice(&probe.stdout)
+            .map_err(|err| EngineError::Media(err.to_string()))?;
+        let grid = picture_grid_filter(&metadata)?;
+        let mut convert = command(&self.ffmpeg);
+        convert.args(["-v", "error", "-y", "-threads", "1"]);
+        if grid.is_some() {
+            convert.arg("-noautorotate");
+        }
+        convert.arg("-i").arg(path);
+        if let Some(filter) = grid {
+            convert.args(["-filter_complex", &filter, "-map", "[picture]"]);
+        }
+        let output = convert
             .args([
                 "-frames:v",
                 "1",
@@ -136,6 +167,82 @@ impl Ffmpeg {
         }
         Ok(())
     }
+}
+
+/// HEIF grids are exposed as separate video streams. Selecting the default
+/// stream decodes only one tile, so compose the primary grid before cropping.
+fn picture_grid_filter(metadata: &serde_json::Value) -> Result<Option<String>, EngineError> {
+    let Some(group) = metadata["stream_groups"].as_array().and_then(|groups| {
+        groups.iter().find(|group| {
+            group["type"].as_str() == Some("Tile Grid")
+                && group["disposition"]["default"].as_u64() == Some(1)
+        })
+    }) else {
+        return Ok(None);
+    };
+    let error = || EngineError::Media("the HEIF tile grid is incomplete".into());
+    let grid = group["components"]
+        .as_array()
+        .and_then(|parts| parts.first())
+        .ok_or_else(error)?;
+    let number = |value: &serde_json::Value| {
+        value
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or_else(error)
+    };
+    let tiles = grid["subcomponents"]
+        .as_array()
+        .filter(|tiles| !tiles.is_empty())
+        .ok_or_else(error)?;
+    let width = number(&grid["width"])?;
+    let height = number(&grid["height"])?;
+    let x = number(&grid["horizontal_offset"])?;
+    let y = number(&grid["vertical_offset"])?;
+    let mut inputs = String::new();
+    let mut positions = Vec::new();
+    for tile in tiles {
+        inputs.push_str(&format!("[0:{}]", number(&tile["stream_index"])?));
+        positions.push(format!(
+            "{}_{}",
+            number(&tile["tile_horizontal_offset"])?,
+            number(&tile["tile_vertical_offset"])?
+        ));
+    }
+    let mut filter = if tiles.len() == 1 {
+        format!("{inputs}crop={width}:{height}:{x}:{y}")
+    } else {
+        format!(
+            "{inputs}xstack=inputs={}:layout={},crop={width}:{height}:{x}:{y}",
+            tiles.len(),
+            positions.join("|")
+        )
+    };
+    let first = number(&tiles[0]["stream_index"])?;
+    if let Some(rotation) = metadata["streams"]
+        .as_array()
+        .and_then(|streams| {
+            streams
+                .iter()
+                .find(|stream| stream["index"].as_u64() == Some(u64::from(first)))
+        })
+        .and_then(|stream| stream["side_data_list"].as_array())
+        .and_then(|data| data.iter().find_map(|item| item["rotation"].as_i64()))
+    {
+        match rotation.rem_euclid(360) {
+            0 => {}
+            90 => filter.push_str(",transpose=cclock"),
+            180 => filter.push_str(",hflip,vflip"),
+            270 => filter.push_str(",transpose=clock"),
+            _ => {
+                return Err(EngineError::Media(
+                    "the HEIF grid has an unsupported rotation".into(),
+                ));
+            }
+        }
+    }
+    filter.push_str("[picture]");
+    Ok(Some(filter))
 }
 
 /// Where `ffmpeg` and `ffprobe` may be.

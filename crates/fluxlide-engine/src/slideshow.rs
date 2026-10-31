@@ -239,6 +239,7 @@ enum PassEnd {
 }
 
 pub struct Slideshow {
+    workers: Vec<std::thread::JoinHandle<()>>,
     renderer: Arc<Renderer>,
     ffmpeg: Result<Ffmpeg, String>,
     show: ShowDefinition,
@@ -318,6 +319,17 @@ pub struct Position {
     pub blackout: bool,
 }
 
+impl Drop for Slideshow {
+    fn drop(&mut self) {
+        // Closing the receiver makes a cancelled preload release its media on
+        // the worker. Wait for that release before a project can be deleted.
+        self.loading = None;
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
+        }
+    }
+}
+
 impl Slideshow {
     /// Plays `show`, whose assets' files are in `media_dir`. `output_size` is
     /// the size of the output in pixels; larger photos and videos are shrunk
@@ -350,6 +362,7 @@ impl Slideshow {
             AtEnd::Stop => PassEnd::Hold,
         };
         let mut slideshow = Self {
+            workers: Vec::new(),
             blackout_overlay: Overlay::black(&renderer, output_size),
             renderer,
             ffmpeg: Ffmpeg::locate().map_err(|err| err.to_string()),
@@ -503,6 +516,7 @@ impl Slideshow {
     /// turns true. Call before the first update.
     pub fn play_once(&mut self) {
         self.pass_end = PassEnd::FadeOut;
+        self.advance_mode = Advance::Auto;
     }
 
     /// True once a single pass ([`Slideshow::play_once`]) has faded to black,
@@ -1286,7 +1300,9 @@ impl Slideshow {
                 let _ = tx.send(loaded);
             });
         match spawned {
-            Ok(_) => {
+            Ok(worker) => {
+                self.workers.retain(|worker| !worker.is_finished());
+                self.workers.push(worker);
                 self.loading = Some(Loading {
                     pass: self.pass_number,
                     index,

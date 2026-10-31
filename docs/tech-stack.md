@@ -63,11 +63,11 @@ Windows / Linux / macOSを初期の対象にしつつ、メモリ・配布容量
 | Linux runner | x86_64 Linux（Ubuntu 22.04ベース） |
 | macOS runner | Apple Silicon（aarch64）とIntel（x86_64） |
 
-- **開発用ビルド:** アプリの雛形が入った後に、`main`へのpushとPull Requestで3OSビルドを検証するワークフローを追加する。
+- **開発用ビルド:** `main`へのpushとPull Requestで3OSの型検査・テスト・ビルドを行う。同梱FFmpegを必須にしてメディア試験も実行する。
 - **リリース用ビルド:** `v0.1.0`のようなバージョンタグのpush時に3OSをビルドし、GitHub Releasesに成果物をアップロードする。`.github/workflows/release.yml` に設定する。
 - **対象配布形式:** Windowsのインストーラー、macOSのDMG等、LinuxのAppImage／deb等（実際に生成できる形式はTauri設定で確定）。
 - **署名・公証:** Windowsコード署名、macOS署名・notarizationは別途設定が必要。未署名の初期配布ではOSの警告が出る場合がある。
-- **現状:** アプリのソース、パッケージ設定、依存関係がまだないため**ビルド／リリースは未実行・未検証**。リリースタグを付けるのは初期アプリが構築されてから。
+- **現状:** v1.0.0を2026-10-28（日本時間）に公開済み。4ターゲットの配布物を作成した。各OS・機器での確認状況は[手動確認](manual-checks.md)に分けて記録する。
 
 ## 6. 技術検証の結果と確定した方式
 

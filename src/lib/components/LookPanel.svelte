@@ -1,16 +1,16 @@
 <script lang="ts">
   // 見た目 tab: settings shared by every slide (docs/ui-draft.md, B).
   import { open as pickFile } from "@tauri-apps/plugin-dialog";
-  import * as api from "$lib/api";
-  import type { CaptionDesign } from "$lib/bindings/CaptionDesign";
-  import type { Corner } from "$lib/bindings/Corner";
-  import type { Fit } from "$lib/bindings/Fit";
-  import type { Look } from "$lib/bindings/Look";
-  import type { WatermarkSpec } from "$lib/bindings/WatermarkSpec";
-  import { CORNERS, FITS, PHOTO_EXTENSIONS, ZOOMS, ownLength, zoomOf } from "$lib/format";
-  import { dropUnusedAsset, removeCustomTransition } from "$lib/edits";
-  import { rise } from "$lib/motion";
-  import { open } from "$lib/show.svelte";
+  import * as api from "#lib/api";
+  import type { CaptionDesign } from "#lib/bindings/CaptionDesign";
+  import type { Corner } from "#lib/bindings/Corner";
+  import type { Fit } from "#lib/bindings/Fit";
+  import type { Look } from "#lib/bindings/Look";
+  import type { WatermarkSpec } from "#lib/bindings/WatermarkSpec";
+  import { CORNERS, FITS, PHOTO_EXTENSIONS, ZOOMS, ownLength, zoomOf } from "#lib/format";
+  import { dropUnusedAsset, removeCustomTransition } from "#lib/edits";
+  import { rise } from "#lib/motion";
+  import { open } from "#lib/show.svelte";
   import TransitionSelect from "./TransitionSelect.svelte";
 
   const show = $derived(open.show);

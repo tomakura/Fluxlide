@@ -3,9 +3,9 @@
   // the license texts (THIRD_PARTY_LICENSES.md lists the same).
   import { getVersion } from "@tauri-apps/api/app";
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
-  import * as api from "$lib/api";
-  import { modal } from "$lib/modal";
-  import { appear, pop } from "$lib/motion";
+  import * as api from "#lib/api";
+  import { modal } from "#lib/modal";
+  import { appear, pop } from "#lib/motion";
   import Mark from "./Mark.svelte";
 
   let { onclose }: { onclose: () => void } = $props();

@@ -2,7 +2,7 @@
   // What the presentation window shows right now, for the operator's
   // screen: small copies taken by the engine frame after frame, fetched
   // once per refresh of this screen.
-  import * as api from "$lib/api";
+  import * as api from "#lib/api";
 
   let canvas = $state<HTMLCanvasElement | null>(null);
   let ready = $state(false);

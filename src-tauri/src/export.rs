@@ -5,12 +5,12 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use fluxlide_engine::Slideshow;
-use fluxlide_engine::export::{ExportMusic, ExportSettings, export_slideshow};
+use fluxlide_engine::export::{ExportMusic, ExportSettings, export_slideshow, pick_video_encoder};
 use fluxlide_engine::media::video::Ffmpeg;
 use fluxlide_engine::show::{ShowDefinition, Timeline};
 use serde::{Deserialize, Serialize};
@@ -101,39 +101,58 @@ pub struct ExportEstimate {
     video_kbps: u32,
     /// Length of the video.
     duration_secs: f64,
-    /// About how large the file will be. The encoders aim at the bit rate,
-    /// and photos that stay still need less, so it is an upper guess.
+    /// About how large the file will be at the target bitrate, not a limit.
     bytes: u64,
     /// About how long writing it takes. It depends on the GPU and the
     /// encoder, so the window says it is a rough figure.
     work_secs: f64,
     /// Slides that will be left out (their files are not ready).
     skipped_slides: usize,
+    video_codec: String,
 }
 
 #[tauri::command]
-pub fn export_estimate(
+pub async fn export_estimate(
     editor: State<'_, EditorState>,
     choice: ExportChoice,
 ) -> Result<ExportEstimate, String> {
     let show = open_show(&editor)?.0;
+    let encoder = tauri::async_runtime::spawn_blocking(|| {
+        let ffmpeg = Ffmpeg::locate()?;
+        pick_video_encoder(&ffmpeg)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(|err| err.to_string())?;
     let settings = choice.settings(&show);
     let timeline = Timeline::build(&show, &(0..show.slides.len()).collect::<Vec<_>>());
     let duration_secs = timeline.end_ms as f64 / 1000.0;
     let kbps = u64::from(settings.video_kbps + settings.audio_kbps);
     let (width, height) = settings.size;
-    // A guess of about the length of the video for 1080p at 30 fps: not yet
-    // measured with a GPU (without one it took 2.6 times as long,
-    // docs/spike-export.md). More pixels and frames take longer.
+    // Reference: RTX 4070 Ti/Vulkan and bundled FFmpeg 9.0.2/h264_mf
+    // exported 27s of 1080p30 in 6.08s. Allow startup overhead and round
+    // the measured ratio up; other encoders keep the uncalibrated hint.
+    // This is not a benchmark of the user's machine.
     let load = f64::from(width * height) / (1920.0 * 1080.0) * f64::from(settings.fps) / 30.0;
+    let work_secs = if encoder == "h264_mf" {
+        1.0 + duration_secs * load.max(0.5) * 0.25
+    } else {
+        duration_secs * load.max(0.5)
+    };
     Ok(ExportEstimate {
         width,
         height,
         fps: settings.fps,
         video_kbps: settings.video_kbps,
+        video_codec: if encoder == "mpeg4" {
+            "MPEG-4 Part 2（再生先の対応を確認）"
+        } else {
+            "H.264"
+        }
+        .into(),
         duration_secs,
         bytes: (duration_secs * kbps as f64 * 1000.0 / 8.0) as u64,
-        work_secs: duration_secs * load.max(0.5),
+        work_secs,
         skipped_slides: timeline.skipped.len(),
     })
 }
@@ -158,24 +177,65 @@ pub struct ExportFinishedEvent {
 }
 
 struct Running {
-    cancel: Arc<AtomicBool>,
     thread: JoinHandle<()>,
 }
 
 #[derive(Default)]
 pub struct ExportState {
     running: Mutex<Option<Running>>,
+    source: Arc<Mutex<Option<PathBuf>>>,
+    cancelled: Arc<AtomicBool>,
+}
+
+struct ExportLease(Arc<Mutex<Option<PathBuf>>>);
+
+impl Drop for ExportLease {
+    fn drop(&mut self) {
+        *self.0.lock().unwrap() = None;
+    }
 }
 
 impl ExportState {
+    pub fn deletion_guard(
+        &self,
+        dir: &std::path::Path,
+    ) -> Result<MutexGuard<'_, Option<PathBuf>>, String> {
+        let source = self.source.lock().unwrap();
+        if source.as_ref().is_some_and(|media| media.starts_with(dir)) {
+            return Err("このスライドショーを書き出している間は削除できません。".into());
+        }
+        Ok(source)
+    }
+
+    fn reserve(
+        &self,
+        editor: &EditorState,
+    ) -> Result<(ShowDefinition, PathBuf, ExportLease), String> {
+        let mut source = self.source.lock().unwrap();
+        if source.is_some() {
+            return Err("書き出しの途中です。".into());
+        }
+        let (show, media) = open_show(editor)?;
+        self.cancelled.store(false, Ordering::Relaxed);
+        *source = Some(media.clone());
+        Ok((show, media, ExportLease(self.source.clone())))
+    }
+
     /// Cancels an export and waits for it to remove its files. Used when the
     /// app exits.
     pub fn cancel_blocking(&self) {
+        self.cancel();
         let running = self.running.lock().unwrap().take();
         if let Some(running) = running {
-            running.cancel.store(true, Ordering::Relaxed);
             let _ = running.thread.join();
         }
+    }
+
+    fn cancel(&self) {
+        // A cancel arriving while the snapshot is copied must follow the
+        // reservation's reset, so it cannot be overwritten by preparation.
+        let _source = self.source.lock().unwrap();
+        self.cancelled.store(true, Ordering::Relaxed);
     }
 }
 
@@ -197,7 +257,7 @@ pub async fn start_export(
     choice: ExportChoice,
     path: PathBuf,
 ) -> Result<(), String> {
-    let (show, media_dir) = open_show(&editor)?;
+    let (show, media_dir, lease) = state.reserve(&editor)?;
     let settings = choice.settings(&show);
     let renderer = presentation.renderer().await?;
     let ffmpeg = Ffmpeg::locate().map_err(|err| err.to_string())?;
@@ -212,12 +272,13 @@ pub async fn start_export(
     {
         return Err("書き出しの途中です。".into());
     }
-    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel = state.cancelled.clone();
     let thread = {
         let cancel = cancel.clone();
         std::thread::Builder::new()
             .name("fluxlide-export".into())
             .spawn(move || {
+                let _lease = lease;
                 let started = Instant::now();
                 let mut last_report = started;
                 let mut slideshow =
@@ -264,14 +325,53 @@ pub async fn start_export(
             })
             .map_err(|err| err.to_string())?
     };
-    *running = Some(Running { cancel, thread });
+    *running = Some(Running { thread });
     Ok(())
 }
 
 /// Stops the export; it removes its partial files and sends [`FINISHED`].
 #[tauri::command]
 pub fn cancel_export(state: State<'_, ExportState>) {
-    if let Some(running) = state.running.lock().unwrap().as_ref() {
-        running.cancel.store(true, Ordering::Relaxed);
+    state.cancel();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancelling_preparation_is_kept_for_the_worker_but_not_the_next_export() {
+        let root = crate::project::tests::TempDir::new("export-preparing");
+        let show = ShowDefinition::default();
+        let project = crate::project::Project::create(&root.0, &show).unwrap();
+        let editor = EditorState::default();
+        *editor.session().lock().unwrap() = Some(crate::session::Session::new(project, show));
+        let state = ExportState::default();
+        let (_, _, lease) = state.reserve(&editor).unwrap();
+        assert!(state.running.lock().unwrap().is_none());
+        state.cancel();
+        assert!(state.reserve(&editor).is_err());
+        assert!(state.cancelled.load(Ordering::Relaxed));
+        let worker_flag = state.cancelled.clone();
+        assert!(worker_flag.load(Ordering::Relaxed));
+        drop(lease);
+        let (_, _, _next) = state.reserve(&editor).unwrap();
+        assert!(!state.cancelled.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn export_sources_stay_protected_until_the_worker_releases_them() {
+        let state = ExportState::default();
+        let dir = PathBuf::from("projects/one");
+        *state.source.lock().unwrap() = Some(dir.join("media"));
+        let lease = ExportLease(state.source.clone());
+        assert!(state.deletion_guard(&dir).is_err());
+        assert!(
+            state
+                .deletion_guard(std::path::Path::new("projects/two"))
+                .is_ok()
+        );
+        drop(lease);
+        assert!(state.deletion_guard(&dir).is_ok());
     }
 }

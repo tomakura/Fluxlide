@@ -3,7 +3,7 @@
   // window, so a drop counts here only while this zone is under the pointer.
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import type { Snippet } from "svelte";
-  import { dropPoint, isWindows } from "$lib/drop";
+  import { dropPoint, isWindows } from "#lib/drop";
 
   let { ondrop, children }: { ondrop: (files: string[]) => void; children: Snippet } = $props();
 
