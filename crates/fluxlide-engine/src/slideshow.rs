@@ -503,6 +503,7 @@ impl Slideshow {
     /// turns true. Call before the first update.
     pub fn play_once(&mut self) {
         self.pass_end = PassEnd::FadeOut;
+        self.advance_mode = Advance::Auto;
     }
 
     /// True once a single pass ([`Slideshow::play_once`]) has faded to black,

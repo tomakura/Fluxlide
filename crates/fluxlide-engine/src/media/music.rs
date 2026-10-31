@@ -54,6 +54,8 @@ pub struct MusicTrack {
     samples: Option<rtrb::Consumer<f32>>,
     finished: Arc<AtomicBool>,
     state: Arc<DecodeState>,
+    stop: Arc<AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
 }
 
 impl MusicTrack {
@@ -80,8 +82,10 @@ impl MusicTrack {
         let (producer, samples) = rtrb::RingBuffer::new(capacity);
         let finished = Arc::new(AtomicBool::new(false));
         let state = Arc::new(DecodeState::default());
-        {
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker = {
             let (child, finished, state) = (child.clone(), finished.clone(), state.clone());
+            let stop = stop.clone();
             let spawned = std::thread::Builder::new()
                 .name("fluxlide-ffmpeg-music".into())
                 .spawn(move || {
@@ -90,15 +94,19 @@ impl MusicTrack {
                         let log = log.clone();
                         std::thread::spawn(move || collect_log(stderr, &log))
                     };
-                    read_track(child, pipe, producer, &finished, &state, &log, log_reader);
+                    read_track(
+                        child, pipe, producer, &finished, &state, &log, log_reader, &stop,
+                    );
                 });
-            spawned.map_err(|err| EngineError::Media(err.to_string()))?;
-        }
+            spawned.map_err(|err| EngineError::Media(err.to_string()))?
+        };
         Ok(Self {
             child,
             samples: Some(samples),
             finished,
             state,
+            stop,
+            worker: Some(worker),
         })
     }
 
@@ -116,6 +124,18 @@ impl MusicTrack {
     pub fn is_finished(&self) -> bool {
         self.finished.load(Ordering::Acquire)
     }
+
+    /// Stops decoding and releases the source file before returning, including
+    /// when the samples are still owned by an idle mixer.
+    pub fn stop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(child) = self.child.lock().unwrap().as_mut() {
+            let _ = child.kill();
+        }
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
 }
 
 impl Drop for MusicTrack {
@@ -123,14 +143,13 @@ impl Drop for MusicTrack {
         // A track that was never handed over is not going to be played: stop
         // its process even if it is stuck. Once the samples have been handed
         // over, the decoder stops when they are dropped.
-        if self.samples.is_some()
-            && let Some(child) = self.child.lock().unwrap().as_mut()
-        {
-            let _ = child.kill();
+        if self.samples.is_some() {
+            self.stop();
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn read_track(
     child: Arc<Mutex<Option<Child>>>,
     mut pipe: ChildStdout,
@@ -139,6 +158,7 @@ fn read_track(
     state: &DecodeState,
     log: &Mutex<VecDeque<String>>,
     log_reader: std::thread::JoinHandle<()>,
+    stop: &AtomicBool,
 ) {
     let mut bytes = vec![0u8; 16 * 1024];
     // Bytes of a sample split across two reads.
@@ -153,12 +173,13 @@ fn read_track(
             let mut sample = f32::from_le_bytes(*chunk);
             // Waits while the buffer is full, i.e. while playback has not caught up.
             while let Err(rtrb::PushError::Full(rejected)) = producer.push(sample) {
-                if producer.is_abandoned() {
+                if producer.is_abandoned() || stop.load(Ordering::Relaxed) {
                     // Nobody plays this track any more.
                     if let Some(mut child) = child.lock().unwrap().take() {
                         let _ = child.kill();
                         let _ = child.wait();
                     }
+                    let _ = log_reader.join();
                     return;
                 }
                 sample = rejected;

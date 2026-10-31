@@ -140,12 +140,10 @@ fn encoder_args(encoder: &str, settings: &ExportSettings) -> Vec<String> {
     let rate = format!("{}k", settings.video_kbps);
     let mut args = vec!["-c:v".to_string(), encoder.to_string()];
     match encoder {
-        // A constant quality gives photos the bits they need and still ones
-        // (most of a slideshow) almost none.
-        "libx264" => args.extend(["-preset", "medium", "-crf", "18"].map(String::from)),
-        "mpeg4" => args.extend(["-q:v", "2"].map(String::from)),
-        _ => args.extend(["-b:v".to_string(), rate]),
+        "libx264" => args.extend(["-preset", "medium"].map(String::from)),
+        _ => {}
     }
+    args.extend(["-b:v".to_string(), rate]);
     args
 }
 
@@ -174,8 +172,8 @@ pub fn export_slideshow(
         None => pick_video_encoder(ffmpeg)?,
     };
     let started = Instant::now();
-    let temp = TempFiles::next_to(out);
-    let result = render_pass(
+    let temp = TempFiles::next_to(out)?;
+    let mut report = render_pass(
         renderer,
         ffmpeg,
         show,
@@ -184,44 +182,48 @@ pub fn export_slideshow(
         &temp,
         cancel,
         &mut progress,
-    )
-    .and_then(|mut report| {
-        let mux_started = Instant::now();
-        mux(ffmpeg, &temp, settings, out)?;
-        report.mux_secs = mux_started.elapsed().as_secs_f64();
-        report.wall_secs = started.elapsed().as_secs_f64();
-        report.encoder = encoder.clone();
-        Ok(report)
-    });
-    temp.remove();
-    if result.is_err() {
-        let _ = std::fs::remove_file(out);
+    )?;
+    let mux_started = Instant::now();
+    mux(ffmpeg, &temp, settings, &temp.output, cancel)?;
+    if cancel.load(Ordering::Relaxed) {
+        return Err(EngineError::Export("the export was cancelled".into()));
     }
-    result
+    // The completed file is on the same filesystem. Replacement is the only
+    // operation that touches an existing destination, after every stage succeeds.
+    std::fs::rename(&temp.output, out)
+        .map_err(|err| EngineError::Export(format!("could not replace the output: {err}")))?;
+    report.mux_secs = mux_started.elapsed().as_secs_f64();
+    report.wall_secs = started.elapsed().as_secs_f64();
+    report.encoder = encoder;
+    Ok(report)
 }
 
 /// The intermediate files of an export, next to the output.
 struct TempFiles {
+    _dir: tempfile::TempDir,
     video: PathBuf,
     audio: PathBuf,
+    output: PathBuf,
 }
 
 impl TempFiles {
-    fn next_to(out: &Path) -> Self {
-        let with = |suffix: &str| {
-            let mut name = out.file_name().unwrap_or_default().to_os_string();
-            name.push(suffix);
-            out.with_file_name(name)
-        };
-        Self {
-            video: with(".fluxlide-video.mkv"),
-            audio: with(".fluxlide-audio.f32"),
-        }
-    }
-
-    fn remove(&self) {
-        let _ = std::fs::remove_file(&self.video);
-        let _ = std::fs::remove_file(&self.audio);
+    fn next_to(out: &Path) -> Result<Self, EngineError> {
+        let parent = out
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let dir = tempfile::Builder::new()
+            .prefix(".fluxlide-export-")
+            .tempdir_in(parent)
+            .map_err(|err| {
+                EngineError::Export(format!("could not create the export folder: {err}"))
+            })?;
+        Ok(Self {
+            video: dir.path().join("video.mkv"),
+            audio: dir.path().join("audio.f32"),
+            output: dir.path().join("output.mp4"),
+            _dir: dir,
+        })
     }
 }
 
@@ -287,6 +289,9 @@ fn render_pass(
         let mut waited = Duration::ZERO;
         loop {
             show.update(time);
+            if let Some(reason) = &show.stats().last_error {
+                return Err(EngineError::Export(reason.clone()));
+            }
             if !show.is_waiting() {
                 break;
             }
@@ -548,8 +553,9 @@ fn mux(
     temp: &TempFiles,
     settings: &ExportSettings,
     out: &Path,
+    cancel: &AtomicBool,
 ) -> Result<(), EngineError> {
-    let output = command(ffmpeg.ffmpeg_path())
+    let mut child = command(ffmpeg.ffmpeg_path())
         .args(["-hide_banner", "-loglevel", "error", "-y"])
         .arg("-i")
         .arg(&temp.video)
@@ -560,12 +566,46 @@ fn mux(
         .args(["-c:a", "aac", "-b:a", &format!("{}k", settings.audio_kbps)])
         .args(["-movflags", "+faststart"])
         .arg(out)
-        .output()
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|err| EngineError::Export(format!("could not start ffmpeg: {err}")))?;
-    if !output.status.success() {
+    let log = Arc::new(Mutex::new(std::collections::VecDeque::new()));
+    let stderr = child.stderr.take().expect("piped");
+    let reader = {
+        let log = log.clone();
+        std::thread::spawn(move || collect_log(stderr, &log))
+    };
+    let status = loop {
+        if cancel.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = reader.join();
+            return Err(EngineError::Export("the export was cancelled".into()));
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+            Err(err) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                return Err(EngineError::Export(format!(
+                    "could not wait for ffmpeg: {err}"
+                )));
+            }
+        }
+    };
+    let _ = reader.join();
+    if !status.success() {
         return Err(EngineError::Export(format!(
             "could not put picture and sound together: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            log.lock()
+                .unwrap()
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" / ")
         )));
     }
     Ok(())
@@ -641,6 +681,7 @@ mod tests {
             settings.size,
         );
         let out = dir.join("out.mp4");
+        std::fs::write(&out, b"old output").unwrap();
         let mut last = None;
         let report = export_slideshow(
             &renderer,
@@ -667,9 +708,41 @@ mod tests {
         let duration = info.duration.unwrap();
         assert!((duration - report.media_secs).abs() < 0.1, "{duration}");
 
-        // A cancelled export leaves nothing behind.
-        let mut show = Slideshow::new(renderer.clone(), definition, dir.clone(), settings.size);
+        // Manual presentation settings must not hold an export on its first slide.
+        definition.playback.advance = crate::show::Advance::Manual;
+        let mut show = Slideshow::new(
+            renderer.clone(),
+            definition.clone(),
+            dir.clone(),
+            settings.size,
+        );
+        let limit = AtomicBool::new(false);
+        let manual = export_slideshow(
+            &renderer,
+            &ffmpeg,
+            &mut show,
+            &settings,
+            &out,
+            &limit,
+            |p| {
+                if p.frames > report.frames * 2 {
+                    limit.store(true, Ordering::Relaxed);
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(manual.frames, report.frames);
+
+        // Cancellation and encoding failure must preserve the old destination.
         let cancelled = dir.join("cancelled.mp4");
+        let sentinel = b"existing video must survive";
+        std::fs::write(&cancelled, sentinel).unwrap();
+        let mut show = Slideshow::new(
+            renderer.clone(),
+            definition.clone(),
+            dir.clone(),
+            settings.size,
+        );
         let err = export_slideshow(
             &renderer,
             &ffmpeg,
@@ -680,8 +753,57 @@ mod tests {
             |_| {},
         );
         assert!(err.is_err());
-        assert!(!cancelled.exists());
+        assert_eq!(std::fs::read(&cancelled).unwrap(), sentinel);
         assert!(!dir.join("cancelled.mp4.fluxlide-video.mkv").exists());
+
+        let cancel = AtomicBool::new(false);
+        let mut show = Slideshow::new(
+            renderer.clone(),
+            definition.clone(),
+            dir.clone(),
+            settings.size,
+        );
+        assert!(
+            export_slideshow(
+                &renderer,
+                &ffmpeg,
+                &mut show,
+                &settings,
+                &cancelled,
+                &cancel,
+                |p| {
+                    if p.frames == 2 {
+                        cancel.store(true, Ordering::Relaxed);
+                    }
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&cancelled).unwrap(), sentinel);
+        let invalid = ExportSettings {
+            video_encoder: Some("fluxlide-invalid-encoder".into()),
+            ..settings.clone()
+        };
+        let mut show = Slideshow::new(renderer.clone(), definition, dir.clone(), settings.size);
+        assert!(
+            export_slideshow(
+                &renderer,
+                &ffmpeg,
+                &mut show,
+                &invalid,
+                &cancelled,
+                &AtomicBool::new(false),
+                |_| {}
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&cancelled).unwrap(), sentinel);
+        assert!(!std::fs::read_dir(&dir).unwrap().any(|e| {
+            e.unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".fluxlide-export-")
+        }));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
