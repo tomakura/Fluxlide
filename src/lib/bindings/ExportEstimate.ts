@@ -9,8 +9,7 @@ export type ExportEstimate = { width: number, height: number, fps: number, video
  */
 durationSecs: number, 
 /**
- * About how large the file will be. The encoders aim at the bit rate,
- * and photos that stay still need less, so it is an upper guess.
+ * About how large the file will be at the target bitrate, not a limit.
  */
 bytes: number, 
 /**

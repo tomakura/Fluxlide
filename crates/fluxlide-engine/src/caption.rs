@@ -156,11 +156,10 @@ pub(crate) fn plan_caption(
         CaptionDesign::Card => 0.0,
         _ => (style.outline.max(0.0) * style.text_scale).min(MAX_OUTLINE) * height / 1080.0,
     };
-    let shadowed =
-        outline > 0.0 || matches!(style.design, CaptionDesign::Simple | CaptionDesign::Plain);
+    let light_text = style.design != CaptionDesign::Card;
     let halo = Halo {
         outline,
-        shadow: shadowed.then(|| ((height * 0.004).round().max(1.0) as u32, 0)),
+        shadow: light_text.then(|| ((height * 0.004).round().max(1.0) as u32, 0)),
     };
 
     let parts = [
@@ -175,7 +174,10 @@ pub(crate) fn plan_caption(
     let mut lines: Vec<Line> = Vec::new();
     let mut top = 0.0f32;
     for (part, text, max_lines) in parts {
-        let text_style = part_style(part, height, style.text_scale);
+        let mut text_style = part_style(part, height, style.text_scale);
+        if !matches!(part, Part::Title) {
+            text_style.weight = 500;
+        }
         let Some(block) = render_text(text, &text_style, max_text_width, max_lines, halo) else {
             continue;
         };
@@ -261,8 +263,8 @@ pub(crate) fn plan_caption(
     };
 
     let (text_color, author_alpha, description_alpha) = match style.design {
-        CaptionDesign::Card => (NAVY, 0.85, 0.8),
-        _ => (WHITE, 0.88, 0.8),
+        CaptionDesign::Card => (NAVY, 0.9, 0.9),
+        _ => (WHITE, 1.0, 1.0),
     };
     for line in lines {
         let alpha = match line.part {
@@ -275,7 +277,7 @@ pub(crate) fn plan_caption(
             y: (text_y + line.top).round() as i32,
             block: line.block,
             color: Color::new(text_color, alpha),
-            shadow: if halo.shadow.is_some() { 0.55 } else { 0.0 },
+            shadow: if light_text { 0.9 } else { 0.0 },
         });
     }
     // The band, line or card is part 0, the lines 1, 2, 3 from the top.
@@ -468,20 +470,17 @@ mod tests {
                 .unwrap()
         };
         let hd = (1920, 1080);
-        assert_eq!(outline_and_shadow(CaptionDesign::Plain, 0.0, hd), (0, 0.55));
-        assert_eq!(outline_and_shadow(CaptionDesign::Band, 0.0, hd), (0, 0.0));
+        assert_eq!(outline_and_shadow(CaptionDesign::Plain, 0.0, hd), (0, 0.9));
+        assert_eq!(outline_and_shadow(CaptionDesign::Band, 0.0, hd), (0, 0.9));
         // An outline as wide as asked for at 1080 and twice as wide at
         // 2160, with a shadow under it.
-        assert_eq!(outline_and_shadow(CaptionDesign::Band, 3.0, hd), (3, 0.55));
+        assert_eq!(outline_and_shadow(CaptionDesign::Band, 3.0, hd), (3, 0.9));
         assert_eq!(
             outline_and_shadow(CaptionDesign::Plain, 3.0, (3840, 2160)),
-            (6, 0.55)
+            (6, 0.9)
         );
         // A project file cannot ask for more than the app offers.
-        assert_eq!(
-            outline_and_shadow(CaptionDesign::Plain, 1e9, hd),
-            (20, 0.55)
-        );
+        assert_eq!(outline_and_shadow(CaptionDesign::Plain, 1e9, hd), (20, 0.9));
         // Dark text on the light card gets neither.
         assert_eq!(outline_and_shadow(CaptionDesign::Card, 3.0, hd), (0, 0.0));
     }

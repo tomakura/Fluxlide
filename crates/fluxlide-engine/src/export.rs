@@ -55,8 +55,7 @@ pub struct ExportSettings {
     /// Size of the video in pixels. Both must be even (4:2:0 chroma).
     pub size: (u32, u32),
     pub fps: u32,
-    /// Target bit rate of the picture. Encoders with a quality scale instead
-    /// (`libx264`) use a quality that gives about this rate for photos.
+    /// Target bit rate of the picture, for every encoder.
     pub video_kbps: u32,
     pub audio_kbps: u32,
     /// The encoder to use, or `None` for the first available of
@@ -139,9 +138,8 @@ pub fn pick_video_encoder(ffmpeg: &Ffmpeg) -> Result<String, EngineError> {
 fn encoder_args(encoder: &str, settings: &ExportSettings) -> Vec<String> {
     let rate = format!("{}k", settings.video_kbps);
     let mut args = vec!["-c:v".to_string(), encoder.to_string()];
-    match encoder {
-        "libx264" => args.extend(["-preset", "medium"].map(String::from)),
-        _ => {}
+    if encoder == "libx264" {
+        args.extend(["-preset", "medium"].map(String::from));
     }
     args.extend(["-b:v".to_string(), rate]);
     args
@@ -564,7 +562,11 @@ fn mux(
         .arg(&temp.audio)
         .args(["-map", "0:v", "-map", "1:a", "-c:v", "copy"])
         .args(["-c:a", "aac", "-b:a", &format!("{}k", settings.audio_kbps)])
-        .args(["-movflags", "+faststart"])
+        // Media Foundation can omit the VUI in its H.264 bitstream. Keep
+        // the conversion's color information in the final MP4 as well.
+        .args(["-color_primaries", "bt709", "-color_trc", "bt709"])
+        .args(["-colorspace", "bt709", "-color_range", "tv"])
+        .args(["-movflags", "+faststart+write_colr"])
         .arg(out)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -707,6 +709,24 @@ mod tests {
         assert!(info.has_audio);
         let duration = info.duration.unwrap();
         assert!((duration - report.media_secs).abs() < 0.1, "{duration}");
+        let colors = command(ffmpeg.ffprobe_path())
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=color_space,color_transfer,color_primaries",
+                "-of",
+                "json",
+            ])
+            .arg(&out)
+            .output()
+            .unwrap();
+        let colors: serde_json::Value = serde_json::from_slice(&colors.stdout).unwrap();
+        for field in ["color_space", "color_transfer", "color_primaries"] {
+            assert_eq!(colors["streams"][0][field], "bt709", "{colors}");
+        }
 
         // Manual presentation settings must not hold an export on its first slide.
         definition.playback.advance = crate::show::Advance::Manual;
@@ -780,6 +800,7 @@ mod tests {
             .is_err()
         );
         assert_eq!(std::fs::read(&cancelled).unwrap(), sentinel);
+        drop(show);
         let invalid = ExportSettings {
             video_encoder: Some("fluxlide-invalid-encoder".into()),
             ..settings.clone()
@@ -798,6 +819,7 @@ mod tests {
             .is_err()
         );
         assert_eq!(std::fs::read(&cancelled).unwrap(), sentinel);
+        drop(show);
         assert!(!std::fs::read_dir(&dir).unwrap().any(|e| {
             e.unwrap()
                 .file_name()
