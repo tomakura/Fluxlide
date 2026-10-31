@@ -150,8 +150,8 @@ pub(crate) fn plan_caption(
             .min(width - 2.0 * margin - 2.0 * card_padding),
         CaptionDesign::None => unreachable!("handled above"),
     };
-    // Light text gets the outline it asks for, and a soft shadow when it
-    // stands on the picture alone or has an outline.
+    // Light text gets the outline it asks for and a soft shadow, including
+    // over the band where a bright photo can still show through.
     let outline = match style.design {
         CaptionDesign::Card => 0.0,
         _ => (style.outline.max(0.0) * style.text_scale).min(MAX_OUTLINE) * height / 1080.0,

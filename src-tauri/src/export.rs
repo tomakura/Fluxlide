@@ -129,10 +129,16 @@ pub async fn export_estimate(
     let duration_secs = timeline.end_ms as f64 / 1000.0;
     let kbps = u64::from(settings.video_kbps + settings.audio_kbps);
     let (width, height) = settings.size;
-    // A guess of about the length of the video for 1080p at 30 fps: not yet
-    // measured with a GPU (without one it took 2.6 times as long,
-    // docs/spike-export.md). More pixels and frames take longer.
+    // Reference: RTX 4070 Ti/Vulkan and bundled FFmpeg 9.0.2/h264_mf
+    // exported 27s of 1080p30 in 6.08s. Allow startup overhead and round
+    // the measured ratio up; other encoders keep the uncalibrated hint.
+    // This is not a benchmark of the user's machine.
     let load = f64::from(width * height) / (1920.0 * 1080.0) * f64::from(settings.fps) / 30.0;
+    let work_secs = if encoder == "h264_mf" {
+        1.0 + duration_secs * load.max(0.5) * 0.25
+    } else {
+        duration_secs * load.max(0.5)
+    };
     Ok(ExportEstimate {
         width,
         height,
@@ -146,7 +152,7 @@ pub async fn export_estimate(
         .into(),
         duration_secs,
         bytes: (duration_secs * kbps as f64 * 1000.0 / 8.0) as u64,
-        work_secs: duration_secs * load.max(0.5),
+        work_secs,
         skipped_slides: timeline.skipped.len(),
     })
 }

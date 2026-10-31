@@ -154,7 +154,7 @@
           <div><dt>長さ</dt><dd>{clock(estimate.durationSecs)}</dd></div>
           <div><dt>ファイルサイズの目安</dt><dd>約 {fileSize(estimate.bytes)}</dd></div>
           <div><dt>映像の形式</dt><dd>{estimate.videoCodec}</dd></div>
-          <div><dt>処理時間</dt><dd>{roughly(estimate.workSecs)}</dd></div>
+          <div><dt>処理時間の目安</dt><dd>{roughly(estimate.workSecs)}</dd></div>
         </dl>
         {#if estimate.skippedSlides > 0}
           <p class="hint">取り込み中か読めないスライドが {estimate.skippedSlides} 枚あり、書き出しには入りません。</p>
