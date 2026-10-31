@@ -30,3 +30,6 @@ tempfile = "3"
 
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+glib = "0.18"

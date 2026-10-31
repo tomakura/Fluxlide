@@ -1,6 +1,6 @@
 {
   "name": "fluxlide",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Slideshow creation and playback software",
   "private": true,
   "license": "MIT",
@@ -9,6 +9,10 @@
     "url": "https://github.com/tomakura/Fluxlide.git"
   },
   "type": "module",
+  "imports": {
+    "#lib/components/*": "./src/lib/components/*",
+    "#lib/*": "./src/lib/*.ts"
+  },
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
@@ -16,7 +20,7 @@
     "prepare": "svelte-kit sync || echo ''",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
-    "test": "vitest run",
+    "test": "vitest run src && node --test scripts/check-release.test.mjs",
     "tauri": "tauri",
     "ffmpeg:build": "bash scripts/build-ffmpeg.sh",
     "licenses": "node scripts/third-party-notices.mjs",
@@ -28,11 +32,11 @@
     "@tauri-apps/plugin-opener": "^2"
   },
   "devDependencies": {
-    "@sveltejs/adapter-static": "^3.0.10",
-    "@sveltejs/kit": "^2.65.1",
-    "@sveltejs/vite-plugin-svelte": "^7.1.2",
+    "@sveltejs/adapter-static": "^4.0.1",
+    "@sveltejs/kit": "^3.1.1",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
     "@tauri-apps/cli": "^2",
-    "svelte": "^5.56.3",
+    "svelte": "^5.57.3",
     "svelte-check": "^4.6.0",
     "typescript": "~6.0.3",
     "vite": "^8.0.16",
