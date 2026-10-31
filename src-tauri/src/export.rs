@@ -171,7 +171,6 @@ pub struct ExportFinishedEvent {
 }
 
 struct Running {
-    cancel: Arc<AtomicBool>,
     thread: JoinHandle<()>,
 }
 
@@ -179,6 +178,7 @@ struct Running {
 pub struct ExportState {
     running: Mutex<Option<Running>>,
     source: Arc<Mutex<Option<PathBuf>>>,
+    cancelled: Arc<AtomicBool>,
 }
 
 struct ExportLease(Arc<Mutex<Option<PathBuf>>>);
@@ -210,6 +210,7 @@ impl ExportState {
             return Err("書き出しの途中です。".into());
         }
         let (show, media) = open_show(editor)?;
+        self.cancelled.store(false, Ordering::Relaxed);
         *source = Some(media.clone());
         Ok((show, media, ExportLease(self.source.clone())))
     }
@@ -217,11 +218,18 @@ impl ExportState {
     /// Cancels an export and waits for it to remove its files. Used when the
     /// app exits.
     pub fn cancel_blocking(&self) {
+        self.cancel();
         let running = self.running.lock().unwrap().take();
         if let Some(running) = running {
-            running.cancel.store(true, Ordering::Relaxed);
             let _ = running.thread.join();
         }
+    }
+
+    fn cancel(&self) {
+        // A cancel arriving while the snapshot is copied must follow the
+        // reservation's reset, so it cannot be overwritten by preparation.
+        let _source = self.source.lock().unwrap();
+        self.cancelled.store(true, Ordering::Relaxed);
     }
 }
 
@@ -258,7 +266,7 @@ pub async fn start_export(
     {
         return Err("書き出しの途中です。".into());
     }
-    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel = state.cancelled.clone();
     let thread = {
         let cancel = cancel.clone();
         std::thread::Builder::new()
@@ -311,21 +319,39 @@ pub async fn start_export(
             })
             .map_err(|err| err.to_string())?
     };
-    *running = Some(Running { cancel, thread });
+    *running = Some(Running { thread });
     Ok(())
 }
 
 /// Stops the export; it removes its partial files and sends [`FINISHED`].
 #[tauri::command]
 pub fn cancel_export(state: State<'_, ExportState>) {
-    if let Some(running) = state.running.lock().unwrap().as_ref() {
-        running.cancel.store(true, Ordering::Relaxed);
-    }
+    state.cancel();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelling_preparation_is_kept_for_the_worker_but_not_the_next_export() {
+        let root = crate::project::tests::TempDir::new("export-preparing");
+        let show = ShowDefinition::default();
+        let project = crate::project::Project::create(&root.0, &show).unwrap();
+        let editor = EditorState::default();
+        *editor.session().lock().unwrap() = Some(crate::session::Session::new(project, show));
+        let state = ExportState::default();
+        let (_, _, lease) = state.reserve(&editor).unwrap();
+        assert!(state.running.lock().unwrap().is_none());
+        state.cancel();
+        assert!(state.reserve(&editor).is_err());
+        assert!(state.cancelled.load(Ordering::Relaxed));
+        let worker_flag = state.cancelled.clone();
+        assert!(worker_flag.load(Ordering::Relaxed));
+        drop(lease);
+        let (_, _, _next) = state.reserve(&editor).unwrap();
+        assert!(!state.cancelled.load(Ordering::Relaxed));
+    }
 
     #[test]
     fn export_sources_stay_protected_until_the_worker_releases_them() {
