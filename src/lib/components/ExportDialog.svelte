@@ -4,15 +4,15 @@
   // closed; opening it again shows how far it has got.
   import { save } from "@tauri-apps/plugin-dialog";
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
-  import * as api from "$lib/api";
-  import type { ExportChoice } from "$lib/bindings/ExportChoice";
-  import type { ExportEstimate } from "$lib/bindings/ExportEstimate";
-  import type { Purpose } from "$lib/bindings/Purpose";
-  import { exporting } from "$lib/exporting.svelte";
-  import { clock, fileSize, roughly } from "$lib/format";
-  import { modal } from "$lib/modal";
-  import { appear, pop } from "$lib/motion";
-  import { open } from "$lib/show.svelte";
+  import * as api from "#lib/api";
+  import type { ExportChoice } from "#lib/bindings/ExportChoice";
+  import type { ExportEstimate } from "#lib/bindings/ExportEstimate";
+  import type { Purpose } from "#lib/bindings/Purpose";
+  import { exporting } from "#lib/exporting.svelte";
+  import { clock, fileSize, roughly } from "#lib/format";
+  import { modal } from "#lib/modal";
+  import { appear, pop } from "#lib/motion";
+  import { open } from "#lib/show.svelte";
 
   let { onclose: close }: { onclose: () => void } = $props();
 
@@ -35,6 +35,7 @@
   let estimate = $state<ExportEstimate | null>(null);
   let error = $state<string | null>(null);
   let estimateError = $state<string | null>(null);
+  let picking = $state(false);
 
   const choice = $derived<ExportChoice>({ purpose, fps, videoKbps });
 
@@ -42,7 +43,11 @@
   // slides are edited).
   $effect(() => {
     const asked = choice;
-    void open.show;
+    if (!open.show || exporting.running) {
+      estimate = null;
+      estimateError = null;
+      return;
+    }
     let current = true;
     api
       .exportEstimate(asked)
@@ -62,17 +67,25 @@
   }
 
   async function start() {
+    if (picking || exporting.running) return;
+    picking = true;
     error = null;
-    const name = (open.show?.title || "スライドショー").replace(/[\\/:*?"<>|]/g, "_");
-    const path = await save({
-      defaultPath: `${name}.mp4`,
-      filters: [{ name: "MP4 動画", extensions: ["mp4"] }],
-    });
-    if (!path) return;
     try {
+      await open.flush();
+      const session = open.state?.session;
+      const name = (open.show?.title || "スライドショー").replace(/[\\/:*?"<>|]/g, "_");
+      const path = await save({
+        defaultPath: `${name}.mp4`,
+        filters: [{ name: "MP4 動画", extensions: ["mp4"] }],
+      });
+      if (!path) return;
+      await open.flush();
+      if (session !== open.state?.session) throw new Error("開いているスライドショーが変わりました。");
       await exporting.start($state.snapshot(choice), path);
     } catch (err) {
       error = String(err);
+    } finally {
+      picking = false;
     }
   }
 
@@ -139,7 +152,8 @@
       {#if estimate}
         <dl class="estimate">
           <div><dt>長さ</dt><dd>{clock(estimate.durationSecs)}</dd></div>
-          <div><dt>ファイルサイズ</dt><dd>最大 {fileSize(estimate.bytes)}</dd></div>
+          <div><dt>ファイルサイズの目安</dt><dd>約 {fileSize(estimate.bytes)}</dd></div>
+          <div><dt>映像の形式</dt><dd>{estimate.videoCodec}</dd></div>
           <div><dt>処理時間</dt><dd>{roughly(estimate.workSecs)}</dd></div>
         </dl>
         {#if estimate.skippedSlides > 0}
@@ -183,7 +197,7 @@
 
       <div class="buttons">
         <button onclick={onclose}>やめる</button>
-        <button class="primary" data-autofocus disabled={!open.show?.slides.length} onclick={start}>
+        <button class="primary" data-autofocus disabled={picking || !open.show?.slides.length || !!estimateError} onclick={start}>
           保存先を選んで書き出す…
         </button>
       </div>

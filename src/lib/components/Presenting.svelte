@@ -2,15 +2,15 @@
   // D. 上映中の操作: shown on the operator's screen while the presentation
   // window shows only the pictures (docs/ui-draft.md).
   import { untrack } from "svelte";
-  import * as api from "$lib/api";
-  import type { Control } from "$lib/bindings/Control";
-  import type { PresentationStatus } from "$lib/bindings/PresentationStatus";
-  import type { SlideId } from "$lib/bindings/SlideId";
-  import { clock, screenName, thumbnailUrl } from "$lib/format";
-  import { open } from "$lib/show.svelte";
+  import * as api from "#lib/api";
+  import type { Control } from "#lib/bindings/Control";
+  import type { PresentationStatus } from "#lib/bindings/PresentationStatus";
+  import type { SlideId } from "#lib/bindings/SlideId";
+  import { clock, screenName, thumbnailUrl } from "#lib/format";
+  import { open } from "#lib/show.svelte";
   import Confirm from "./Confirm.svelte";
   import { flip } from "svelte/animate";
-  import { appear, moving, rise, slideIn } from "$lib/motion";
+  import { appear, moving, rise, slideIn } from "#lib/motion";
   import LiveOutput from "./LiveOutput.svelte";
 
   let { syncOffsetMs, onend }: { syncOffsetMs: number; onend: () => void } = $props();

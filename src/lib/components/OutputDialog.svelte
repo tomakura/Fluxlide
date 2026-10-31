@@ -2,13 +2,13 @@
   // C. 出力先の選択: which screen to present on, and how playback goes.
   // The playback settings belong to the show; the screen to this computer.
   import { untrack } from "svelte";
-  import * as api from "$lib/api";
-  import type { MonitorInfo } from "$lib/bindings/MonitorInfo";
-  import type { Playback } from "$lib/bindings/Playback";
-  import { screenName } from "$lib/format";
-  import { modal } from "$lib/modal";
-  import { appear, pop } from "$lib/motion";
-  import { open } from "$lib/show.svelte";
+  import * as api from "#lib/api";
+  import type { MonitorInfo } from "#lib/bindings/MonitorInfo";
+  import type { Playback } from "#lib/bindings/Playback";
+  import { screenName } from "#lib/format";
+  import { modal } from "#lib/modal";
+  import { appear, pop } from "#lib/motion";
+  import { open } from "#lib/show.svelte";
 
   let {
     monitors,

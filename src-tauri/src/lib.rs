@@ -113,6 +113,11 @@ pub fn run() {
                 WindowEvent::Focused(true) => {
                     presentation::set_presenter_keys_enabled(window.app_handle(), false);
                 }
+                WindowEvent::CloseRequested { api, .. } => {
+                    use tauri::Emitter;
+                    api.prevent_close();
+                    let _ = window.app_handle().emit("app-close-requested", ());
+                }
                 WindowEvent::Destroyed => {
                     let app = window.app_handle();
                     presentation::stop_blocking(&app.state::<PresentationState>());
@@ -130,6 +135,8 @@ pub fn run() {
             editor::create_project,
             editor::open_project,
             editor::close_project,
+            editor::save_project,
+            editor::exit_app,
             editor::delete_project,
             editor::show_state,
             editor::edit_show,
@@ -157,9 +164,20 @@ pub fn run() {
             preview::stop_preview,
             preview::preview_frame,
             settings::get_settings,
+            settings::reset_settings,
             settings::set_sync_offset,
             settings::set_output_screen,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested {
+                code: None, api, ..
+            } = event
+            {
+                use tauri::Emitter;
+                api.prevent_exit();
+                let _ = app.emit("app-close-requested", ());
+            }
+        });
 }

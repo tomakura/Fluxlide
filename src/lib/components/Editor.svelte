@@ -1,12 +1,11 @@
 <script lang="ts">
   // B. 編集: the slides on the left, the preview in the middle and the
   // settings of the chosen tab on the right (docs/ui-draft.md).
-  import { untrack } from "svelte";
-  import type { SlideId } from "$lib/bindings/SlideId";
-  import { exporting } from "$lib/exporting.svelte";
-  import { appear, rise } from "$lib/motion";
-  import { open } from "$lib/show.svelte";
-  import ExportDialog from "./ExportDialog.svelte";
+  import type { SlideId } from "#lib/bindings/SlideId";
+  import { exporting } from "#lib/exporting.svelte";
+  import { appear, rise } from "#lib/motion";
+  import { open } from "#lib/show.svelte";
+  import SaveStatus from "./SaveStatus.svelte";
   import FileSettings from "./FileSettings.svelte";
   import LookPanel from "./LookPanel.svelte";
   import MusicPanel from "./MusicPanel.svelte";
@@ -16,10 +15,12 @@
   let {
     onhome,
     onpresent,
+    onexport,
   }: {
     onhome: () => void;
     /// `choose`: show the output screen choice even when one is remembered.
     onpresent: (choose: boolean) => void;
+    onexport: () => void;
   } = $props();
 
   // The settings here are the slideshow's as a whole; those of one photo or
@@ -39,21 +40,11 @@
     playingSlide = null;
     files = true;
   }
-  let exportOpen = $state(false);
-  // An export that ends while its dialog is closed says so there (once:
-  // not again when the editor is opened later).
-  let seenFinish = untrack(() => exporting.finished);
-  $effect(() => {
-    const finished = exporting.finished;
-    if (finished && finished !== seenFinish && !finished.cancelled) exportOpen = true;
-    seenFinish = finished;
-  });
   let selected = $state<SlideId | null>(open.show?.slides[0]?.id ?? null);
   let playing = $state(false);
   let playingSlide = $state<SlideId | null>(null);
 
   const show = $derived(open.show);
-  const saveError = $derived(open.state?.saveError ?? null);
 
   // A selection whose slide was removed (by undo, say) moves to the first.
   $effect(() => {
@@ -115,7 +106,7 @@
 {:else if show}
   <div class="editor" in:appear|global>
     <header>
-      <button class="quiet" onclick={onhome} title="ホームに戻る">← ホーム</button>
+      <button class="quiet home" onclick={onhome} title="ホームに戻る">← ホーム</button>
       <input
         class="title"
         aria-label="スライドショーの名前"
@@ -125,9 +116,7 @@
           open.edit((show) => (show.title = title), "title");
         }}
       />
-      <span class="saved" class:error={saveError} title={saveError ?? ""}>
-        {saveError ? "保存できません" : "自動保存済み"}
-      </span>
+      <SaveStatus />
       <div class="history">
         <button class="quiet" disabled={!open.state?.canUndo} onclick={open.undo} title="元に戻す（Ctrl+Z）">
           {@render arrow()}元に戻す
@@ -139,7 +128,7 @@
       <button class="quiet files" disabled={show.slides.length === 0} onclick={openFiles}>
         ファイルごとの設定
       </button>
-      <button class="quiet export" disabled={show.slides.length === 0 && !exporting.running} onclick={() => (exportOpen = true)}>
+      <button class="quiet export" disabled={show.slides.length === 0 && !exporting.running} onclick={onexport}>
         {exporting.running ? `書き出し中 ${Math.round(exporting.fraction * 100)}%` : "動画に書き出す"}
       </button>
       <div class="present">
@@ -147,17 +136,6 @@
         <button class="live more" disabled={show.slides.length === 0} onclick={() => onpresent(true)} title="出力先の画面を選ぶ">▾</button>
       </div>
     </header>
-
-    {#if exportOpen}
-      <ExportDialog onclose={() => (exportOpen = false)} />
-    {/if}
-
-    {#if open.error}
-      <p class="banner error" transition:rise>
-        {open.error}
-        <button class="quiet" onclick={() => (open.error = null)}>閉じる</button>
-      </p>
-    {/if}
 
     <div class="columns">
       <aside class="left">
@@ -234,15 +212,7 @@
     border-color: var(--line);
   }
 
-  .saved {
-    font-size: 12px;
-    color: var(--muted);
-    white-space: nowrap;
-  }
-
-  .saved.error {
-    color: var(--err);
-  }
+  .home { white-space: nowrap; flex-shrink: 0; }
 
   .history {
     display: flex;
@@ -314,15 +284,6 @@
     border-radius: 0 8px 8px 0;
     border-left: 1px solid rgb(255 255 255 / 35%);
     padding: 7px 9px;
-  }
-
-  .banner {
-    margin: 0;
-    padding: 8px 16px;
-    background: var(--err-soft);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
   }
 
   .columns {

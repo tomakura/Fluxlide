@@ -196,7 +196,7 @@ impl Session {
         }
     }
 
-    fn save(&mut self) {
+    pub fn save(&mut self) {
         self.revision += 1;
         self.save_error = self
             .project

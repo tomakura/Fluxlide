@@ -23,7 +23,9 @@ class OpenShow {
   /// the reply to an earlier keystroke must not put the text being typed
   /// back as it was.
   #latest: ShowState | null = null;
-  #pending = 0;
+  pending = $state(0);
+  failed = $state(0);
+  #failedEdits: { change: (show: ShowDefinition) => void; group: string | null }[] = [];
 
   get show(): ShowDefinition | null {
     return this.state?.show ?? null;
@@ -36,19 +38,25 @@ class OpenShow {
     if (state && latest && state.session === latest.session && state.revision < latest.revision) {
       return;
     }
+    if (state?.session !== latest?.session) {
+      this.#failedEdits = [];
+      this.failed = 0;
+      this.error = null;
+      this.copying = {};
+    }
     this.#latest = state;
-    if (this.#pending === 0 || state?.session !== this.state?.session) this.state = state;
+    if (this.pending === 0 || state?.session !== this.state?.session) this.state = state;
   }
 
   /// Runs `task` after the commands before it, keeping `state` as it is
   /// until none is left.
   #enqueue(task: () => Promise<void>): Promise<void> {
-    this.#pending++;
+    this.pending++;
     this.#queue = this.#queue.then(async () => {
       try {
         await task();
       } finally {
-        if (--this.#pending === 0) this.state = this.#latest;
+        if (--this.pending === 0) this.state = this.#latest;
       }
     });
     return this.#queue;
@@ -60,7 +68,20 @@ class OpenShow {
   /// another show was opened meanwhile, the change is dropped.
   edit(change: (show: ShowDefinition) => void, group: string | null = null): Promise<void> {
     const session = this.#latest?.session;
-    return this.#enqueue(async () => {
+    return this.#enqueue(() => this.#applyEdit(change, group, session));
+  }
+
+  async #applyEdit(change: (show: ShowDefinition) => void, group: string | null, session: number | undefined): Promise<void> {
+      if (this.#latest?.session !== session) return;
+      const failed = (reason: string) => {
+        this.#failedEdits.push({ change, group });
+        this.failed = this.#failedEdits.length;
+        this.error = reason;
+      };
+      if (this.failed) {
+        failed(this.error ?? "変更を送信できていません。");
+        return;
+      }
       for (let attempt = 0; attempt < 5; attempt++) {
         const current = this.#latest;
         if (!current || current.session !== session) return;
@@ -74,17 +95,18 @@ class OpenShow {
           this.take(outcome.state);
           if (outcome.applied) return;
         } catch (err) {
-          this.error = String(err);
+          failed(String(err));
           return;
         }
       }
-      this.error = "変更を反映できませんでした。もう一度操作してください。";
-    });
+      failed("変更を反映できませんでした。保存を再試行してください。");
   }
 
   /// Runs a command that returns the new state, after the edits before it.
   run(command: () => Promise<ShowState>): Promise<void> {
+    const session = this.#latest?.session;
     return this.#enqueue(async () => {
+      if (this.#latest?.session !== session) return;
       try {
         this.take(await command());
       } catch (err) {
@@ -95,6 +117,36 @@ class OpenShow {
 
   undo = () => this.run(api.undoShow);
   redo = () => this.run(api.redoShow);
+
+  /// A transition must wait for the edits already typed, and must not hide
+  /// an unsaved state behind a new screen or an export of older content.
+  async flush(): Promise<void> {
+    const session = this.#latest?.session;
+    do {
+      await this.#queue;
+    } while (this.pending > 0);
+    if (session !== this.#latest?.session) throw new Error("開いているスライドショーが変わりました。");
+    if (this.failed) throw new Error(this.error ?? "変更を送信できていません。");
+    if (this.#latest?.saveError) throw new Error(this.#latest.saveError);
+  }
+
+  retrySave(): Promise<void> {
+    const session = this.#latest?.session;
+    return this.#enqueue(async () => {
+      if (session === undefined || session !== this.#latest?.session) return;
+      const edits = this.#failedEdits;
+      this.#failedEdits = [];
+      this.failed = 0;
+      this.error = null;
+      for (const { change, group } of edits) await this.#applyEdit(change, group, session);
+      if (this.failed) return;
+      try {
+        this.take(await api.saveProject(session));
+      } catch (err) {
+        this.error = String(err);
+      }
+    });
+  }
 
   /// Adds `files` as slides at the end of the list. Resolves to the new
   /// assets.

@@ -1,7 +1,7 @@
 <script lang="ts">
   // A question that must be answered before going on.
-  import { modal } from "$lib/modal";
-  import { appear, pop } from "$lib/motion";
+  import { modal } from "#lib/modal";
+  import { appear, pop } from "#lib/motion";
 
   let {
     title,

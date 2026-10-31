@@ -12,6 +12,7 @@
 //! the old one stays on screen until the new one shows its first slide, so
 //! the preview does not flash black while editing.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -44,6 +45,7 @@ struct Preview {
 #[derive(Default)]
 pub struct PreviewState {
     preview: Arc<Mutex<Option<Preview>>>,
+    generation: AtomicU64,
 }
 
 /// Starts (or restarts) the preview of the open slideshow at `width` x
@@ -59,11 +61,12 @@ pub async fn start_preview(
     from: Option<SlideId>,
     still: bool,
 ) -> Result<(), String> {
-    let (definition, media_dir) = {
+    let generation = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
+    let (definition, media_dir, epoch) = {
         let session = editor.session();
         let guard = session.lock().unwrap();
         let session = guard.as_ref().ok_or("スライドショーが開かれていません。")?;
-        (session.show().clone(), session.media_dir())
+        (session.show().clone(), session.media_dir(), session.epoch())
     };
     let renderer = presentation.renderer().await?;
     let size = (width.clamp(2, MAX_SIZE.0), height.clamp(2, MAX_SIZE.1));
@@ -78,6 +81,12 @@ pub async fn start_preview(
         still,
     };
     let mut guard = state.preview.lock().unwrap();
+    let session = editor.session();
+    if state.generation.load(Ordering::SeqCst) != generation
+        || session.lock().unwrap().as_ref().map(|s| s.epoch()) != Some(epoch)
+    {
+        return Ok(());
+    }
     match guard
         .as_mut()
         .filter(|preview| preview.target.size() == size)
@@ -99,7 +108,9 @@ pub async fn start_preview(
 
 #[tauri::command]
 pub fn stop_preview(state: State<'_, PreviewState>) {
-    state.preview.lock().unwrap().take();
+    let mut guard = state.preview.lock().unwrap();
+    state.generation.fetch_add(1, Ordering::SeqCst);
+    guard.take();
 }
 
 impl Run {

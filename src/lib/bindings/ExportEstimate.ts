@@ -21,4 +21,4 @@ workSecs: number,
 /**
  * Slides that will be left out (their files are not ready).
  */
-skippedSlides: number, };
+skippedSlides: number, videoCodec: string, };

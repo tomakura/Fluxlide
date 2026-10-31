@@ -3,13 +3,13 @@
   // by dragging their handle; pointer events are used because the webview's
   // file drop handling takes over HTML drag and drop on Windows.
   import { open as pickFiles } from "@tauri-apps/plugin-dialog";
-  import * as api from "$lib/api";
-  import type { SlideId } from "$lib/bindings/SlideId";
-  import { MEDIA_FILTER, effective, slideLength, thumbnailUrl, transitionName } from "$lib/format";
+  import * as api from "#lib/api";
+  import type { SlideId } from "#lib/bindings/SlideId";
+  import { MEDIA_FILTER, effective, slideLength, thumbnailUrl, transitionName } from "#lib/format";
   import { flip } from "svelte/animate";
-  import { appear, moving, rise } from "$lib/motion";
-  import { open } from "$lib/show.svelte";
-  import { removeSlide } from "$lib/edits";
+  import { appear, moving, rise } from "#lib/motion";
+  import { open } from "#lib/show.svelte";
+  import { removeSlide } from "#lib/edits";
   import DropZone from "./DropZone.svelte";
 
   let {

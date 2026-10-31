@@ -3,9 +3,9 @@
   // presentation draws it offscreen, and frames are fetched one at a time
   // (docs/spike-preview.md). It holds the selected slide still, or plays
   // from it.
-  import * as api from "$lib/api";
-  import type { SlideId } from "$lib/bindings/SlideId";
-  import { open } from "$lib/show.svelte";
+  import * as api from "#lib/api";
+  import type { SlideId } from "#lib/bindings/SlideId";
+  import { open } from "#lib/show.svelte";
 
   let {
     selected,
@@ -24,6 +24,7 @@
   // Each start gets a new number; a loop whose number is no longer current
   // (stopped or restarted meanwhile) ends quietly.
   let generation = 0;
+  let requestNumber = 0;
   let pumping = false;
   let onScreen: SlideId | null = null;
 
@@ -45,19 +46,22 @@
   });
 
   $effect(() => () => {
+    requestNumber++;
     generation++;
     api.stopPreview();
   });
 
   async function start({ from, still, width, height }: { from: SlideId | null; still: boolean; width: number; height: number }) {
+    const mine = ++requestNumber;
     const scale = Math.min(window.devicePixelRatio || 1, 2);
     const w = Math.round((width * scale) / 2) * 2;
     const h = Math.round((height * scale) / 2) * 2;
     try {
       await api.startPreview(w, h, from, still);
+      if (mine !== requestNumber) return;
       error = null;
     } catch (err) {
-      error = String(err);
+      if (mine === requestNumber) error = String(err);
       return;
     }
     if (!pumping && canvas) pump(canvas, ++generation);
