@@ -20,7 +20,7 @@
     "prepare": "svelte-kit sync || echo ''",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
-    "test": "vitest run src && node --test scripts/check-release.test.mjs",
+    "test": "vitest run src && node --test scripts/check-release.test.mjs scripts/presentation-start.test.mjs",
     "tauri": "tauri",
     "ffmpeg:build": "bash scripts/build-ffmpeg.sh",
     "licenses": "node scripts/third-party-notices.mjs",

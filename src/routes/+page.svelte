@@ -25,6 +25,7 @@
   let starting = $state(false);
   let preparing = false;
   let startTimer: ReturnType<typeof setTimeout> | null = null;
+  let startTask: Promise<void> | null = null;
   let request = 0;
   let loadingError = $state<string | null>(null);
   let settingsError = $state(false);
@@ -76,6 +77,7 @@
     leaving = true;
     try {
       if (!discard) await open.flush();
+      await startTask;
       if (action === "app") {
         await api.exitApp(discard);
       } else {
@@ -140,14 +142,23 @@
     choosing = null;
     if (starting || leaving || screen !== "editor") return;
     starting = true;
+    const mine = request;
+    const session = open.state?.session;
+    const current = () => mine === request && screen === "editor" && !leaving && open.state?.session === session;
     try {
       await open.flush();
+      if (!current()) return;
       if (remember) await api.setOutputScreen(monitor.name);
-      await api.startPresentation(monitor.index);
-      screen = "presenting";
+      if (!current()) return;
+      startTask = api.startPresentation(monitor.index).then(async () => {
+        if (current()) screen = "presenting";
+        else await api.stopPresentation();
+      });
+      await startTask;
     } catch (err) {
-      error = `上映を始められませんでした: ${err}`;
+      if (mine === request) error = `上映を始められませんでした: ${err}`;
     } finally {
+      startTask = null;
       starting = false;
     }
   }
