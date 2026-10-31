@@ -654,7 +654,12 @@ mod tests {
 
     #[test]
     fn hevc_heic_files_grids_and_orientation_are_imported() {
-        Ffmpeg::locate().expect("HEIC regression tests require FFmpeg");
+        let ffmpeg = Ffmpeg::locate().expect("HEIC regression tests require FFmpeg");
+        if let Some(dir) = std::env::var_os("FLUXLIDE_FFMPEG_DIR") {
+            let dir = PathBuf::from(dir);
+            assert!(ffmpeg.ffmpeg_path().starts_with(&dir));
+            assert!(ffmpeg.ffprobe_path().starts_with(&dir));
+        }
         let root = TempDir::new("import-real-heic");
         let media = root.0.join("media");
         std::fs::create_dir(&media).unwrap();

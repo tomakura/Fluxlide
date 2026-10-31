@@ -27,7 +27,7 @@ Fluxlide（フラックスライド）は、写真・動画・キャプション
 | macOS（Apple Silicon / Intel） | `aarch64` / `x64` の `.dmg` |
 | Linux（x64） | `.AppImage`、`.deb`、`.rpm` |
 
-署名していない版では、初めて開くときに OS の警告が出ます。Windows は「詳細情報」→「実行」、macOS は Finder で右クリック →「開く」で開けます。
+現在の配布物は未署名です。初めて開くときにWindowsのSmartScreenやmacOSのGatekeeperが警告を出す場合があります。macOSでの警告解除の操作と、署名・公証した版の動作は実機未確認です。
 
 ## できないこと（v1.0）
 
@@ -83,6 +83,8 @@ npm run ffmpeg:build # 同梱用のFFmpegをビルド（初回と、スクリプ
 npm run tauri:release # FFmpegを同梱したインストーラーの作成
 npm run tauri build  # FFmpegなしのインストーラーの作成
 ```
+
+Rustのメディア試験にはFFmpegとffprobeが必須です。CIは同梱用のLGPL版9.0.2を使用し、指定先の実行ファイルを使ったことも試験します。`FLUXLIDE_FFMPEG_DIR`には、`ffmpeg` / `ffprobe`（Windowsは`.exe`）の両方があるフォルダーを指定してください。
 
 アプリアイコンは `assets/brand/fluxlide-app-icon.svg` から生成しています。ロゴを変えたときは `npx tauri icon assets/brand/fluxlide-app-icon.svg` で作り直し、モバイル用の `src-tauri/icons/android` と `src-tauri/icons/ios` は削除します。
 

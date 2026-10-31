@@ -73,7 +73,10 @@ jobs:
           tool_dir="$RUNNER_TEMP/fluxlide-test-tools"
           mkdir -p "$tool_dir"
           suffix=""
-          if [ "$RUNNER_OS" = Windows ]; then suffix=.exe; fi
+          if [ "$RUNNER_OS" = Windows ]; then
+            suffix=.exe
+            tool_dir="$(cygpath -m "$tool_dir")"
+          fi
           cp "src-tauri/binaries/fluxlide-ffmpeg-$FFMPEG_TARGET$suffix" "$tool_dir/ffmpeg$suffix"
           cp "src-tauri/binaries/fluxlide-ffprobe-$FFMPEG_TARGET$suffix" "$tool_dir/ffprobe$suffix"
           "$tool_dir/ffmpeg$suffix" -version
