@@ -19,9 +19,65 @@ on:
 
 permissions:
   contents: write
+  actions: read
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.release.outputs.id }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+      - name: Check every version and lockfile
+        id: version
+        run: echo "version=$(node scripts/check-release.mjs "$TAG")" >> "$GITHUB_OUTPUT"
+      - name: Require verified main and prepare one draft
+        id: release
+        uses: actions/github-script@v7
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const branch = await github.rest.repos.getBranch({ owner, repo, branch: 'main' });
+            if (branch.data.commit.sha !== context.sha) throw new Error('Release must build the current main commit');
+            const runs = await github.request('GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs', {
+              owner, repo, workflow_id: 'ci.yml', head_sha: context.sha, event: 'push', per_page: 100
+            });
+            if (runs.data.workflow_runs[0]?.conclusion !== 'success') throw new Error('CI for this exact main commit has not succeeded');
+            const releases = await github.paginate(github.rest.repos.listReleases, { owner, repo, per_page: 100 });
+            const matching = releases.filter(r => r.tag_name === process.env.TAG);
+            if (matching.length > 1) throw new Error('Duplicate releases exist for this tag');
+            const existing = matching[0];
+            if (existing && (!existing.draft || existing.target_commitish !== context.sha)) throw new Error('This version already exists for a different or published build');
+            const body = require('fs').readFileSync(`docs/releases/${process.env.VERSION}.md`, 'utf8');
+            const release = existing ?? (await github.rest.repos.createRelease({
+              owner, repo, tag_name: process.env.TAG, target_commitish: context.sha,
+              name: `Fluxlide ${process.env.TAG}`, body, draft: true, prerelease: false
+            })).data;
+            core.setOutput('id', String(release.id));
+      - name: Archive matching sources and build instructions
+        run: node scripts/release-sources.mjs
+      - name: Attach sources to the same release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" target/release-sources/* --clobber
+
   publish:
+    needs: prepare
     name: Build / ${{ matrix.name }}
     runs-on: ${{ matrix.platform }}
     strategy:
@@ -50,19 +106,6 @@ jobs:
       # Whether the signing secrets are there (secrets cannot be read in `if`).
       SIGN_MACOS: ${{ secrets.APPLE_CERTIFICATE != '' }}
       SIGN_WINDOWS: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
-      RELEASE_BODY: |
-        Fluxlide のインストーラーです。変更点と使い方は README と docs/release.md を見てください。
-
-        - Windows: `.msi` か `-setup.exe`
-        - macOS: Apple Silicon は `aarch64`、Intel は `x64` の `.dmg`
-        - Linux: `.AppImage`、`.deb`、`.rpm`
-
-        署名していない版は、初めて開くときに OS の警告が出ます（docs/release.md の「署名」）。
-
-        **同梱の FFmpeg**: FFmpeg 9.0.2 を LGPL v2.1 以降の構成でビルドした `fluxlide-ffmpeg` と `fluxlide-ffprobe` を、改変せずに同梱しています。ソースは https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz （SHA-256 `8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e`）、ビルドの手順はリポジトリの `scripts/build-ffmpeg.sh` です。ライセンスの全文はアプリの `licenses` フォルダにあります。
-
-        **特許**: H.264、HEVC、AAC などの形式は、国によって特許の対象になります。Fluxlide とその配布物は、特許の許諾を含みません。事業で使うときは、必要な許諾を各自で確かめてください。
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -72,11 +115,7 @@ jobs:
       - name: Check the version
         shell: bash
         run: |
-          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          if [ "v$version" != "$TAG" ]; then
-            echo "::error::The tag $TAG does not match the app version $version (src-tauri/tauri.conf.json)."
-            exit 1
-          fi
+          node scripts/check-release.mjs "$TAG"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -96,7 +135,7 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils libasound2-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils libasound2-dev xvfb
 
       - name: Install frontend dependencies
         run: npm ci
@@ -146,11 +185,7 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
-          tagName: ${{ env.TAG }}
-          releaseName: 'Fluxlide ${{ env.TAG }}'
-          releaseBody: ${{ env.RELEASE_BODY }}
-          releaseDraft: true
-          prerelease: false
+          releaseId: ${{ needs.prepare.outputs.release_id }}
           args: ${{ matrix.args }} --config src-tauri/tauri.bundle.conf.json
 
       - name: Build and publish
@@ -159,9 +194,68 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ env.TAG }}
-          releaseName: 'Fluxlide ${{ env.TAG }}'
-          releaseBody: ${{ env.RELEASE_BODY }}
-          releaseDraft: true
-          prerelease: false
+          releaseId: ${{ needs.prepare.outputs.release_id }}
           args: ${{ matrix.args }} --config src-tauri/tauri.bundle.conf.json ${{ env.SIGN_ARGS }}
+
+      - name: Check the installed Linux app and sidecars
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo dpkg -i target/release/bundle/deb/*.deb
+          /usr/bin/fluxlide-ffmpeg -version
+          /usr/bin/fluxlide-ffprobe -version
+          set +e
+          timeout 10s xvfb-run -a /usr/bin/fluxlide > target/linux-installed-startup.log 2>&1
+          result=$?
+          set -e
+          cat target/linux-installed-startup.log
+          if [ "$result" != 124 ]; then echo 'Installed application exited before the startup smoke check completed'; exit 1; fi
+
+      - name: Check macOS bundle contents
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          FFMPEG_TARGET: ${{ matrix.ffmpeg_target }}
+        run: |
+          app="target/$FFMPEG_TARGET/release/bundle/macos/Fluxlide.app"
+          test -x "$app/Contents/MacOS/fluxlide"
+          test -x "$app/Contents/MacOS/fluxlide-ffmpeg"
+          test -f "$app/Contents/Resources/licenses/THIRD_PARTY_NOTICES.txt"
+          if [ "$FFMPEG_TARGET" = aarch64-apple-darwin ]; then
+            "$app/Contents/MacOS/fluxlide-ffmpeg" -version
+            "$app/Contents/MacOS/fluxlide-ffprobe" -version
+          fi
+
+      - name: Check the extracted Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem target/release/bundle/msi/*.msi | Select-Object -First 1
+          $extract = Join-Path $env:RUNNER_TEMP 'fluxlide-msi'
+          $install = Start-Process msiexec.exe -ArgumentList @('/a', $installer.FullName, '/qn', "TARGETDIR=$extract") -Wait -PassThru -WindowStyle Hidden
+          if ($install.ExitCode -ne 0) { throw "MSI extraction failed: $($install.ExitCode)" }
+          $app = Get-ChildItem -LiteralPath $extract -Recurse -Filter fluxlide.exe | Select-Object -First 1
+          if (!$app) { throw 'App executable is missing from the MSI' }
+          & (Join-Path $app.DirectoryName 'fluxlide-ffmpeg.exe') -version
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled FFmpeg did not start' }
+          & (Join-Path $app.DirectoryName 'fluxlide-ffprobe.exe') -version
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled ffprobe did not start' }
+          if (!(Test-Path (Join-Path $app.DirectoryName 'licenses/THIRD_PARTY_NOTICES.txt'))) { throw 'License notices are missing' }
+
+  verify:
+    needs: [prepare, publish]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+      - name: Download and verify all release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$TAG" --dir target/release-verify
+          node scripts/verify-release.mjs
+          gh release upload "$TAG" target/release-verify/SHA256SUMS target/release-verify/release-provenance.json --clobber

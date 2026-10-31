@@ -60,7 +60,7 @@ cargo run --release -p fluxlide-engine --example soak -- <作業用フォルダ>
 | 素材 | 対応 | 理由と作り |
 | --- | --- | --- |
 | JPEG・PNG | 対応 | `image` で読む。EXIF の向きを反映する |
-| HEIC・HEIF（iPhone の写真） | 対応 | `image` では読めないので、取り込むときに FFmpeg で JPEG にして作品に残す。中身が JPEG の .HEIC（書き出しサービスに多い）はそのまま読む。**本物の HEIC のファイルではまだ確かめていない**（手元に HEVC で符号化した HEIC がなかった）。タイルに分かれた HEIC は FFmpeg 7.1 以降が組み立てる |
+| HEIC・HEIF | 対応 | 取り込み時にFFmpegでJPEGにする。v1.0.1で実HEVCの通常・4032×3024のタイル・回転付きテスト画像を確認した。タイルはffprobeのprimary Tile Gridから組み立てて全体を切り出す。最初のタイルだけを取り込む不具合を修正した。iPhoneで実際に撮影した写真と、すべてのHEIF変換の組合せは未確認。試験データの出典は `src-tauri/test-data/heic/README.md` |
 | H.264・HEVC の動画（mp4・mov・m4v） | 対応 | 同梱する FFmpeg の HEVC デコーダは LGPL の範囲に入っている。10bit の HEVC も 8bit にして再生できることを確かめた |
 | 縦向きの動画（回転の情報を持つ動画） | 対応 | FFmpeg が回してから渡すので、縦の動画として表示される。取り込みで縦の大きさになることを試験で確かめる |
 | 色プロファイル（Display P3 など） | sRGB として扱う | ICC プロファイルは読まない。P3 の写真は少し彩度が低く見える。上映と書き出しで同じ見た目になることを優先した |
@@ -75,4 +75,11 @@ cargo run --release -p fluxlide-engine --example soak -- <作業用フォルダ>
 | Rust 側 | HEIC の取り込み（中身が JPEG のもの、FFmpeg で変換するもの、読めないもの）、縦向きの動画の大きさ |
 | 画面側 | vitest を入れた（`npm test`、CI でも走る）。編集を順に送ること、送る変更が残る間は古い返事を出さないこと、閉じた作品の変更を捨てること、やり直しても通らないときに知らせること。時間とファイルの大きさの書き方 |
 
-画面を操作する試験（E2E）は入れていない。上映ウィンドウは webview を持たず、WebDriver では操作できないため、[手動の確認項目](manual-checks.md)で確かめる。
+v1.0.1ではPlaywrightで実画面を確認した。IPC差し替えによる遅延・失敗の試験と、Windows版Tauriの実IPCによる保存・外部画面上映・暗転・書き出しを分けて記録している。ネイティブ上映は管理WebViewから操作し、映像の写しも確認した。物理機器の抜き差しは[手動の確認項目](manual-checks.md)に残す。
+
+## 5. 依存の安全性（v1.0.1）
+
+- Tokioを1.54.1に更新し、RUSTSEC-2026-0384を解消した。
+- GTK3/Tauri経由のGLib 0.18.5には、Variantイテレーターの上流修正をvendorに適用した。版番号だけを偽って変更せず、`vendor/glib/FLUXLIDE-PATCH.md`に差分と解除条件を残す。`cargo audit`の当該IDだけを例外とし、CIでファイルハッシュ・path patch・最適化したイテレーター試験を必須にする。
+- `cargo audit --deny unsound`をCIに追加した。proc-macro-error、ttf-parser、zbus_names、zvariant、zvariant_deriveの保守終了警告は残る。既知の脆弱性の修正とは区別し、上流Tauriの更新時に追跡する。
+- SvelteKitを3.1.1へ更新した。npmの残りはdeepmerge 4.3.1由来のlow警告（依存元を含む4件）。ビルド設定の結合処理であり、このアプリでは外部の利用者が設定オブジェクトを供給する入口はない。修正版がないため、意味のないダウングレードは行わず、moderate以上をCIで拒否する。開発依存という分類だけで影響を判断しない。

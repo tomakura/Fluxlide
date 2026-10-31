@@ -1,0 +1,21 @@
+import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+const build = readFileSync("scripts/build-ffmpeg.sh", "utf8");
+const ffmpeg = build.match(/^FFMPEG_VERSION=(\S+)$/m)?.[1];
+const expected = build.match(/^FFMPEG_SHA256=([a-f0-9]{64})$/m)?.[1];
+if (!ffmpeg || !expected) throw new Error("FFmpeg version and checksum are required");
+const version = JSON.parse(readFileSync("package.json", "utf8")).version;
+const out = resolve("target/release-sources");
+mkdirSync(out, { recursive: true });
+const response = await fetch(`https://ffmpeg.org/releases/ffmpeg-${ffmpeg}.tar.xz`, { signal: AbortSignal.timeout(120_000) });
+if (!response.ok) throw new Error(`FFmpeg source download failed: HTTP ${response.status}`);
+const bytes = Buffer.from(await response.arrayBuffer());
+if (createHash("sha256").update(bytes).digest("hex") !== expected) throw new Error("FFmpeg source checksum mismatch");
+writeFileSync(`${out}/ffmpeg-${ffmpeg}.tar.xz`, bytes);
+copyFileSync("scripts/build-ffmpeg.sh", `${out}/build-ffmpeg.sh`);
+copyFileSync("THIRD_PARTY_LICENSES.md", `${out}/THIRD_PARTY_LICENSES.md`);
+execFileSync("git", ["archive", "--format=tar.gz", `--prefix=Fluxlide-${version}/`, "--output", `${out}/Fluxlide-${version}-source.tar.gz`, "HEAD"]);
+console.log(`Source archives and build instructions written to ${out}`);

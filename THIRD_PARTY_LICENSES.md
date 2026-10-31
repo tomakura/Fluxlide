@@ -43,6 +43,16 @@ in some countries. Neither Fluxlide nor this license file grants any patent
 license; anyone using Fluxlide in a business should check which licenses
 they need.
 
+## GLib Rust bindings
+
+The Linux application uses `glib` 0.18.5 (MIT, copyright the gtk-rs Project
+Developers) through Tauri's GTK3 dependencies. Fluxlide includes the upstream
+fix for `VariantStrIter::impl_get` from gtk-rs/gtk-rs-core pull request #1343
+to address RUSTSEC-2024-0429. The version remains 0.18.5; the patched source,
+original copyright and license are in `vendor/glib/` in the Fluxlide source
+archive attached to the release. See `vendor/glib/FLUXLIDE-PATCH.md` for the
+exact change and its removal condition.
+
 ## IBM Plex Sans JP
 
 Fluxlide draws captions, text watermarks and the title card with IBM Plex
