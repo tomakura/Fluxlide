@@ -151,8 +151,6 @@
   <div class="panel">
     <fieldset>
       <legend>キャプション</legend>
-      <p class="hint">各スライドのタイトル・作者・説明を、写真の上に重ねて表示します。</p>
-
       <section class="group" aria-labelledby="caption-design">
         <h4 id="caption-design">デザイン</h4>
         <div class="designs">
@@ -176,9 +174,6 @@
             </button>
           {/each}
         </div>
-        {#if look.caption.design === "none"}
-          <p class="hint" transition:rise>どのスライドにもキャプションを表示しません。</p>
-        {/if}
       </section>
 
       {#if look.caption.design !== "none"}
@@ -215,7 +210,6 @@
               </label>
             {/each}
           </div>
-          <p class="hint">「全体」を動かすと、3つの項目がまとめて大きく・小さくなります。</p>
         </section>
       {/if}
 
