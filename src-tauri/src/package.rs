@@ -187,7 +187,7 @@ fn plan(mut show: ShowDefinition, media_dir: &Path, music: bool) -> Result<Plan,
     let importing = importing_count(&show);
     if importing > 0 {
         return Err(format!(
-            "取り込み中の写真や動画が{importing}件あります。終わってから書き出してください。"
+            "取り込み中の写真や動画が{importing}件あります。編集中の作品なら終わるまで待ち、止まっているときは作品を開き直してください。"
         ));
     }
     let mut entries = media_entries(&show, media_dir)?;

@@ -31,6 +31,7 @@
   const musicUsable = $derived(!!music && !music.error);
   const withMusic = $derived(includeMusic && musicUsable);
   const bytes = $derived(estimate ? estimate.bytes + (withMusic ? music!.bytes : 0) : 0);
+  const canStart = $derived(!!estimate && estimate.importing === 0);
   const fraction = $derived(progress && progress.total > 0 ? progress.done / progress.total : 0);
 
   async function start() {
@@ -41,14 +42,15 @@
     if (!path) return;
     running = true;
     progress = null;
-    const unlisten = await api.onPackageProgress((next) => (progress = next));
+    let unlisten: (() => void) | null = null;
     try {
+      unlisten = await api.onPackageProgress((next) => (progress = next));
       await api.exportPackage(dir, path, withMusic);
       done = path;
     } catch (err) {
       error = String(err);
     } finally {
-      unlisten();
+      unlisten?.();
       running = false;
     }
   }
@@ -114,7 +116,9 @@
         </dl>
 
         {#if estimate.importing > 0}
-          <p class="banner error">取り込み中の写真や動画が{estimate.importing}件あります。終わってから書き出してください。</p>
+          <p class="banner error">
+            取り込み中の写真や動画が{estimate.importing}件あります。編集中の作品なら、終わるまで待ってください。ホームから書き出している場合は、取り込みが途中で止まっているので、作品を一度開き直してください。
+          </p>
         {/if}
         {#if estimate.failed > 0}
           <p class="hint">取り込めなかった素材が{estimate.failed}件あります。ファイルは入らず、開いた先でも「選び直す」が必要です。</p>
@@ -126,8 +130,9 @@
       {#if error}<p class="error">{error}</p>{/if}
 
       <div class="buttons">
-        <button onclick={onclose}>{done ? "閉じる" : "やめる"}</button>
-        <button class="primary" data-autofocus disabled={!estimate || estimate.importing > 0} onclick={start}>
+        <!-- Focus goes to the button that can be pressed. -->
+        <button data-autofocus={canStart ? undefined : ""} onclick={onclose}>{done ? "閉じる" : "やめる"}</button>
+        <button class="primary" data-autofocus={canStart ? "" : undefined} disabled={!canStart} onclick={start}>
           保存先を選んで書き出す…
         </button>
       </div>

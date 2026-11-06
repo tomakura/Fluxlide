@@ -89,12 +89,15 @@ pub fn run() {
     tauri::Builder::default()
         // A second start (a package double-clicked while the app is open)
         // hands its files to this one instead of opening another window.
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
                 let _ = window.set_focus();
             }
-            package::OpenedPackages::add(app, args.into_iter().skip(1).map(Into::into));
+            // A relative path is relative to where the second start ran, not
+            // to this process. An absolute one is kept as it is.
+            let cwd = std::path::PathBuf::from(cwd);
+            package::OpenedPackages::add(app, args.into_iter().skip(1).map(|arg| cwd.join(arg)));
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())

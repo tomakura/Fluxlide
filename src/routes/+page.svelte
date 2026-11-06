@@ -45,13 +45,16 @@
     [reading, ...packages] = packages;
   });
 
+  // The next file waits until this one is open: two projects opening at once
+  // could leave the window showing one and the app holding the other.
   async function opened(dir: string) {
-    reading = null;
     try {
       open.take(await api.openProject(dir));
       screen = "editor";
     } catch (err) {
       error = String(err);
+    } finally {
+      reading = null;
     }
   }
 
