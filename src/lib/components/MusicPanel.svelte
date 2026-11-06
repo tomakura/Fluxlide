@@ -39,14 +39,17 @@
   // the source is compared by its contents: moving the volume must not read
   // the folder again.
   const sourceKey = $derived(JSON.stringify(music?.source ?? null));
+  // Turning the levelling on measures the songs, ahead of the show.
+  const level = $derived(music?.normalize ?? false);
   $effect(() => {
     const source = JSON.parse(sourceKey) as Music["source"];
+    const measure = level;
     let current = true;
     tracks = null;
     tracksError = null;
     if (source) {
       api
-        .musicTracks(source)
+        .musicTracks(source, measure)
         .then((list) => current && (tracks = list))
         .catch((err) => current && (tracksError = String(err)));
     }
@@ -156,6 +159,18 @@
       />
       音のある動画の再生中は BGM を止める
     </label>
+    <label class="inline">
+      <input
+        type="checkbox"
+        checked={music.normalize}
+        onchange={(e) => {
+          const on = e.currentTarget.checked;
+          setMusic((music) => (music.normalize = on));
+        }}
+      />
+      BGM と動画の音量をそろえる
+    </label>
+    <p class="hint">曲や動画ごとの音の大きさの違いをならします。BGM の音量と動画ごとの音量は、そろえたうえで効きます。</p>
 
     <fieldset>
       <legend>音ズレ補正（この機器の設定）</legend>

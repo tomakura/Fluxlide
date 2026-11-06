@@ -9,6 +9,7 @@ use image::{DynamicImage, ImageDecoder, ImageReader, metadata::Orientation};
 use crate::{EngineError, Renderer};
 
 pub mod audio;
+pub mod loudness;
 pub mod music;
 pub mod video;
 

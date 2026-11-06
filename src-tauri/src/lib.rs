@@ -4,6 +4,7 @@ mod history;
 mod identify;
 mod import;
 mod look;
+mod loudness;
 mod package;
 mod presentation;
 mod preview;
@@ -114,6 +115,9 @@ pub fn run() {
         .manage(package::PackageState::default())
         .manage(package::OpenedPackages::default())
         .setup(|app| {
+            if let Ok(dir) = app.path().app_data_dir() {
+                loudness::init(&dir);
+            }
             // On Windows and Linux a double-clicked package comes as an argument.
             package::OpenedPackages::add(app.handle(), std::env::args_os().skip(1).map(Into::into));
             let session = app.state::<editor::EditorState>().session();

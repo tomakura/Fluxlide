@@ -36,7 +36,7 @@ use crate::{CaptionDesign, Corner, Direction, Fit};
 
 /// Version of the [`ShowDefinition`] layout. Raised when a stored project
 /// needs converting to be read.
-pub const SHOW_VERSION: u32 = 2;
+pub const SHOW_VERSION: u32 = 3;
 
 /// Defaults from the screen design (`docs/ui-draft.md`).
 pub const DEFAULT_PHOTO_MS: u32 = 10_000;
@@ -127,6 +127,9 @@ pub struct Asset {
     /// Whether a video has sound.
     #[serde(default)]
     pub has_audio: bool,
+    /// How loud a video's sound is, once measured.
+    #[serde(default)]
+    pub loudness: Option<Loudness>,
 }
 
 impl Asset {
@@ -141,6 +144,39 @@ impl Asset {
 pub enum AssetKind {
     Photo,
     Video,
+}
+
+/// Loudness all sound is brought to when [`Music::normalize`] is on, in LUFS.
+pub const TARGET_LUFS: f32 = -16.0;
+/// Highest true peak a gain may raise a sound to, in dBTP.
+pub const PEAK_CEILING_DB: f32 = -1.0;
+/// Most a quiet sound is raised, in dB.
+pub const MAX_BOOST_DB: f32 = 12.0;
+
+/// How loud a sound file is, measured over its whole length.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct Loudness {
+    /// Integrated loudness (EBU R128).
+    pub integrated_lufs: f32,
+    /// True peak in dBTP; `None` for silence.
+    pub true_peak_db: Option<f32>,
+}
+
+impl Loudness {
+    /// The gain that brings the sound to [`TARGET_LUFS`]. A quiet sound is
+    /// raised only as far as its peaks allow and at most [`MAX_BOOST_DB`],
+    /// so that it does not clip; a loud one is always lowered.
+    pub fn gain(&self) -> f32 {
+        let headroom = self
+            .true_peak_db
+            .map_or(MAX_BOOST_DB, |peak| (PEAK_CEILING_DB - peak).max(0.0));
+        let db = (TARGET_LUFS - self.integrated_lufs)
+            .min(MAX_BOOST_DB)
+            .min(headroom);
+        10f32.powf(db / 20.0)
+    }
 }
 
 /// Whether an asset's copy can be used. How far a copy has got is not
@@ -430,6 +466,9 @@ pub struct Music {
     pub volume: f32,
     /// Fade the music out while a video with sound plays.
     pub duck_for_videos: bool,
+    /// Bring every song and every video's sound to the same loudness
+    /// ([`Loudness::gain`]) before their own volumes apply.
+    pub normalize: bool,
     pub fade_ms: u32,
     pub gap_ms: u32,
     pub duck_fade_out_ms: u32,
@@ -443,6 +482,7 @@ impl Default for Music {
             shuffle: true,
             volume: 0.5,
             duck_for_videos: true,
+            normalize: true,
             fade_ms: 2_000,
             gap_ms: 1_000,
             duck_fade_out_ms: 1_000,
@@ -647,6 +687,36 @@ impl Timeline {
 mod tests {
     use super::*;
 
+    fn db(gain: f32) -> f32 {
+        20.0 * gain.log10()
+    }
+
+    #[test]
+    fn a_loud_sound_is_lowered_to_the_target() {
+        let loud = Loudness {
+            integrated_lufs: -9.0,
+            true_peak_db: Some(0.5),
+        };
+        assert!((db(loud.gain()) + 7.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_quiet_sound_is_raised_only_as_far_as_its_peaks_allow() {
+        let quiet = |peak| Loudness {
+            integrated_lufs: -26.0,
+            true_peak_db: peak,
+        };
+        assert!((db(quiet(Some(-20.0)).gain()) - 10.0).abs() < 1e-4);
+        assert!((db(quiet(Some(-6.0)).gain()) - 5.0).abs() < 1e-4);
+        // Peaks already above the ceiling: left as it is, not lowered.
+        assert!((db(quiet(Some(0.0)).gain())).abs() < 1e-4);
+        let silent = Loudness {
+            integrated_lufs: -70.0,
+            true_peak_db: None,
+        };
+        assert!((db(silent.gain()) - MAX_BOOST_DB).abs() < 1e-4);
+    }
+
     fn photo(id: u64) -> Asset {
         Asset {
             id: AssetId(id),
@@ -658,6 +728,7 @@ mod tests {
             size: Some([4032, 3024]),
             duration_ms: None,
             has_audio: false,
+            loudness: None,
         }
     }
 
@@ -667,6 +738,7 @@ mod tests {
             file: format!("{id}.mp4"),
             duration_ms: Some(duration_ms),
             has_audio: true,
+            loudness: None,
             ..photo(id)
         }
     }

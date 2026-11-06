@@ -269,7 +269,10 @@ fn replace(app: &AppHandle, slot: &Mutex<Option<Session>>, session: Session) -> 
         .asset_protocol_scope()
         .allow_directory(session.media_dir(), true);
     let state = ShowState::of(&session);
-    *slot.lock().unwrap() = Some(session);
+    let mut open = slot.lock().unwrap();
+    // Queued once it is the open one, which the jobs are checked against.
+    let session = open.insert(session);
+    import::measure_unmeasured(&app.state::<import::Importer>(), session);
     state
 }
 

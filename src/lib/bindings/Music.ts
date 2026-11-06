@@ -8,4 +8,9 @@ export type Music = { source: MusicSource | null, shuffle: boolean, volume: numb
 /**
  * Fade the music out while a video with sound plays.
  */
-duckForVideos: boolean, fadeMs: number, gapMs: number, duckFadeOutMs: number, duckFadeInMs: number, };
+duckForVideos: boolean, 
+/**
+ * Bring every song and every video's sound to the same loudness
+ * ([`Loudness::gain`]) before their own volumes apply.
+ */
+normalize: boolean, fadeMs: number, gapMs: number, duckFadeOutMs: number, duckFadeInMs: number, };

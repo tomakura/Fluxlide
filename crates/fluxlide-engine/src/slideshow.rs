@@ -45,7 +45,7 @@ use crate::media::audio::AudioTrack;
 use crate::media::video::{Ffmpeg, PlayRange, VideoPlayer};
 use crate::media::{MediaTexture, load_image};
 use crate::show::{
-    Advance, AssetKind, AtEnd, Look, Order, ShowDefinition, Slide, SlideId, Timeline,
+    Advance, AssetId, AssetKind, AtEnd, Look, Order, ShowDefinition, Slide, SlideId, Timeline,
     TimelineEntry, TransitionChoice, TransitionId, WatermarkSource, WatermarkSpec,
 };
 use crate::{
@@ -124,6 +124,8 @@ struct Showing {
     caption_from: f64,
     /// The slide's sound while it plays.
     voice: Option<VoiceHandle>,
+    /// Volume of that sound: the slide's own, levelled if the show says so.
+    volume: f32,
     /// Keeps the BGM down while the slide's sound plays.
     _duck: Option<DuckWindow>,
 }
@@ -202,7 +204,7 @@ impl Showing {
     }
 
     fn volume(&self) -> f32 {
-        self.slide.video.volume
+        self.volume
     }
 }
 
@@ -1100,7 +1102,7 @@ impl Slideshow {
         }
         // The sound starts when the video starts to play.
         let play_at = self.mixer_time(anchor + ms_to_secs(u64::from(entry.enter_ms)));
-        let volume = slide.video.volume;
+        let volume = slide.video.volume * self.sound_gain(entry.asset);
         let voice = match (&mut media, &self.audio) {
             (
                 Prepared::Video {
@@ -1140,9 +1142,23 @@ impl Slideshow {
             anchor,
             caption_from,
             voice,
+            volume,
             _duck: duck.flatten(),
         });
         self.start_loading();
+    }
+
+    /// The gain that brings the sound of `asset` to the level of the others,
+    /// when the show levels sound. A video still being measured plays as it
+    /// is until it has been.
+    fn sound_gain(&self, asset: AssetId) -> f32 {
+        if !self.show.music.normalize {
+            return 1.0;
+        }
+        self.show
+            .asset(asset)
+            .and_then(|asset| asset.loudness)
+            .map_or(1.0, |loudness| loudness.gain())
     }
 
     fn transition_for(&self, choice: TransitionChoice) -> Transition {
@@ -1491,6 +1507,7 @@ mod tests {
                 size: None,
                 duration_ms: *video_ms,
                 has_audio: video_ms.is_some(),
+                loudness: None,
             });
             show.slides.push(Slide::new(SlideId(id), AssetId(id)));
         }
@@ -1795,6 +1812,11 @@ mod tests {
             end_ms: Some(1_500),
             volume: 0.5,
         };
+        // Measured 10 dB below the level all sound is brought to.
+        definition.assets[1].loudness = Some(crate::show::Loudness {
+            integrated_lufs: crate::show::TARGET_LUFS - 10.0,
+            true_peak_db: Some(-20.0),
+        });
         let mut show = Slideshow::new(renderer, definition, dir.clone(), (32, 32));
         let mixer = crate::audio::OfflineMixer::export(48_000);
         show.set_audio(mixer.mixer());
@@ -1819,6 +1841,9 @@ mod tests {
         show.update(1.6);
         assert_eq!(show.stats().current, Some(SlideId(2)));
         assert_eq!(show.current.as_ref().unwrap().anchor, 1.5);
+        // Its own half volume, raised by the 10 dB that levels it.
+        let volume = show.current.as_ref().unwrap().volume;
+        assert!((volume - 0.5 * 10f32.powf(0.5)).abs() < 1e-4, "{volume}");
         assert_eq!(probe.windows(), [(2.0, 3.0)]);
 
         // The photo comes back in once the range has played, at 3.0, and

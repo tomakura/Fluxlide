@@ -194,6 +194,40 @@ pub struct BgmConfig {
     /// Seed of the shuffle. Without one, each start shuffles differently.
     pub seed: Option<u64>,
     pub tuning: BgmTuning,
+    /// Brings each track to the same loudness. `None` plays them as they are.
+    pub levelling: Option<TrackGains>,
+}
+
+/// Gives the gain that levels a track's loudness, measuring the track if it
+/// has not been. Asked on the BGM's own thread before the track is opened,
+/// so a slow answer delays only that track. A track whose gain cannot be
+/// found is reported as failed, like one that cannot be decoded.
+#[derive(Clone)]
+pub struct TrackGains(Arc<GainOf>);
+
+type GainOf = dyn Fn(&Path) -> Result<f32, String> + Send + Sync;
+
+impl TrackGains {
+    pub fn new(gain_of: impl Fn(&Path) -> Result<f32, String> + Send + Sync + 'static) -> Self {
+        Self(Arc::new(gain_of))
+    }
+
+    fn gain_of(&self, path: &Path) -> Result<f32, String> {
+        (self.0)(path)
+    }
+}
+
+impl std::fmt::Debug for TrackGains {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TrackGains")
+    }
+}
+
+/// The same levelling only when it is the same function.
+impl PartialEq for TrackGains {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 /// The track being played.
@@ -541,6 +575,8 @@ struct TrackFeed {
     seq: u64,
     samples: rtrb::Consumer<f32>,
     finished: Arc<AtomicBool>,
+    /// Levels the track's loudness ([`BgmConfig::levelling`]); 1 without it.
+    gain: f32,
 }
 
 /// A track fading out because the user asked for the next one.
@@ -596,7 +632,7 @@ impl Playing {
             };
         }
         let fade = settings.fade_frames;
-        let mut gain = 1.0;
+        let mut gain = self.feed.gain;
         if self.played < fade {
             gain *= settings.curve.rise(self.played as f64 / fade as f64);
         }
@@ -906,6 +942,7 @@ struct Pending {
     track: MusicTrack,
     path: PathBuf,
     since: Instant,
+    gain: f32,
 }
 
 /// A track the mixer has, kept to tell what is playing.
@@ -930,6 +967,7 @@ struct Controller {
     reported_seq: u64,
     failures_in_row: usize,
     gave_up: bool,
+    levelling: Option<TrackGains>,
 }
 
 impl Controller {
@@ -952,12 +990,20 @@ impl Controller {
             return;
         }
         let path = self.playlist.next_track().to_path_buf();
+        let gain = match &self.levelling {
+            None => 1.0,
+            Some(levelling) => match levelling.gain_of(&path) {
+                Ok(gain) => gain,
+                Err(reason) => return self.track_failed(&path, reason),
+            },
+        };
         match MusicTrack::open(&self.ffmpeg, &path, self.format) {
             Ok(track) => {
                 self.pending = Some(Pending {
                     track,
                     path,
                     since: Instant::now(),
+                    gain,
                 });
             }
             Err(err) => self.track_failed(&path, err.to_string()),
@@ -1015,6 +1061,7 @@ impl Controller {
             seq: self.seq,
             samples,
             finished,
+            gain: pending.gain,
         });
     }
 
@@ -1122,6 +1169,7 @@ impl Bgm {
             reported_seq: 0,
             failures_in_row: 0,
             gave_up: false,
+            levelling: config.levelling,
         };
         let thread = std::thread::Builder::new()
             .name("fluxlide-bgm".into())
@@ -1295,12 +1343,18 @@ mod tests {
                     seq,
                     samples,
                     finished: Arc::new(AtomicBool::new(true)),
+                    gain: 1.0,
                 })
                 .unwrap();
         }
 
         /// Queues a decoded track of `frames` frames of the same value on the left.
         fn queue_constant(&self, seq: u64, frames: usize, value: f32) {
+            self.queue_levelled(seq, frames, value, 1.0);
+        }
+
+        /// Like [`Rig::queue_constant`], with a levelling gain of `gain`.
+        fn queue_levelled(&self, seq: u64, frames: usize, value: f32, gain: f32) {
             let (mut producer, samples) = rtrb::RingBuffer::new(frames * 2);
             for _ in 0..frames {
                 producer.push(value).unwrap();
@@ -1311,6 +1365,7 @@ mod tests {
                     seq,
                     samples,
                     finished: Arc::new(AtomicBool::new(true)),
+                    gain,
                 })
                 .unwrap();
         }
@@ -1344,6 +1399,7 @@ mod tests {
                 seq: 1,
                 samples,
                 finished: finished.clone(),
+                gain: 1.0,
             })
             .unwrap();
         assert!(!rig.offline.has_samples_for(10));
@@ -1485,6 +1541,44 @@ mod tests {
         assert!((out[0] - 201.0 * 0.01).abs() < 0.01);
         assert!((out[99] - 300.0).abs() < 0.01);
         assert!((out[150] - 351.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_track_is_levelled_by_its_own_gain_under_the_volume() {
+        let mut rig = Rig::new(tuning(0.0, 0.0, FadeCurve::Linear));
+        rig.queue_levelled(1, 100, 0.5, 0.5);
+        assert_eq!(rig.render(2), [0.25, 0.25]);
+    }
+
+    #[test]
+    fn a_track_whose_level_cannot_be_found_is_reported_as_failed() {
+        let Ok(ffmpeg) = Ffmpeg::locate() else {
+            eprintln!("skipping BGM test: ffmpeg not found");
+            return;
+        };
+        let offline = OfflineMixer::export(8000);
+        let bgm = Bgm::start(
+            ffmpeg,
+            &offline.mixer(),
+            &BgmSource::Files(vec![PathBuf::from("song.mp3")]),
+            BgmConfig {
+                levelling: Some(TrackGains::new(|_| Err("測れません".into()))),
+                ..BgmConfig::default()
+            },
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !bgm.stats().all_tracks_failed && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let events = bgm.drain_events();
+        assert_eq!(
+            events[0],
+            BgmEvent::TrackFailed {
+                path: PathBuf::from("song.mp3"),
+                reason: "測れません".into()
+            }
+        );
     }
 
     #[test]
