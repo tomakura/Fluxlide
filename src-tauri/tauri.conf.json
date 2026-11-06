@@ -46,8 +46,8 @@
         "ext": [
           "fluxlide"
         ],
-        "name": "Fluxlide スライドショー",
-        "description": "Fluxlide のスライドショー",
+        "name": "Fluxlide Slideshow",
+        "description": "Fluxlide slideshow",
         "mimeType": "application/x-fluxlide",
         "role": "Editor"
       }
