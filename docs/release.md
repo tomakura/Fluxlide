@@ -46,6 +46,10 @@
 
 ワークフローが証明書を取り込み、拇印を `src-tauri/tauri.windows-sign.conf.json` に書いてバンドラに渡す。タイムスタンプは DigiCert のサーバーを使う。クラウドの署名（Azure Trusted Signing など）を使うときは、`bundle.windows.signCommand` に変える。
 
+## 2.5 インストーラーに入る文字列
+
+Windows の `.msi`（WiX）は、文字列を英語版の文字コード（1252）で持つので、日本語は入れられない。`tauri.conf.json` の `bundle` の中（拡張子の関連付けの名前や説明など、インストーラーに入る文字列）は、英語で書く。日本語にすると、リリースの Windows のビルドが `LGHT0311` で止まる（v1.1.0 で起きた）。PR の CI はインストーラーまで作らないので、ここでは見つからない。
+
 ## 3. 配布で決めたこと
 
 | 項目 | 決定 |
