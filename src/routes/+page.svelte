@@ -6,6 +6,7 @@
   import Editor from "$lib/components/Editor.svelte";
   import Home from "$lib/components/Home.svelte";
   import OutputDialog from "$lib/components/OutputDialog.svelte";
+  import PackageImport from "$lib/components/PackageImport.svelte";
   import Presenting from "$lib/components/Presenting.svelte";
   import { rise } from "$lib/motion";
   import { open } from "$lib/show.svelte";
@@ -26,6 +27,33 @@
       screen = state ? "editor" : "home";
     });
   });
+
+  // .fluxlide files to read, one at a time. Reading opens the new slideshow,
+  // so it waits while a show is presented.
+  let packages = $state<string[]>([]);
+  let reading = $state<string | null>(null);
+
+  $effect(() => {
+    const take = () => api.takeOpenedPackages().then((paths) => (packages = [...packages, ...paths]));
+    take();
+    const unlisten = api.onPackageOpened(take);
+    return () => void unlisten.then((stop) => stop());
+  });
+
+  $effect(() => {
+    if (reading || packages.length === 0 || screen === "loading" || screen === "presenting") return;
+    [reading, ...packages] = packages;
+  });
+
+  async function opened(dir: string) {
+    reading = null;
+    try {
+      open.take(await api.openProject(dir));
+      screen = "editor";
+    } catch (err) {
+      error = String(err);
+    }
+  }
 
   async function home() {
     await api.closeProject();
@@ -76,11 +104,15 @@
 </script>
 
 {#if screen === "home"}
-  <Home onopened={() => (screen = "editor")} />
+  <Home onopened={() => (screen = "editor")} onimport={(path) => (packages = [...packages, path])} />
 {:else if screen === "editor"}
   <Editor onhome={home} onpresent={present} />
 {:else if screen === "presenting"}
   <Presenting {syncOffsetMs} onend={() => (screen = "editor")} />
+{/if}
+
+{#if reading}
+  <PackageImport path={reading} onread={opened} onclose={() => (reading = null)} />
 {/if}
 
 {#if choosing}
