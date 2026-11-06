@@ -68,11 +68,8 @@
     });
   }
 
-  const standardSizes = $derived(
-    look !== undefined &&
-      look.caption.textScale === 1 &&
-      PARTS.every(([part]) => look.caption.partScales[part] === 1),
-  );
+  const partsChanged = $derived(look !== undefined && PARTS.some(([part]) => look.caption.partScales[part] !== 1));
+  const standardSizes = $derived(look !== undefined && look.caption.textScale === 1 && !partsChanged);
 
   const DEFAULT_WATERMARK: Omit<WatermarkSpec, "content"> = { corner: "topRight", opacity: 0.6, size: 0.045 };
 
@@ -149,97 +146,162 @@
 
 {#if show && look}
   <div class="panel">
-    <fieldset>
-      <legend>キャプション</legend>
-      <section class="group" aria-labelledby="caption-design">
-        <h4 id="caption-design">デザイン</h4>
-        <div class="designs">
-          {#each DESIGNS as [design, name] (design)}
-            <button
-              class="design"
-              class:current={look.caption.design === design}
-              aria-pressed={look.caption.design === design}
-              onclick={() => setLook((look) => (look.caption.design = design))}
-            >
-              <span class="thumb {design}" aria-hidden="true">
-                {#if design !== "none"}
-                  <span class="mark">
-                    <span class="bar title"></span>
-                    <span class="bar author"></span>
-                    <span class="bar description"></span>
-                  </span>
-                {/if}
-              </span>
-              {name}
-            </button>
+    <section>
+      <h3>写真</h3>
+      <div class="pair">
+        <label>
+          表示時間（秒）
+          <input
+            type="number"
+            min="0.5"
+            step="0.5"
+            value={look.photoMs / 1000}
+            oninput={(e) => {
+              const ms = Math.round(Number(e.currentTarget.value) * 1000);
+              if (ms > 0) setLook((look) => (look.photoMs = ms), "photoMs");
+            }}
+          />
+        </label>
+        <label>
+          ゆっくりズーム
+          <select
+            value={zoomOf(look.motion) === "still" ? "none" : zoomOf(look.motion)}
+            onchange={(e) => {
+              const key = e.currentTarget.value as "none" | "in" | "out";
+              setLook((look) => (look.motion = key === "none" ? null : ZOOMS[key]));
+            }}
+          >
+            <option value="none">なし</option>
+            <option value="in">ズームイン</option>
+            <option value="out">ズームアウト</option>
+          </select>
+        </label>
+      </div>
+      <label>
+        縦横比が合わない写真
+        <select
+          value={look.fit}
+          onchange={(e) => {
+            const fit = e.currentTarget.value as Fit;
+            setLook((look) => (look.fit = fit));
+          }}
+        >
+          {#each Object.entries(FITS) as [fit, name] (fit)}
+            <option value={fit}>{name}</option>
           {/each}
-        </div>
-      </section>
+        </select>
+      </label>
+    </section>
+
+    <section>
+      <h3>トランジション</h3>
+      <div class="pair">
+        <label>
+          種類
+          <TransitionSelect
+            value={look.transition}
+            {show}
+            onchange={(choice) => setLook((look) => (look.transition = choice ?? { kind: "fade" }))}
+          />
+        </label>
+        <label>
+          長さ（秒）
+          <input
+            type="number"
+            min="0.1"
+            step="0.1"
+            placeholder={String(ownLength(look.transition) / 1000)}
+            value={look.transitionMs === null ? "" : look.transitionMs / 1000}
+            oninput={(e) => {
+              // Left empty, each transition takes its own length.
+              const value = e.currentTarget.value;
+              const ms = Math.round(Number(value) * 1000);
+              if (value.trim() === "") setLook((look) => (look.transitionMs = null), "transitionMs");
+              else if (ms > 0) setLook((look) => (look.transitionMs = ms), "transitionMs");
+            }}
+          />
+        </label>
+      </div>
+    </section>
+
+    <section>
+      <h3>キャプション</h3>
+      <div class="designs" role="group" aria-label="デザイン">
+        {#each DESIGNS as [design, name] (design)}
+          <button
+            class="design"
+            class:current={look.caption.design === design}
+            aria-pressed={look.caption.design === design}
+            onclick={() => setLook((look) => (look.caption.design = design))}
+          >
+            <span class="thumb {design}" aria-hidden="true">
+              {#if design !== "none"}
+                <span class="mark">
+                  <span class="bar title"></span>
+                  <span class="bar author"></span>
+                  <span class="bar description"></span>
+                </span>
+              {/if}
+            </span>
+            {name}
+          </button>
+        {/each}
+      </div>
 
       {#if look.caption.design !== "none"}
-        <section class="group" aria-labelledby="caption-size" transition:rise>
-          <div class="heading">
-            <h4 id="caption-size">文字の大きさ</h4>
-            <button class="quiet small" disabled={standardSizes} onclick={resetSizes}>標準に戻す</button>
-          </div>
-          <div class="sizes">
-            <label class="size all">
-              <span class="name">全体</span>
-              <input
-                type="range"
-                min={ALL_RANGE.min}
-                max={ALL_RANGE.max}
-                step="0.05"
-                value={look.caption.textScale}
-                oninput={(e) => setSize("all", Number(e.currentTarget.value))}
-              />
-              <output>{percent(look.caption.textScale)}</output>
-            </label>
-            {#each PARTS as [part, name] (part)}
-              <label class="size">
-                <span class="name">{name}</span>
-                <input
-                  type="range"
-                  min={PART_RANGE.min}
-                  max={PART_RANGE.max}
-                  step="0.05"
-                  value={look.caption.partScales[part]}
-                  oninput={(e) => setSize(part, Number(e.currentTarget.value))}
-                />
-                <output>{percent(look.caption.partScales[part])}</output>
-              </label>
-            {/each}
-          </div>
-        </section>
-      {/if}
-
-      {#if look.caption.design !== "card" && look.caption.design !== "none"}
-        <label class="group" transition:rise>
-          <span class="group-title">縁どり（px）</span>
-          <span class="outline">
+        <div class="rows" transition:rise>
+          <label class="row">
+            <span>文字の大きさ</span>
             <input
               type="range"
-              min="0"
-              max="10"
-              step="0.5"
-              value={look.caption.outline}
-              oninput={(e) => setOutline(Number(e.currentTarget.value))}
+              min={ALL_RANGE.min}
+              max={ALL_RANGE.max}
+              step="0.05"
+              value={look.caption.textScale}
+              oninput={(e) => setSize("all", Number(e.currentTarget.value))}
             />
-            <input
-              type="number"
-              min="0"
-              max="20"
-              step="0.5"
-              value={look.caption.outline}
-              oninput={(e) => setOutline(Number(e.currentTarget.value))}
-            />
-          </span>
-        </label>
+            <output>{percent(look.caption.textScale)}</output>
+          </label>
+          {#if look.caption.design !== "card"}
+            <label class="row" transition:rise>
+              <span>縁どり</span>
+              <input
+                type="range"
+                min="0"
+                max="20"
+                step="0.5"
+                value={look.caption.outline}
+                oninput={(e) => setOutline(Number(e.currentTarget.value))}
+              />
+              <output>{look.caption.outline}px</output>
+            </label>
+          {/if}
+          <details class="parts" open={partsChanged}>
+            <summary>項目ごとに変える</summary>
+            <div class="rows">
+              {#each PARTS as [part, name] (part)}
+                <label class="row">
+                  <span>{name}</span>
+                  <input
+                    type="range"
+                    min={PART_RANGE.min}
+                    max={PART_RANGE.max}
+                    step="0.05"
+                    value={look.caption.partScales[part]}
+                    oninput={(e) => setSize(part, Number(e.currentTarget.value))}
+                  />
+                  <output>{percent(look.caption.partScales[part])}</output>
+                </label>
+              {/each}
+              <button class="quiet small" disabled={standardSizes} onclick={resetSizes}>大きさを標準に戻す</button>
+            </div>
+          </details>
+        </div>
       {/if}
-    </fieldset>
+    </section>
 
-    <fieldset>
-      <legend>ウォーターマーク</legend>
+    <section>
+      <h3>ウォーターマーク</h3>
       <select
         value={watermark?.content.kind ?? "none"}
         onchange={(e) => setWatermarkKind(e.currentTarget.value as "none" | "text" | "image", e.currentTarget)}
@@ -250,27 +312,28 @@
       </select>
       {#if watermark}
         {#if watermark.content.kind === "text"}
-          <label>
-            文字
-            <input
-              value={watermark.content.text}
-              oninput={(e) => {
-                const text = e.currentTarget.value;
-                setWatermark((spec) => (spec.content = { kind: "text", text }), "text");
-              }}
-            />
-          </label>
+          <input
+            aria-label="ウォーターマークの文字"
+            value={watermark.content.text}
+            oninput={(e) => {
+              const text = e.currentTarget.value;
+              setWatermark((spec) => (spec.content = { kind: "text", text }), "text");
+            }}
+          />
         {:else}
-          <p class="hint">
-            {logo ? logo.originalName : "画像"}
-            {#if logo?.state.state === "failed"}<span class="error">（{logo.state.reason}）</span>{/if}
-            <button class="quiet" onclick={chooseLogo}>選び直す</button>
+          <p class="hint logo">
+            <span>
+              {logo ? logo.originalName : "画像"}
+              {#if logo?.state.state === "failed"}<span class="error">（{logo.state.reason}）</span>{/if}
+            </span>
+            <button class="quiet small" onclick={chooseLogo}>選び直す</button>
           </p>
         {/if}
-        <div class="pair">
-          <label>
-            位置
+        <div class="rows">
+          <label class="row">
+            <span>位置</span>
             <select
+              class="wide"
               value={watermark.corner}
               onchange={(e) => {
                 const corner = e.currentTarget.value as Corner;
@@ -282,8 +345,23 @@
               {/each}
             </select>
           </label>
-          <label>
-            不透明度 {Math.round(watermark.opacity * 100)}%
+          <label class="row">
+            <span>大きさ</span>
+            <input
+              type="range"
+              min="0.02"
+              max="0.2"
+              step="0.005"
+              value={watermark.size}
+              oninput={(e) => {
+                const size = Number(e.currentTarget.value);
+                setWatermark((spec) => (spec.size = size), "size");
+              }}
+            />
+            <output>{Math.round(watermark.size * 1000) / 10}%</output>
+          </label>
+          <label class="row">
+            <span>不透明度</span>
             <input
               type="range"
               min="0.1"
@@ -295,112 +373,24 @@
                 setWatermark((spec) => (spec.opacity = opacity), "opacity");
               }}
             />
+            <output>{Math.round(watermark.opacity * 100)}%</output>
           </label>
         </div>
-        <label>
-          大きさ {Math.round(watermark.size * 1000) / 10}%
-          <input
-            type="range"
-            min="0.02"
-            max="0.2"
-            step="0.005"
-            value={watermark.size}
-            oninput={(e) => {
-              const size = Number(e.currentTarget.value);
-              setWatermark((spec) => (spec.size = size), "size");
-            }}
-          />
-        </label>
       {/if}
-    </fieldset>
+    </section>
 
-    <label>
-      縦横比が合わない写真
-      <select
-        value={look.fit}
-        onchange={(e) => {
-          const fit = e.currentTarget.value as Fit;
-          setLook((look) => (look.fit = fit));
-        }}
-      >
-        {#each Object.entries(FITS) as [fit, name] (fit)}
-          <option value={fit}>{name}</option>
-        {/each}
-      </select>
-    </label>
-
-    <div class="pair">
-      <label>
-        トランジション
-        <TransitionSelect
-          value={look.transition}
-          {show}
-          onchange={(choice) => setLook((look) => (look.transition = choice ?? { kind: "fade" }))}
-        />
-      </label>
-      <label>
-        長さ（秒）
-        <input
-          type="number"
-          min="0.1"
-          step="0.1"
-          placeholder={String(ownLength(look.transition) / 1000)}
-          value={look.transitionMs === null ? "" : look.transitionMs / 1000}
-          oninput={(e) => {
-            // Left empty, each transition takes its own length.
-            const value = e.currentTarget.value;
-            const ms = Math.round(Number(value) * 1000);
-            if (value.trim() === "") setLook((look) => (look.transitionMs = null), "transitionMs");
-            else if (ms > 0) setLook((look) => (look.transitionMs = ms), "transitionMs");
-          }}
-        />
-      </label>
-    </div>
-
-    <div class="pair">
-      <label>
-        写真の表示時間（秒）
-        <input
-          type="number"
-          min="0.5"
-          step="0.5"
-          value={look.photoMs / 1000}
-          oninput={(e) => {
-            const ms = Math.round(Number(e.currentTarget.value) * 1000);
-            if (ms > 0) setLook((look) => (look.photoMs = ms), "photoMs");
-          }}
-        />
-      </label>
-      <label>
-        ゆっくりズーム
-        <select
-          value={zoomOf(look.motion) === "still" ? "none" : zoomOf(look.motion)}
-          onchange={(e) => {
-            const key = e.currentTarget.value as "none" | "in" | "out";
-            setLook((look) => (look.motion = key === "none" ? null : ZOOMS[key]));
-          }}
-        >
-          <option value="none">なし</option>
-          <option value="in">ズームイン</option>
-          <option value="out">ズームアウト</option>
-        </select>
-      </label>
-    </div>
-
-    <details>
+    <details class="advanced">
       <summary>詳細設定</summary>
       <div class="details">
-        <fieldset>
-          <legend>カスタムトランジション（WGSL）</legend>
-          {#each look.customTransitions as custom (custom.id)}
-            <div class="custom">
-              <span>{custom.name}</span>
-              <button class="quiet" onclick={() => open.edit((show) => removeCustomTransition(show, custom.id))}>外す</button>
-            </div>
-          {/each}
-          <button disabled={adding} onclick={addTransition}>{adding ? "確かめています…" : "WGSL ファイルを追加…"}</button>
-          {#if transitionError}<pre class="error">{transitionError}</pre>{/if}
-        </fieldset>
+        <h3>カスタムトランジション（WGSL）</h3>
+        {#each look.customTransitions as custom (custom.id)}
+          <div class="custom">
+            <span>{custom.name}</span>
+            <button class="quiet small" onclick={() => open.edit((show) => removeCustomTransition(show, custom.id))}>外す</button>
+          </div>
+        {/each}
+        <button disabled={adding} onclick={addTransition}>{adding ? "確かめています…" : "WGSL ファイルを追加…"}</button>
+        {#if transitionError}<pre class="error">{transitionError}</pre>{/if}
       </div>
     </details>
   </div>
@@ -410,47 +400,62 @@
   .panel {
     display: flex;
     flex-direction: column;
-    gap: 14px;
   }
 
-  fieldset {
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 10px 12px 12px;
-    margin: 0;
+  /* Sections are told apart by a heading and a thin line, not boxes. */
+  section {
     display: flex;
     flex-direction: column;
     gap: 10px;
-  }
-
-  legend {
-    font-size: 13px;
-    padding: 0 4px;
-  }
-
-  .group {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .group + .group {
+    padding: 16px 0;
     border-top: 1px solid var(--line);
-    padding-top: 12px;
   }
 
-  h4,
-  .group-title {
+  section:first-child {
+    border-top: none;
+    padding-top: 2px;
+  }
+
+  h3 {
     margin: 0;
     font-size: 13px;
     font-weight: 600;
     color: var(--fg);
   }
 
-  .heading {
+  .pair {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  /* One line per setting: name, control, value. */
+  .rows {
     display: flex;
-    justify-content: space-between;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .row {
+    display: grid;
+    grid-template-columns: 6.5em 1fr 3.2em;
     align-items: center;
+    gap: 8px;
+  }
+
+  .row input[type="range"] {
+    width: 100%;
+    margin: 0;
+  }
+
+  .row .wide {
+    grid-column: 2 / 4;
+  }
+
+  output {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg);
   }
 
   button.small {
@@ -459,9 +464,32 @@
     color: var(--accent);
   }
 
+  .parts summary,
+  .advanced summary {
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--muted);
+    width: fit-content;
+  }
+
+  .parts .rows {
+    padding: 8px 0 0 12px;
+    margin-top: 6px;
+    border-left: 2px solid var(--line);
+  }
+
+  /* The indent comes off the name, so the sliders line up with the ones above. */
+  .parts .row {
+    grid-template-columns: calc(6.5em - 14px) 1fr 3.2em;
+  }
+
+  .parts button.small {
+    align-self: flex-end;
+  }
+
   .designs {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: 6px;
   }
 
@@ -469,14 +497,17 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 6px;
-    padding: 6px 6px 7px;
-    font-size: 13px;
+    gap: 4px;
+    padding: 0;
+    border: none;
+    background: none;
+    font-size: 12px;
+    color: var(--muted);
+    white-space: nowrap;
   }
 
   .design.current {
-    border-color: var(--accent);
-    background: var(--accent-soft);
+    color: var(--accent);
     font-weight: 600;
   }
 
@@ -485,53 +516,64 @@
   .thumb {
     position: relative;
     width: 100%;
-    aspect-ratio: 16 / 9;
-    border-radius: 4px;
+    aspect-ratio: 16 / 10;
+    border-radius: 5px;
     overflow: hidden;
     background: linear-gradient(160deg, #7d93ab, #3e4f63 70%);
+    outline: 2px solid transparent;
+    outline-offset: 1px;
+    transition: outline-color 0.15s ease;
+  }
+
+  .design:hover .thumb {
+    outline-color: var(--line);
+  }
+
+  .design.current .thumb {
+    outline-color: var(--accent);
   }
 
   .thumb.band::before {
     content: "";
     position: absolute;
-    inset: 45% 0 0;
+    inset: 40% 0 0;
     background: linear-gradient(transparent, rgb(0 0 0 / 0.7));
   }
 
   .mark {
     position: absolute;
-    left: 10%;
-    bottom: 12%;
-    width: 50%;
+    left: 12%;
+    bottom: 14%;
+    width: 52%;
     display: flex;
     flex-direction: column;
     gap: 2px;
   }
 
   .thumb.simple .mark {
-    padding-left: 4px;
+    padding-left: 3px;
     border-left: 1.5px solid rgb(255 255 255 / 0.9);
   }
 
   .thumb.card .mark {
     left: auto;
-    right: 8%;
-    bottom: 10%;
-    width: 46%;
-    padding: 4px;
+    right: 9%;
+    bottom: 12%;
+    width: 50%;
+    padding: 3px;
     border-radius: 2px;
     background: #f5f6f8;
   }
 
   .bar {
     display: block;
-    height: 2px;
+    height: 1.5px;
     border-radius: 1px;
     background: #fff;
   }
 
   .bar.title {
-    height: 4px;
+    height: 3px;
     width: 80%;
   }
 
@@ -549,50 +591,25 @@
     background: #13213b;
   }
 
-  .sizes {
+  .logo {
+    margin: 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    overflow-wrap: anywhere;
+  }
+
+  .advanced {
+    padding-top: 14px;
+    border-top: 1px solid var(--line);
+  }
+
+  .details {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-  }
-
-  .size {
-    display: grid;
-    grid-template-columns: 4.5em 1fr 3.2em;
-    align-items: center;
-    gap: 8px;
-    color: var(--fg);
-  }
-
-  .size.all {
-    padding-bottom: 6px;
-    border-bottom: 1px dashed var(--line);
-  }
-
-  .size.all .name {
-    font-weight: 600;
-  }
-
-  .size input {
-    width: 100%;
-  }
-
-  output {
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-    color: var(--muted);
-  }
-
-  .outline {
-    display: grid;
-    grid-template-columns: 1fr 64px;
-    gap: 8px;
-    align-items: center;
-  }
-
-  .pair {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
     gap: 10px;
+    padding-top: 12px;
   }
 
   .custom {
@@ -605,21 +622,5 @@
     white-space: pre-wrap;
     font-size: 12px;
     margin: 0;
-  }
-
-  p {
-    margin: 0;
-  }
-
-  details summary {
-    cursor: pointer;
-    color: var(--muted);
-  }
-
-  .details {
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-    padding-top: 12px;
   }
 </style>
