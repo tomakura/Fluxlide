@@ -85,7 +85,12 @@ impl Project {
     /// Makes a new project folder inside `parent` and stores `show` in it.
     pub fn create(parent: &Path, show: &ShowDefinition) -> Result<Self, ProjectError> {
         std::fs::create_dir_all(parent)?;
-        let dir = unique_dir(parent);
+        Self::create_at(unique_dir(parent), show)
+    }
+
+    /// Makes a project in `dir`, which may already hold its `media/`, and
+    /// stores `show` in it.
+    pub fn create_at(dir: PathBuf, show: &ShowDefinition) -> Result<Self, ProjectError> {
         std::fs::create_dir_all(dir.join(MEDIA_DIR))?;
         let db = Connection::open(dir.join(DATABASE_FILE))?;
         prepare(&db)?;
@@ -175,6 +180,22 @@ pub fn summary(dir: &Path) -> Result<Summary, ProjectError> {
     .map_err(|err| ProjectError::Damaged(err.to_string()))
 }
 
+/// Reads the definition of the project in `dir` without changing the folder.
+pub fn read_definition(dir: &Path) -> Result<ShowDefinition, ProjectError> {
+    let path = dir.join(DATABASE_FILE);
+    if !path.is_file() {
+        return Err(ProjectError::NotFound(dir.to_path_buf()));
+    }
+    let db = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let json: String = db
+        .query_row("SELECT definition FROM project WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .optional()?
+        .ok_or_else(|| ProjectError::Damaged("中身がありません".into()))?;
+    parse_definition(&json)
+}
+
 /// The projects in the folders inside `parent`, most recently changed first.
 /// Folders that are not projects are left out.
 pub fn list(parent: &Path) -> Vec<Summary> {
@@ -192,7 +213,7 @@ pub fn list(parent: &Path) -> Vec<Summary> {
 /// converts an older one. A definition without one, or with version 0
 /// (never written), is not accepted as any version, so a conversion
 /// cannot miss it.
-fn parse_definition(json: &str) -> Result<ShowDefinition, ProjectError> {
+pub fn parse_definition(json: &str) -> Result<ShowDefinition, ProjectError> {
     let mut value: serde_json::Value =
         serde_json::from_str(json).map_err(|err| ProjectError::Damaged(err.to_string()))?;
     let version = value
@@ -265,7 +286,7 @@ fn migrate(db: &Connection, from: i32) -> Result<(), ProjectError> {
 }
 
 /// A new folder name in `parent`, from the time it is made.
-fn unique_dir(parent: &Path) -> PathBuf {
+pub fn unique_dir(parent: &Path) -> PathBuf {
     let stamp = now_ms();
     (0..)
         .map(|n| match n {
@@ -276,7 +297,7 @@ fn unique_dir(parent: &Path) -> PathBuf {
         .expect("an unused folder name")
 }
 
-fn now_ms() -> i64 {
+pub fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |time| time.as_millis() as i64)

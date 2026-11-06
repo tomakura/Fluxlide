@@ -16,6 +16,8 @@ import type { ImportResult } from "./bindings/ImportResult";
 import type { LoadedTransition } from "./bindings/LoadedTransition";
 import type { MonitorInfo } from "./bindings/MonitorInfo";
 import type { MusicSource } from "./bindings/MusicSource";
+import type { PackageEstimate } from "./bindings/PackageEstimate";
+import type { PackageProgress } from "./bindings/PackageProgress";
 import type { PresentationStatus } from "./bindings/PresentationStatus";
 import type { ProjectSummary } from "./bindings/ProjectSummary";
 import type { Settings } from "./bindings/Settings";
@@ -85,6 +87,19 @@ export const exportEstimate = (choice: ExportChoice) => invoke<ExportEstimate>("
 export const startExport = (choice: ExportChoice, path: string) => invoke<void>("start_export", { choice, path });
 export const cancelExport = () => invoke<void>("cancel_export");
 
+/// What a .fluxlide file of the project in `dir` holds, and its size.
+export const packageEstimate = (dir: string) => invoke<PackageEstimate>("package_estimate", { dir });
+/// Writes the project in `dir` to a .fluxlide file; see `onPackageProgress`.
+export const exportPackage = (dir: string, path: string, includeMusic: boolean) =>
+  invoke<void>("export_package", { dir, path, includeMusic });
+/// Reads a .fluxlide file into a new project and returns its folder.
+export const importPackage = (path: string) => invoke<string>("import_package", { path });
+/// Stops the file being written or read; its command then fails.
+export const cancelPackage = () => invoke<void>("cancel_package");
+/// .fluxlide files opened from outside the app (a double click), not yet read.
+export const takeOpenedPackages = () => invoke<string[]>("take_opened_packages");
+export const PACKAGE_FILTER = { name: "Fluxlide スライドショー", extensions: ["fluxlide"] };
+
 /// The folder of license texts, in an installed app.
 export const licensesDir = () => invoke<string | null>("licenses_dir");
 
@@ -110,6 +125,12 @@ export const endRequestAnswered = () => invoke<void>("end_request_answered");
 /// The presentation ended from its own window.
 export const onPresentationEnded = (handler: () => void): Promise<UnlistenFn> =>
   listen("presentation-ended", () => handler());
+
+export const onPackageProgress = (handler: (progress: PackageProgress) => void): Promise<UnlistenFn> =>
+  listen<PackageProgress>("package-progress", (event) => handler(event.payload));
+/// A .fluxlide file was opened from outside the app; see `takeOpenedPackages`.
+export const onPackageOpened = (handler: () => void): Promise<UnlistenFn> =>
+  listen("package-opened", () => handler());
 
 export const onExportProgress = (handler: (progress: ExportProgressEvent) => void): Promise<UnlistenFn> =>
   listen<ExportProgressEvent>("export-progress", (event) => handler(event.payload));
