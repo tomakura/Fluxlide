@@ -159,6 +159,18 @@
       />
       音のある動画の再生中は BGM を止める
     </label>
+    <label class="inline">
+      <input
+        type="checkbox"
+        checked={music.normalize}
+        onchange={(e) => {
+          const on = e.currentTarget.checked;
+          setMusic((music) => (music.normalize = on));
+        }}
+      />
+      BGM と動画の音量をそろえる
+    </label>
+    <p class="hint">曲や動画ごとの音の大きさの違いをならします。BGM の音量と動画ごとの音量は、そろえたうえで効きます。</p>
 
     <fieldset>
       <legend>音ズレ補正（この機器の設定）</legend>
