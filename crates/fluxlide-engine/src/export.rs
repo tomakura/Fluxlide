@@ -726,64 +726,76 @@ mod tests {
         });
         definition.slides.push(Slide::new(SlideId(1), AssetId(1)));
         definition.look.photo_ms = 4000;
-        let settings = ExportSettings {
-            size: (64, 36),
-            fps: 20,
-            video_encoder: Some("mpeg4".into()),
-            music: Some(ExportMusic {
-                source: BgmSource::Files(vec![song]),
-                config: BgmConfig {
-                    tuning: crate::bgm::BgmTuning {
-                        fade_secs: 0.0,
+        // As it is, then levelled to half.
+        let halving = crate::bgm::TrackGains::new(|_| Ok(0.5));
+        for (levelling, gain) in [(None, 1.0), (Some(halving), 0.5)] {
+            let settings = ExportSettings {
+                size: (64, 36),
+                fps: 20,
+                video_encoder: Some("mpeg4".into()),
+                music: Some(ExportMusic {
+                    source: BgmSource::Files(vec![song.clone()]),
+                    config: BgmConfig {
+                        tuning: crate::bgm::BgmTuning {
+                            fade_secs: 0.0,
+                            ..Default::default()
+                        },
+                        levelling: levelling.clone(),
                         ..Default::default()
                     },
-                    ..Default::default()
-                },
-                duck_for_videos: false,
-            }),
-            ..Default::default()
-        };
-        let mut show = Slideshow::new(renderer.clone(), definition, dir.clone(), settings.size);
-        let out = dir.join("out.mp4");
-        export_slideshow(
-            &renderer,
-            &ffmpeg,
-            &mut show,
-            &settings,
-            &out,
-            &AtomicBool::new(false),
-            |_| {},
-        )
-        .unwrap();
-
-        // The sound, as mono 1 kHz samples.
-        let decoded = command(ffmpeg.ffmpeg_path())
-            .args(["-v", "error", "-i"])
-            .arg(&out)
-            .args(["-f", "f32le", "-ac", "1", "-ar", "1000", "pipe:1"])
-            .output()
+                    duck_for_videos: false,
+                }),
+                ..Default::default()
+            };
+            let mut show = Slideshow::new(
+                renderer.clone(),
+                definition.clone(),
+                dir.clone(),
+                settings.size,
+            );
+            let out = dir.join("out.mp4");
+            export_slideshow(
+                &renderer,
+                &ffmpeg,
+                &mut show,
+                &settings,
+                &out,
+                &AtomicBool::new(false),
+                |_| {},
+            )
             .unwrap();
-        let samples: Vec<f32> = decoded
-            .stdout
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|bytes| f32::from_le_bytes(*bytes))
-            .collect();
-        let loudness = |range: std::ops::Range<usize>| {
-            let part = &samples[range];
-            (part.iter().map(|s| s * s).sum::<f32>() / part.len() as f32).sqrt()
-        };
-        let len = samples.len();
-        assert!(len > 3000, "{len}");
-        // FFmpeg's sine is at 1/8 of full scale, and the BGM at half volume:
-        // about 0.044 RMS. Heard from the start, with no wait in the file.
-        let full = 0.125 * 0.5 / 2f32.sqrt();
-        assert!(loudness(100..400) > full * 0.8, "{}", loudness(100..400));
-        assert!(loudness(len / 2 - 200..len / 2 + 200) > full * 0.8);
-        // Silent by the last frames.
-        let end = loudness(len - 50..len);
-        assert!(end < full * 0.1, "{end}");
+
+            // The sound, as mono 1 kHz samples.
+            let decoded = command(ffmpeg.ffmpeg_path())
+                .args(["-v", "error", "-i"])
+                .arg(&out)
+                .args(["-f", "f32le", "-ac", "1", "-ar", "1000", "pipe:1"])
+                .output()
+                .unwrap();
+            let samples: Vec<f32> = decoded
+                .stdout
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|bytes| f32::from_le_bytes(*bytes))
+                .collect();
+            let loudness = |range: std::ops::Range<usize>| {
+                let part = &samples[range];
+                (part.iter().map(|s| s * s).sum::<f32>() / part.len() as f32).sqrt()
+            };
+            let len = samples.len();
+            assert!(len > 3000, "{len}");
+            // FFmpeg's sine is at 1/8 of full scale, and the BGM at half volume
+            // under its levelling gain:
+            // about 0.044 RMS. Heard from the start, with no wait in the file.
+            let full = 0.125 * 0.5 * gain / 2f32.sqrt();
+            assert!(loudness(100..400) > full * 0.8, "{}", loudness(100..400));
+            assert!(loudness(len / 2 - 200..len / 2 + 200) > full * 0.8);
+            assert!(loudness(100..400) < full * 1.2, "{}", loudness(100..400));
+            // Silent by the last frames.
+            let end = loudness(len - 50..len);
+            assert!(end < full * 0.1, "{end}");
+        }
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
