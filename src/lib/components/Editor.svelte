@@ -7,6 +7,7 @@
   import { appear, rise } from "$lib/motion";
   import { open } from "$lib/show.svelte";
   import ExportDialog from "./ExportDialog.svelte";
+  import PackageDialog from "./PackageDialog.svelte";
   import FileSettings from "./FileSettings.svelte";
   import LookPanel from "./LookPanel.svelte";
   import MusicPanel from "./MusicPanel.svelte";
@@ -40,6 +41,8 @@
     files = true;
   }
   let exportOpen = $state(false);
+  let packOpen = $state(false);
+  let exportMenu = $state(false);
   // An export that ends while its dialog is closed says so there (once:
   // not again when the editor is opened later).
   let seenFinish = untrack(() => exporting.finished);
@@ -89,6 +92,10 @@
   });
 
   function onkeydown(event: KeyboardEvent) {
+    if (exportMenu && event.key === "Escape") {
+      exportMenu = false;
+      return;
+    }
     const target = event.target as HTMLElement;
     if (target.closest("input, textarea, select")) return;
     const mod = event.ctrlKey || event.metaKey;
@@ -102,7 +109,8 @@
   }
 </script>
 
-<svelte:window {onkeydown} />
+<!-- A click anywhere else closes the export menu. -->
+<svelte:window {onkeydown} onclick={() => (exportMenu = false)} />
 
 {#snippet arrow()}
   <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
@@ -139,14 +147,45 @@
       <button class="quiet files" disabled={show.slides.length === 0} onclick={openFiles}>
         ファイルごとの設定
       </button>
-      <button class="quiet export" disabled={show.slides.length === 0 && !exporting.running} onclick={() => (exportOpen = true)}>
-        {exporting.running ? `書き出し中 ${Math.round(exporting.fraction * 100)}%` : "動画に書き出す"}
-      </button>
+      <div class="exports">
+        <button
+          class="quiet export"
+          aria-haspopup="menu"
+          aria-expanded={exportMenu}
+          onclick={(e) => {
+            e.stopPropagation();
+            exportMenu = !exportMenu;
+          }}
+        >
+          {exporting.running ? `書き出し中 ${Math.round(exporting.fraction * 100)}%` : "書き出す"} ▾
+        </button>
+        {#if exportMenu}
+          <div class="menu" role="menu" transition:rise={{ y: -6 }}>
+            <button
+              role="menuitem"
+              class="quiet"
+              disabled={show.slides.length === 0 && !exporting.running}
+              onclick={() => ((exportMenu = false), (exportOpen = true))}
+            >
+              <strong>動画に書き出す</strong>
+              <span class="hint">MP4 にして、テレビやスマホ、動画サイトで流す</span>
+            </button>
+            <button role="menuitem" class="quiet" onclick={() => ((exportMenu = false), (packOpen = true))}>
+              <strong>ほかのパソコン用に書き出す</strong>
+              <span class="hint">1つのファイルにまとめ、ほかの Fluxlide で開いて編集する</span>
+            </button>
+          </div>
+        {/if}
+      </div>
       <div class="present">
         <button class="live" disabled={show.slides.length === 0} onclick={() => onpresent(false)}>▶ 上映する</button>
         <button class="live more" disabled={show.slides.length === 0} onclick={() => onpresent(true)} title="出力先の画面を選ぶ">▾</button>
       </div>
     </header>
+
+    {#if packOpen && open.state}
+      <PackageDialog dir={open.state.dir} title={show.title} onclose={() => (packOpen = false)} />
+    {/if}
 
     {#if exportOpen}
       <ExportDialog onclose={() => (exportOpen = false)} />
@@ -276,6 +315,34 @@
   .files,
   .export {
     white-space: nowrap;
+  }
+
+  .exports {
+    position: relative;
+  }
+
+  .menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 5;
+    width: 300px;
+    padding: 6px;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    box-shadow: 0 8px 28px rgb(0 0 0 / 30%);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .menu button {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    text-align: left;
+    padding: 8px 10px;
   }
 
   nav {

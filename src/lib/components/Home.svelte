@@ -1,6 +1,6 @@
 <script lang="ts">
   // A. ホーム: start a new slideshow or open a recent one (docs/ui-draft.md).
-  import { open as pickFolder } from "@tauri-apps/plugin-dialog";
+  import { open as pickPath } from "@tauri-apps/plugin-dialog";
   import * as api from "$lib/api";
   import type { ProjectSummary } from "$lib/bindings/ProjectSummary";
   import { appear } from "$lib/motion";
@@ -9,8 +9,9 @@
   import Confirm from "./Confirm.svelte";
   import DropZone from "./DropZone.svelte";
   import Mark from "./Mark.svelte";
+  import PackageDialog from "./PackageDialog.svelte";
 
-  let { onopened }: { onopened: () => void } = $props();
+  let { onopened, onimport }: { onopened: () => void; onimport: (path: string) => void } = $props();
 
   let projects = $state<ProjectSummary[] | null>(null);
   let busy = $state(false);
@@ -54,9 +55,16 @@
   const openDir = (dir: string) => begin(async () => open.take(await api.openProject(dir)));
 
   async function openElsewhere() {
-    const dir = await pickFolder({ directory: true, title: "スライドショーのフォルダを選ぶ" });
+    const dir = await pickPath({ directory: true, title: "スライドショーのフォルダを選ぶ" });
     if (typeof dir === "string") openDir(dir);
   }
+
+  async function importFile() {
+    const path = await pickPath({ title: "Fluxlide のファイルを選ぶ", filters: [api.PACKAGE_FILTER] });
+    if (typeof path === "string") onimport(path);
+  }
+
+  let packing = $state<ProjectSummary | null>(null);
 
   // Deleting a project in the app's folder removes it with its photos; one
   // opened from elsewhere is only taken off the list.
@@ -105,7 +113,10 @@
   <section class="recent">
     <div class="head">
       <h2>最近のスライドショー</h2>
-      <button class="quiet" onclick={openElsewhere} disabled={busy}>ほかの場所から開く…</button>
+      <div class="opens">
+        <button class="quiet" onclick={importFile} disabled={busy}>ファイルから読み込む…</button>
+        <button class="quiet" onclick={openElsewhere} disabled={busy}>ほかの場所から開く…</button>
+      </div>
     </div>
     {#if projects === null}
       <p class="hint">読み込んでいます…</p>
@@ -115,6 +126,13 @@
       <ul>
         {#each projects as project (project.dir)}
           <li>
+            <button
+              class="pack quiet"
+              title="ほかのパソコン用に書き出す"
+              aria-label="ほかのパソコン用に書き出す"
+              disabled={busy}
+              onclick={() => (packing = project)}>書き出す</button
+            >
             <button
               class="delete quiet"
               title={project.inApp ? "このスライドショーを削除" : "一覧から外す"}
@@ -150,6 +168,10 @@
     onconfirm={remove}
     oncancel={() => (doomed = null)}
   />
+{/if}
+
+{#if packing}
+  <PackageDialog dir={packing.dir} title={packing.title} onclose={() => (packing = null)} />
 {/if}
 
 {#if about}
@@ -231,8 +253,14 @@
     position: relative;
   }
 
-  /* Over the thumbnail's corner; shown on hover or keyboard focus. */
-  button.delete {
+  .opens {
+    display: flex;
+    gap: 4px;
+  }
+
+  /* Over the thumbnail's corners; shown on hover or keyboard focus. */
+  button.delete,
+  button.pack {
     position: absolute;
     top: 6px;
     right: 6px;
@@ -243,8 +271,15 @@
     opacity: 0;
   }
 
+  button.pack {
+    right: auto;
+    left: 6px;
+  }
+
   li:hover button.delete,
-  button.delete:focus-visible {
+  li:hover button.pack,
+  button.delete:focus-visible,
+  button.pack:focus-visible {
     opacity: 1;
   }
 
