@@ -31,7 +31,7 @@ mod title_card;
 mod transition;
 mod watermark;
 
-pub use caption::{Caption, CaptionDesign, CaptionStyle};
+pub use caption::{Caption, CaptionDesign, CaptionStyle, PartScales};
 pub use compositor::Compositor;
 pub use media::{MediaKind, MediaTexture};
 pub use mirror::MirrorFrame;

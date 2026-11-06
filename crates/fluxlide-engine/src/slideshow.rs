@@ -345,6 +345,7 @@ impl Slideshow {
         let caption_style = CaptionStyle {
             design: show.look.caption.design,
             text_scale: show.look.caption.text_scale,
+            part_scales: show.look.caption.part_scales,
             outline: show.look.caption.outline,
         };
         let pass_end = match show.playback.at_end {

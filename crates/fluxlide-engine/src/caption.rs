@@ -49,8 +49,11 @@ pub struct CaptionStyle {
     pub design: CaptionDesign,
     /// Multiplies every text size; 1 is the standard size.
     pub text_scale: f32,
+    /// Multiply the size of the title, the author and the description on
+    /// top of `text_scale`; 1 is the standard size of that part.
+    pub part_scales: PartScales,
     /// Width of a black outline around light text, in pixels at a height
-    /// of 1080 (scaled with the text); 0 for none. The card has none.
+    /// of 1080 (scaled with `text_scale`); 0 for none. The card has none.
     pub outline: f32,
 }
 
@@ -59,7 +62,44 @@ impl Default for CaptionStyle {
         Self {
             design: CaptionDesign::default(),
             text_scale: 1.0,
+            part_scales: PartScales::default(),
             outline: 0.0,
+        }
+    }
+}
+
+/// Size of each part of a caption relative to its standard size.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PartScales {
+    pub title: f32,
+    pub author: f32,
+    pub description: f32,
+}
+
+impl Default for PartScales {
+    fn default() -> Self {
+        Self {
+            title: 1.0,
+            author: 1.0,
+            description: 1.0,
+        }
+    }
+}
+
+impl PartScales {
+    fn of(&self, part: Part) -> f32 {
+        let scale = match part {
+            Part::Title => self.title,
+            Part::Author => self.author,
+            Part::Description => self.description,
+        };
+        // As far as the app lets it be set, whatever a project file asks for.
+        if scale.is_finite() {
+            scale.clamp(MIN_PART_SCALE, MAX_PART_SCALE)
+        } else {
+            1.0
         }
     }
 }
@@ -90,6 +130,9 @@ const GAP_AFTER_AUTHOR: f32 = 0.0046;
 /// Widest outline, in pixels at a height of 1080 (as far as the app lets it
 /// be set), whatever a project file or the text scale asks for.
 const MAX_OUTLINE: f32 = 20.0;
+/// Smallest and largest size of one part relative to its standard size.
+const MIN_PART_SCALE: f32 = 0.5;
+const MAX_PART_SCALE: f32 = 2.0;
 /// Distance of the caption from the edges of the output.
 const MARGIN: f32 = 0.05;
 
@@ -175,7 +218,8 @@ pub(crate) fn plan_caption(
     let mut lines: Vec<Line> = Vec::new();
     let mut top = 0.0f32;
     for (part, text, max_lines) in parts {
-        let text_style = part_style(part, height, style.text_scale);
+        let scale = style.text_scale * style.part_scales.of(part);
+        let text_style = part_style(part, height, scale);
         let Some(block) = render_text(text, &text_style, max_text_width, max_lines, halo) else {
             continue;
         };
@@ -531,6 +575,57 @@ mod tests {
                 "{small:?} {large:?}"
             );
         }
+    }
+
+    #[test]
+    fn each_part_can_have_its_own_size() {
+        let size = (1920, 1080);
+        // Heights of the title, author and description lines.
+        let heights = |part_scales| {
+            let style = CaptionStyle {
+                design: CaptionDesign::Plain,
+                part_scales,
+                ..Default::default()
+            };
+            let plan = plan_caption(&caption(), &style, size).unwrap().unwrap();
+            plan.pieces
+                .iter()
+                .filter_map(|piece| match piece {
+                    PlanPiece::Text { block, .. } => Some(block.height / block.lines as f32),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let standard = heights(PartScales::default());
+        let bigger_author = heights(PartScales {
+            author: 1.5,
+            ..Default::default()
+        });
+        // Only the author line grows, about one and a half times.
+        assert_eq!(standard[0], bigger_author[0]);
+        assert_eq!(standard[2], bigger_author[2]);
+        let ratio = bigger_author[1] / standard[1];
+        assert!(
+            (1.35..1.65).contains(&ratio),
+            "{standard:?} {bigger_author:?}"
+        );
+
+        // A project file cannot ask for more than the app offers, and odd
+        // numbers fall back to the standard size.
+        let huge = heights(PartScales {
+            title: 1e9,
+            ..Default::default()
+        });
+        let largest = heights(PartScales {
+            title: MAX_PART_SCALE,
+            ..Default::default()
+        });
+        assert_eq!(huge[0], largest[0]);
+        let odd = heights(PartScales {
+            title: f32::NAN,
+            ..Default::default()
+        });
+        assert_eq!(odd, standard);
     }
 
     #[test]
