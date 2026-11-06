@@ -171,6 +171,7 @@ fn slideshow(
             size: None,
             duration_ms,
             has_audio: duration_ms.is_some(),
+            loudness: None,
         });
         show.slides.push(Slide::new(SlideId(id), AssetId(id)));
     }

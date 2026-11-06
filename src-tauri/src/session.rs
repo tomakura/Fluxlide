@@ -215,6 +215,7 @@ fn take_file_facts(asset: &mut Asset, file: &Asset) {
     asset.size = file.size;
     asset.duration_ms = file.duration_ms;
     asset.has_audio = file.has_audio;
+    asset.loudness = file.loudness;
 }
 
 /// Deletes what no asset of `show` uses from `media_dir` and its thumbnails.

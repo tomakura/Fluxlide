@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use fluxlide_engine::MediaKind;
 use fluxlide_engine::media::video::Ffmpeg;
-use fluxlide_engine::show::{Asset, AssetId, AssetKind, AssetMeta, AssetState, Slide};
+use fluxlide_engine::show::{Asset, AssetId, AssetKind, AssetMeta, AssetState, Loudness, Slide};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use ts_rs::TS;
@@ -42,13 +42,21 @@ pub struct ImportProgress {
     total: u64,
 }
 
-/// One file to copy into the media folder of the project in `dir`.
+/// Work on one asset of the project whose media folder is `media_dir`.
 struct Job {
     /// The [`Session::epoch`] it was queued in.
     epoch: u64,
     media_dir: PathBuf,
     asset: Asset,
-    source: PathBuf,
+    task: Task,
+}
+
+enum Task {
+    /// Copy this file in as the asset's file.
+    Copy(PathBuf),
+    /// Measure the loudness of a video copied in before it was measured on
+    /// import.
+    Measure,
 }
 
 /// The worker that copies files, one at a time.
@@ -108,10 +116,24 @@ fn run(
         if !still_open(job.epoch) {
             continue;
         }
+        let source = match job.task {
+            Task::Copy(source) => source,
+            Task::Measure => {
+                measure(
+                    &app,
+                    &session,
+                    ffmpeg.as_ref(),
+                    job.epoch,
+                    &job.media_dir,
+                    &job.asset,
+                );
+                continue;
+            }
+        };
         let id = job.asset.id;
         let mut last_report = Instant::now();
         let outcome = import_file(
-            &job.source,
+            &source,
             &job.media_dir,
             &job.asset,
             ffmpeg.as_ref(),
@@ -137,6 +159,7 @@ fn run(
                 asset.size = Some(facts.size);
                 asset.duration_ms = facts.duration_ms;
                 asset.has_audio = facts.has_audio;
+                asset.loudness = facts.loudness;
             }
             Ok(None) => continue,
             Err(reason) => asset.state = AssetState::Failed { reason },
@@ -152,12 +175,74 @@ fn run(
     }
 }
 
+/// Measures the loudness of the video `asset` and records it, if the asset
+/// still has that file. A sound that cannot be read fails the video, as on
+/// import.
+fn measure(
+    app: &AppHandle,
+    session: &Mutex<Option<Session>>,
+    ffmpeg: Option<&Ffmpeg>,
+    epoch: u64,
+    media_dir: &Path,
+    asset: &Asset,
+) {
+    // Without FFmpeg no video plays; the window says so already.
+    let Some(ffmpeg) = ffmpeg else { return };
+    let measured = ffmpeg.measure_loudness(&media_dir.join(&asset.file));
+    let mut guard = session.lock().unwrap();
+    let Some(session) = guard.as_mut().filter(|session| session.epoch() == epoch) else {
+        return;
+    };
+    // Chosen again, or taken out, while it was measured.
+    let Some(mut current) = session
+        .show()
+        .asset(asset.id)
+        .filter(|current| current.file == asset.file && current.is_ready())
+        .cloned()
+    else {
+        return;
+    };
+    match measured {
+        Ok(loudness) => current.loudness = Some(loudness),
+        Err(_) => {
+            current.state = AssetState::Failed {
+                reason: SOUND_UNREADABLE.into(),
+            }
+        }
+    }
+    session.update_file(current);
+    editor::notify(app, session);
+}
+
+const SOUND_UNREADABLE: &str =
+    "動画の音を読み込めませんでした。壊れているか、対応していない形式です。";
+
+/// Queues the measuring of every video of the open project that has sound
+/// but was copied in before loudness was measured on import.
+pub fn measure_unmeasured(importer: &Importer, session: &Session) {
+    for asset in &session.show().assets {
+        if asset.kind == AssetKind::Video
+            && asset.is_ready()
+            && asset.has_audio
+            && asset.loudness.is_none()
+        {
+            importer.queue(Job {
+                epoch: session.epoch(),
+                media_dir: session.media_dir(),
+                asset: asset.clone(),
+                task: Task::Measure,
+            });
+        }
+    }
+}
+
 /// What reading a copied file found out.
 #[derive(Debug, PartialEq)]
 struct FileFacts {
     size: [u32; 2],
     duration_ms: Option<u32>,
     has_audio: bool,
+    loudness: Option<Loudness>,
 }
 
 /// Copies `source` into `media_dir` as `asset.file`, checks it and makes its
@@ -258,6 +343,7 @@ fn copy_and_check(
                 size: [width, height],
                 duration_ms: None,
                 has_audio: false,
+                loudness: None,
             }))
         }
         AssetKind::Video => {
@@ -276,10 +362,17 @@ fn copy_and_check(
                 });
             let _ = std::fs::remove_file(&frame);
             let (width, height) = picture.map_err(unreadable)?;
+            let loudness = if info.has_audio {
+                let measured = ffmpeg.measure_loudness(partial);
+                Some(measured.map_err(|_| SOUND_UNREADABLE.to_string())?)
+            } else {
+                None
+            };
             Ok(Some(FileFacts {
                 size: [width, height],
                 duration_ms: Some((duration * 1000.0) as u32),
                 has_audio: info.has_audio,
+                loudness,
             }))
         }
     }
@@ -337,6 +430,7 @@ fn new_asset(id: AssetId, source: &Path) -> Asset {
         size: None,
         duration_ms: None,
         has_audio: false,
+        loudness: None,
     }
 }
 
@@ -445,7 +539,7 @@ fn add_files(
                 epoch: session.epoch(),
                 media_dir: session.media_dir(),
                 asset: asset.clone(),
-                source: source.clone(),
+                task: Task::Copy(source.clone()),
             });
         }
     }
@@ -479,7 +573,7 @@ pub fn replace_asset_file(
             epoch: session.epoch(),
             media_dir: session.media_dir(),
             asset: replaced,
-            source: file,
+            task: Task::Copy(file),
         });
     }
     Ok(ShowState::of(session))
@@ -619,6 +713,9 @@ mod tests {
             .unwrap();
         assert_eq!(facts.size, [160, 90]);
         assert!(facts.has_audio);
+        // The tone is at 1/8 of full scale: its peak is about -18 dBTP.
+        let peak = facts.loudness.unwrap().true_peak_db.unwrap();
+        assert!((peak + 18.0).abs() < 1.5, "{facts:?}");
         assert!(
             (1_900..=2_100).contains(&facts.duration_ms.unwrap()),
             "{facts:?}"

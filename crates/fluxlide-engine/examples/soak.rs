@@ -194,6 +194,7 @@ fn make_show(ffmpeg: &Ffmpeg, dir: &Path) -> Result<ShowDefinition, Box<dyn std:
             size: None,
             duration_ms: video.then_some(5000),
             has_audio: video,
+            loudness: None,
         });
         show.slides.push(Slide::new(SlideId(id), AssetId(id)));
     }

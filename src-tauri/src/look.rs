@@ -45,12 +45,17 @@ pub async fn load_transition(
 }
 
 /// The names of the music files `source` plays, in order before shuffling.
+/// With `level`, their loudness is measured in the background, so that the
+/// show does not wait for it.
 #[tauri::command]
-pub async fn music_tracks(source: MusicSource) -> Result<Vec<String>, String> {
+pub async fn music_tracks(source: MusicSource, level: bool) -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let tracks = bgm_source(&source)
             .tracks()
             .map_err(|err| err.to_string())?;
+        if level {
+            crate::loudness::measure_soon(tracks.iter().cloned());
+        }
         Ok(tracks
             .iter()
             .map(|path| {

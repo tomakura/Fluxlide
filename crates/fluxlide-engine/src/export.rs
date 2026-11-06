@@ -622,6 +622,7 @@ mod tests {
                 size: None,
                 duration_ms,
                 has_audio: duration_ms.is_some(),
+                loudness: None,
             });
             definition.slides.push(Slide::new(SlideId(id), AssetId(id)));
         }
@@ -721,6 +722,7 @@ mod tests {
             size: None,
             duration_ms: None,
             has_audio: false,
+            loudness: None,
         });
         definition.slides.push(Slide::new(SlideId(1), AssetId(1)));
         definition.look.photo_ms = 4000;

@@ -3,6 +3,7 @@ import type { AssetId } from "./AssetId";
 import type { AssetKind } from "./AssetKind";
 import type { AssetMeta } from "./AssetMeta";
 import type { AssetState } from "./AssetState";
+import type { Loudness } from "./Loudness";
 
 /**
  * A photo or video copied into the project's managed folder.
@@ -32,4 +33,8 @@ durationMs: number | null,
 /**
  * Whether a video has sound.
  */
-hasAudio: boolean, };
+hasAudio: boolean, 
+/**
+ * How loud a video's sound is, once measured.
+ */
+loudness: Loudness | null, };

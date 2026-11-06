@@ -218,8 +218,20 @@ fn parse_definition(json: &str) -> Result<ShowDefinition, ProjectError> {
         {
             look.insert("transitionMs".into(), serde_json::Value::Null);
         }
-        value["version"] = SHOW_VERSION.into();
     }
+    if version < 3 {
+        // Volume levelling came in version 3, on for new shows. Shows made
+        // before keep sounding as they did until it is turned on.
+        if let Some(music) = value
+            .get_mut("music")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            music.insert("normalize".into(), false.into());
+        } else {
+            value["music"] = serde_json::json!({ "normalize": false });
+        }
+    }
+    value["version"] = SHOW_VERSION.into();
     serde_json::from_value(value).map_err(|err| ProjectError::Damaged(err.to_string()))
 }
 
@@ -308,6 +320,7 @@ pub(crate) mod tests {
                 size: Some([400, 300]),
                 duration_ms: None,
                 has_audio: false,
+                loudness: None,
             })
             .collect();
         ShowDefinition {
@@ -390,6 +403,19 @@ pub(crate) mod tests {
         show["look"]["transitionMs"] = 2_500.into();
         let read = parse_definition(&show.to_string()).unwrap();
         assert_eq!(read.look.transition_ms, Some(2_500));
+    }
+
+    #[test]
+    fn shows_from_before_version_3_keep_their_volumes() {
+        let mut show = serde_json::to_value(photo_show(1)).unwrap();
+        show["version"] = 2.into();
+        show["music"].as_object_mut().unwrap().remove("normalize");
+        let read = parse_definition(&show.to_string()).unwrap();
+        assert_eq!(read.version, SHOW_VERSION);
+        assert!(!read.music.normalize);
+        show.as_object_mut().unwrap().remove("music");
+        assert!(!parse_definition(&show.to_string()).unwrap().music.normalize);
+        assert!(photo_show(1).music.normalize, "new shows level the volume");
     }
 
     #[test]

@@ -4,6 +4,7 @@ mod history;
 mod identify;
 mod import;
 mod look;
+mod loudness;
 mod presentation;
 mod preview;
 mod project;
@@ -99,6 +100,9 @@ pub fn run() {
         .manage(preview::PreviewState::default())
         .manage(settings::SettingsState::default())
         .setup(|app| {
+            if let Ok(dir) = app.path().app_data_dir() {
+                loudness::init(&dir);
+            }
             let session = app.state::<editor::EditorState>().session();
             app.manage(import::Importer::start(app.handle().clone(), session));
             Ok(())

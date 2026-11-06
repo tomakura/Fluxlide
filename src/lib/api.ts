@@ -74,8 +74,10 @@ export const previewFrame = () => invoke<ArrayBuffer>("preview_frame");
 
 /// Reads a WGSL transition and checks that it compiles.
 export const loadTransition = (path: string) => invoke<LoadedTransition>("load_transition", { path });
-/// The names of the music files `source` plays.
-export const musicTracks = (source: MusicSource) => invoke<string[]>("music_tracks", { source });
+/// The names of the music files `source` plays. With `level`, their
+/// loudness is measured in the background, ahead of the show.
+export const musicTracks = (source: MusicSource, level: boolean) =>
+  invoke<string[]>("music_tracks", { source, level });
 
 /// What writing the open show as `choice` will make.
 export const exportEstimate = (choice: ExportChoice) => invoke<ExportEstimate>("export_estimate", { choice });

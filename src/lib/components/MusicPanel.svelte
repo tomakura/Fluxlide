@@ -39,14 +39,17 @@
   // the source is compared by its contents: moving the volume must not read
   // the folder again.
   const sourceKey = $derived(JSON.stringify(music?.source ?? null));
+  // Turning the levelling on measures the songs, ahead of the show.
+  const level = $derived(music?.normalize ?? false);
   $effect(() => {
     const source = JSON.parse(sourceKey) as Music["source"];
+    const measure = level;
     let current = true;
     tracks = null;
     tracksError = null;
     if (source) {
       api
-        .musicTracks(source)
+        .musicTracks(source, measure)
         .then((list) => current && (tracks = list))
         .catch((err) => current && (tracksError = String(err)));
     }

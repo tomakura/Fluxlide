@@ -1189,6 +1189,7 @@ pub fn bgm_config(music: &fluxlide_engine::show::Music) -> BgmConfig {
             duck_fade_in_secs: secs(music.duck_fade_in_ms),
             ..BgmTuning::default()
         },
+        levelling: music.normalize.then(crate::loudness::levelling),
     }
 }
 
