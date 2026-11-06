@@ -4,6 +4,7 @@ mod history;
 mod identify;
 mod import;
 mod look;
+mod package;
 mod presentation;
 mod preview;
 mod project;
@@ -86,6 +87,15 @@ fn licenses_dir(app: tauri::AppHandle) -> Option<String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // A second start (a package double-clicked while the app is open)
+        // hands its files to this one instead of opening another window.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+            package::OpenedPackages::add(app, args.into_iter().skip(1).map(Into::into));
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
@@ -98,7 +108,11 @@ pub fn run() {
         .manage(editor::EditorState::default())
         .manage(preview::PreviewState::default())
         .manage(settings::SettingsState::default())
+        .manage(package::PackageState::default())
+        .manage(package::OpenedPackages::default())
         .setup(|app| {
+            // On Windows and Linux a double-clicked package comes as an argument.
+            package::OpenedPackages::add(app.handle(), std::env::args_os().skip(1).map(Into::into));
             let session = app.state::<editor::EditorState>().session();
             app.manage(import::Importer::start(app.handle().clone(), session));
             Ok(())
@@ -159,7 +173,22 @@ pub fn run() {
             settings::get_settings,
             settings::set_sync_offset,
             settings::set_output_screen,
+            package::package_estimate,
+            package::export_package,
+            package::import_package,
+            package::cancel_package,
+            package::take_opened_packages,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, _event| {
+            // On macOS a double-clicked package comes as an event.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = _event {
+                package::OpenedPackages::add(
+                    _app,
+                    urls.into_iter().filter_map(|url| url.to_file_path().ok()),
+                );
+            }
+        });
 }
