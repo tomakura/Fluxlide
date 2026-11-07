@@ -57,6 +57,18 @@ pub struct CaptionStyle {
     pub outline: f32,
 }
 
+impl CaptionStyle {
+    /// `text_scale` as far as the app lets it be set, whatever a project
+    /// file asks for: a size of 0 would stop the text renderer.
+    fn text_scale(&self) -> f32 {
+        if self.text_scale.is_finite() {
+            self.text_scale.clamp(MIN_TEXT_SCALE, MAX_TEXT_SCALE)
+        } else {
+            1.0
+        }
+    }
+}
+
 impl Default for CaptionStyle {
     fn default() -> Self {
         Self {
@@ -133,6 +145,9 @@ const MAX_OUTLINE: f32 = 20.0;
 /// Smallest and largest size of one part relative to its standard size.
 const MIN_PART_SCALE: f32 = 0.5;
 const MAX_PART_SCALE: f32 = 2.0;
+/// Smallest and largest size of the whole caption, as the app lets it be set.
+const MIN_TEXT_SCALE: f32 = 0.6;
+const MAX_TEXT_SCALE: f32 = 1.6;
 /// Distance of the caption from the edges of the output.
 const MARGIN: f32 = 0.05;
 
@@ -197,7 +212,7 @@ pub(crate) fn plan_caption(
     // stands on the picture alone or has an outline.
     let outline = match style.design {
         CaptionDesign::Card => 0.0,
-        _ => (style.outline.max(0.0) * style.text_scale).min(MAX_OUTLINE) * height / 1080.0,
+        _ => (style.outline.max(0.0) * style.text_scale()).min(MAX_OUTLINE) * height / 1080.0,
     };
     let shadowed =
         outline > 0.0 || matches!(style.design, CaptionDesign::Simple | CaptionDesign::Plain);
@@ -218,7 +233,7 @@ pub(crate) fn plan_caption(
     let mut lines: Vec<Line> = Vec::new();
     let mut top = 0.0f32;
     for (part, text, max_lines) in parts {
-        let scale = style.text_scale * style.part_scales.of(part);
+        let scale = style.text_scale() * style.part_scales.of(part);
         let text_style = part_style(part, height, scale);
         let Some(block) = render_text(text, &text_style, max_text_width, max_lines, halo) else {
             continue;
@@ -626,6 +641,25 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(odd, standard);
+    }
+
+    #[test]
+    fn odd_text_scales_from_a_project_file_still_draw() {
+        let size = (1920, 1080);
+        let title_height = |text_scale| {
+            let style = CaptionStyle {
+                text_scale,
+                ..Default::default()
+            };
+            let plan = plan_caption(&caption(), &style, size).unwrap().unwrap();
+            text_boxes(&plan)[0].3
+        };
+        // 0 would make a size of 0, which the text renderer cannot take.
+        assert_eq!(title_height(0.0), title_height(MIN_TEXT_SCALE));
+        assert_eq!(title_height(-1.0), title_height(MIN_TEXT_SCALE));
+        assert_eq!(title_height(1e9), title_height(MAX_TEXT_SCALE));
+        assert_eq!(title_height(f32::NAN), title_height(1.0));
+        assert_eq!(title_height(f32::INFINITY), title_height(1.0));
     }
 
     #[test]
