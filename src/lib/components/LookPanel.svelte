@@ -1,5 +1,6 @@
 <script lang="ts">
   // 見た目 tab: settings shared by every slide (docs/ui-draft.md, B).
+  import { untrack } from "svelte";
   import { open as pickFile } from "@tauri-apps/plugin-dialog";
   import * as api from "$lib/api";
   import type { CaptionDesign } from "$lib/bindings/CaptionDesign";
@@ -70,6 +71,18 @@
 
   const partsChanged = $derived(look !== undefined && PARTS.some(([part]) => look.caption.partScales[part] !== 1));
   const standardSizes = $derived(look !== undefined && look.caption.textScale === 1 && !partsChanged);
+
+  // "項目ごとに変える" starts open when a part has its own size, and is then
+  // left to the user: it must not close under a slider brought back to 100%.
+  let partsOpen = $state(false);
+  let partsOpenFor: number | null = null;
+  $effect.pre(() => {
+    const session = open.state?.session ?? null;
+    if (session !== partsOpenFor) {
+      partsOpenFor = session;
+      partsOpen = untrack(() => partsChanged);
+    }
+  });
 
   const DEFAULT_WATERMARK: Omit<WatermarkSpec, "content"> = { corner: "topRight", opacity: 0.6, size: 0.045 };
 
@@ -276,7 +289,7 @@
               <output>{look.caption.outline}px</output>
             </label>
           {/if}
-          <details class="parts" open={partsChanged}>
+          <details class="parts" bind:open={partsOpen}>
             <summary>項目ごとに変える</summary>
             <div class="rows">
               {#each PARTS as [part, name] (part)}
