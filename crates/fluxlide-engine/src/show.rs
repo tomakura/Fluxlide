@@ -32,7 +32,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::{CaptionDesign, Corner, Direction, Fit};
+use crate::{CaptionDesign, Corner, Direction, Fit, PartScales};
 
 /// Version of the [`ShowDefinition`] layout. Raised when a stored project
 /// needs converting to be read.
@@ -417,6 +417,9 @@ pub struct CaptionLook {
     pub design: CaptionDesign,
     /// Multiplies every text size; 1 is the standard size.
     pub text_scale: f32,
+    /// Size of the title, the author and the description on top of
+    /// `text_scale`.
+    pub part_scales: PartScales,
     /// Width of the outline around the text, in pixels at a height of
     /// 1080; 0 for none.
     pub outline: f32,
@@ -427,6 +430,7 @@ impl Default for CaptionLook {
         Self {
             design: CaptionDesign::Band,
             text_scale: 1.0,
+            part_scales: PartScales::default(),
             outline: 0.0,
         }
     }
@@ -917,5 +921,6 @@ mod tests {
         assert_eq!(show.slides[0].video.volume, 1.0);
         assert_eq!(show.look.photo_ms, DEFAULT_PHOTO_MS);
         assert_eq!(show.look.fit, Fit::Blur);
+        assert_eq!(show.look.caption.part_scales, PartScales::default());
     }
 }
