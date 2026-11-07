@@ -438,7 +438,7 @@
 
   .row {
     display: grid;
-    grid-template-columns: 6.5em 1fr 3.2em;
+    grid-template-columns: 6.5em minmax(0, 1fr) 3.8em;
     align-items: center;
     gap: 8px;
   }
@@ -455,6 +455,7 @@
   output {
     text-align: right;
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
     color: var(--fg);
   }
 
@@ -480,7 +481,7 @@
 
   /* The indent comes off the name, so the sliders line up with the ones above. */
   .parts .row {
-    grid-template-columns: calc(6.5em - 14px) 1fr 3.2em;
+    grid-template-columns: calc(6.5em - 14px) minmax(0, 1fr) 3.8em;
   }
 
   .parts button.small {
@@ -489,8 +490,8 @@
 
   .designs {
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
-    gap: 6px;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 4px;
   }
 
   .design {
@@ -501,7 +502,7 @@
     padding: 0;
     border: none;
     background: none;
-    font-size: 12px;
+    font-size: 11px;
     color: var(--muted);
     white-space: nowrap;
   }
